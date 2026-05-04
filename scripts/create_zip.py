@@ -1,11 +1,23 @@
 #!/usr/bin/env python3
 import sys
 import zipfile
+from stat import S_IFREG
 from pathlib import Path
 
 
 PLUGIN_FOLDER = "decky-renodx"
 OUTPUT_FILENAME = "decky-renodx.zip"
+
+
+def write_plugin_file(zipf: zipfile.ZipFile, source: Path, archive_name: str) -> None:
+    if source.suffix == ".sh":
+        data = source.read_bytes().replace(b"\r\n", b"\n")
+        info = zipfile.ZipInfo(archive_name)
+        info.external_attr = (S_IFREG | 0o755) << 16
+        zipf.writestr(info, data)
+        return
+
+    zipf.write(source, archive_name)
 
 
 def create_plugin_zip(output_filename: str = OUTPUT_FILENAME) -> str:
@@ -27,13 +39,14 @@ def create_plugin_zip(output_filename: str = OUTPUT_FILENAME) -> str:
 
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zipf:
         for filename in root_files:
-            zipf.write(root_dir / filename, f"{PLUGIN_FOLDER}/{filename}")
+            source = root_dir / filename
+            write_plugin_file(zipf, source, f"{PLUGIN_FOLDER}/{filename}")
 
         for folder in folders:
             for file_path in (root_dir / folder).rglob("*"):
                 if file_path.is_file():
                     relative_path = file_path.relative_to(root_dir).as_posix()
-                    zipf.write(file_path, f"{PLUGIN_FOLDER}/{relative_path}")
+                    write_plugin_file(zipf, file_path, f"{PLUGIN_FOLDER}/{relative_path}")
 
     with zipfile.ZipFile(zip_path) as zipf:
         plugin_json_files = [

@@ -28,6 +28,9 @@ class FakeLogger:
 def load_main_module(temp_home: Path):
     decky = types.SimpleNamespace(
         HOME=str(temp_home),
+        USER="deck",
+        DECKY_USER="deck",
+        DECKY_USER_HOME=str(temp_home),
         DECKY_HOME=str(temp_home / "homebrew"),
         DECKY_PLUGIN_DIR=str(ROOT),
         logger=FakeLogger(),
@@ -124,6 +127,14 @@ class BackendMockTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["status"], "success")
         self.assertEqual(result["games"], [{"appid": "123", "name": "Example Game"}])
+
+    async def test_root_home_does_not_move_runtime_to_root(self):
+        self.module.decky.HOME = "/root"
+        plugin = self.module.Plugin()
+
+        self.assertEqual(plugin.environment["HOME"], str(self.home))
+        self.assertTrue(plugin.main_path.startswith(str(self.home)))
+        self.assertNotIn("/root", plugin.main_path)
 
     async def test_restart_uses_helper_when_systemd_run_fails(self):
         plugin = self.module.Plugin()

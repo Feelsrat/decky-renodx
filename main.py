@@ -33,9 +33,14 @@ RUNTIME_RELATIVE_PATH = "decky-renodx/reshade"
 
 class Plugin:
     def __init__(self):
-        xdg_data_home = os.path.expandvars('$HOME/.local/share')
+        deck_user_home = self._deck_user_home()
+        deck_user = getattr(decky, "DECKY_USER", "") or deck_user_home.name or "deck"
+        xdg_data_home = str(deck_user_home / ".local" / "share")
         runtime_path = os.path.join(xdg_data_home, RUNTIME_RELATIVE_PATH)
         self.environment = {
+            'HOME': str(deck_user_home),
+            'USER': deck_user,
+            'LOGNAME': deck_user,
             'XDG_DATA_HOME': xdg_data_home,
             'MAIN_PATH': runtime_path,
             'UPDATE_RESHADE': '1',
@@ -65,6 +70,41 @@ class Plugin:
         os.makedirs(self.main_path, exist_ok=True)
         os.makedirs(self.renodx_import_path, exist_ok=True)
         os.makedirs(self.bin_cache_path, exist_ok=True)
+
+    def _deck_user_home(self) -> Path:
+        for attr in ["DECKY_USER_HOME", "HOME"]:
+            value = getattr(decky, attr, "")
+            if value and value != "/root":
+                return Path(value)
+        sudo_user = os.environ.get("SUDO_USER")
+        if sudo_user and sudo_user != "root":
+            return Path("/home") / sudo_user
+        return Path("/home/deck")
+
+    def _deck_expanduser(self, path: str) -> str:
+        if path == "~":
+            return str(self._deck_user_home())
+        if path.startswith("~/"):
+            return str(self._deck_user_home() / path[2:])
+        return os.path.expanduser(path)
+
+    def _fix_deck_user_ownership(self, path: Path | str) -> None:
+        deck_user = getattr(decky, "DECKY_USER", "") or self.environment.get("USER", "deck")
+        if not deck_user or deck_user == "root":
+            return
+        target = Path(path)
+        if not target.exists():
+            return
+        try:
+            subprocess.run(
+                ["chown", "-R", f"{deck_user}:{deck_user}", str(target)],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except Exception as error:
+            decky.logger.warning("Could not fix ownership for %s: %s", target, error)
 
     def _get_assets_dir(self) -> Path:
         """Get the assets directory, checking both possible locations"""
@@ -1285,36 +1325,9 @@ class Plugin:
 
     async def run_install_reshade(self, with_addon: bool = False, version: str = "latest", with_autohdr: bool = False, selected_shaders: list = None) -> dict:
         try:
-            assets_dir = self._get_assets_dir()
-            script_path = assets_dir / "reshade-install.sh"
-
-            if not script_path.exists():
-                decky.logger.error(f"Install script not found: {script_path}")
-                return {"status": "error", "message": "Install script not found"}
-
             asset_result = self._ensure_runtime_assets()
             if not asset_result["ok"]:
                 return {"status": "error", "message": asset_result["message"]}
-
-            # Create a new environment dictionary for this installation
-            install_env = self.environment.copy()
-            
-            # Explicitly set RESHADE_ADDON_SUPPORT, RESHADE_VERSION, and AUTOHDR_ENABLED based on parameters
-            install_env['RESHADE_ADDON_SUPPORT'] = '1' if with_addon else '0'
-            install_env['RESHADE_VERSION'] = version
-            install_env['AUTOHDR_ENABLED'] = '1' if with_autohdr else '0'
-            
-            # HDR-only fork: never install the broad ReShade shader packs copied from LetMeReShade.
-            install_env['SELECTED_SHADERS'] = 'autohdr'
-            
-            # Add other necessary environment variables
-            install_env.update({
-                'LD_LIBRARY_PATH': '/usr/lib',
-                'XDG_DATA_HOME': self.environment['XDG_DATA_HOME'],
-                'MAIN_PATH': self.main_path,
-                'BIN_PATH': self.bin_cache_path,
-                'SEVENZIP': str(Path(self.bin_cache_path) / "7zz")
-            })
 
             install_description = f"Installing ReShade {version}"
             if with_addon:
@@ -1324,27 +1337,7 @@ class Plugin:
             install_description += " with HDR-only payload"
             
             decky.logger.info(install_description)
-            decky.logger.info(f"Environment: {install_env}")
-
-            # Create environment with required LD_LIBRARY_PATH fix for Decky v3.1.10+
-            clean_env = {**os.environ, **install_env}
-            clean_env["LD_LIBRARY_PATH"] = ""
-            
-            process = subprocess.run(
-                ["/bin/bash", str(script_path)],
-                cwd=str(assets_dir),
-                env=clean_env,
-                capture_output=True,
-                text=True,
-                timeout=300
-            )
-
-            decky.logger.info(f"Install output:\n{process.stdout}")
-            if process.stderr:
-                decky.logger.error(f"Install errors:\n{process.stderr}")
-
-            if process.returncode != 0:
-                return {"status": "error", "message": process.stderr}
+            self._install_hdr_runtime_python(version)
 
             # Create appropriate installation marker
             if with_addon:
@@ -1361,6 +1354,7 @@ class Plugin:
                     addon_marker.unlink()
 
             marker_file.touch()
+            self._fix_deck_user_ownership(Path(self.main_path))
 
             # Save the installed configuration
             await self.save_installed_configuration(with_addon, version, with_autohdr, ["autohdr"])
@@ -1448,6 +1442,111 @@ class Plugin:
         except Exception as error:
             decky.logger.exception("Failed to prepare runtime assets")
             return {"ok": False, "message": f"Could not download HDR runtime assets: {error}"}
+
+    def _install_hdr_runtime_python(self, version: str) -> None:
+        bin_dir = Path(self.bin_cache_path)
+        main_path = Path(self.main_path)
+        reshade_path = main_path / "reshade"
+        reshade_path.mkdir(parents=True, exist_ok=True)
+        (main_path / "ReShade_shaders" / "Merged" / "Shaders").mkdir(parents=True, exist_ok=True)
+        (main_path / "ReShade_shaders" / "Merged" / "Textures").mkdir(parents=True, exist_ok=True)
+        (main_path / "AutoHDR_addons").mkdir(parents=True, exist_ok=True)
+
+        installer = bin_dir / ("reshade_last_addon.exe" if version == "last" else "reshade_latest_addon.exe")
+        sevenzip = bin_dir / "7zz"
+        if not installer.exists():
+            raise FileNotFoundError(f"Missing ReShade installer: {installer}")
+        if not sevenzip.exists():
+            raise FileNotFoundError(f"Missing private 7-Zip extractor: {sevenzip}")
+
+        version_suffix = "_last_Addon" if version == "last" else "_latest_Addon"
+        target_dir = reshade_path / f"{version}{version_suffix}"
+        with tempfile.TemporaryDirectory(prefix=f"{PLUGIN_PACKAGE}-reshade-") as temp_root:
+            result = subprocess.run(
+                [str(sevenzip), "-y", "e", str(installer)],
+                cwd=temp_root,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+            if result.returncode != 0:
+                raise RuntimeError(f"Could not extract ReShade installer: {result.stderr.strip() or result.stdout.strip()}")
+
+            if target_dir.exists():
+                shutil.rmtree(target_dir)
+            target_dir.mkdir(parents=True, exist_ok=True)
+            for child in Path(temp_root).iterdir():
+                shutil.move(str(child), str(target_dir / child.name))
+
+        latest_link = reshade_path / "latest"
+        if latest_link.exists() or latest_link.is_symlink():
+            if latest_link.is_dir() and not latest_link.is_symlink():
+                shutil.rmtree(latest_link)
+            else:
+                latest_link.unlink()
+        latest_link.symlink_to(target_dir, target_is_directory=True)
+        (reshade_path / "LVERS").write_text(f"{version}{version_suffix}", encoding="utf-8")
+        (target_dir / "addon_version").touch()
+
+        self._install_optional_d3dcompiler(bin_dir, reshade_path)
+        self._install_autohdr_payloads(main_path, bin_dir)
+        self._write_default_reshade_ini(main_path)
+
+    def _install_optional_d3dcompiler(self, bin_dir: Path, reshade_path: Path) -> None:
+        compiler = bin_dir / "d3dcompiler_47.dll"
+        if not compiler.exists():
+            decky.logger.warning("d3dcompiler_47.dll not cached; relying on Proton/Wine")
+            return
+        for arch in ["32", "64"]:
+            shutil.copy2(compiler, reshade_path / f"d3dcompiler_47.dll.{arch}")
+
+    def _install_autohdr_payloads(self, main_path: Path, bin_dir: Path) -> None:
+        addon_archive = bin_dir / "autohdr_addon.tar.gz"
+        effect_archive = bin_dir / "advanced_autohdr_effect.tar.gz"
+        addon_dir = main_path / "AutoHDR_addons"
+        shader_dir = main_path / "ReShade_shaders" / "Merged" / "Shaders"
+        texture_dir = main_path / "ReShade_shaders" / "Merged" / "Textures"
+
+        if addon_archive.exists():
+            with tarfile.open(addon_archive, "r:gz") as archive:
+                archive.extractall(addon_dir)
+            for addon in addon_dir.rglob("*"):
+                lower = addon.name.lower()
+                if addon.is_file() and ("64.addon" in lower or lower.endswith(".addon64")):
+                    shutil.copy2(addon, addon_dir / "AutoHDR.addon64")
+                if addon.is_file() and ("32.addon" in lower or lower.endswith(".addon32")):
+                    shutil.copy2(addon, addon_dir / "AutoHDR.addon32")
+
+        if effect_archive.exists():
+            with tempfile.TemporaryDirectory(prefix=f"{PLUGIN_PACKAGE}-autohdr-") as temp_root:
+                temp_path = Path(temp_root)
+                with tarfile.open(effect_archive, "r:gz") as archive:
+                    archive.extractall(temp_path)
+                for path in temp_path.rglob("*"):
+                    if not path.is_file():
+                        continue
+                    if path.suffix.lower() in [".fx", ".fxh"]:
+                        shutil.copy2(path, shader_dir / path.name)
+                    elif "texture" in str(path.parent).lower():
+                        shutil.copy2(path, texture_dir / path.name)
+
+    def _write_default_reshade_ini(self, main_path: Path) -> None:
+        ini_path = main_path / "ReShade.ini"
+        if ini_path.exists():
+            return
+        wine_main_path = str(main_path).replace(f"/home/{os.environ.get('USER', 'deck')}/", "").replace("/", "\\")
+        ini_path.write_text(
+            "[GENERAL]\n"
+            f"EffectSearchPaths={wine_main_path}\\ReShade_shaders\\Merged\\Shaders\n"
+            f"TextureSearchPaths={wine_main_path}\\ReShade_shaders\\Merged\\Textures\n"
+            f"PresetPath={wine_main_path}\\ReShadePreset.ini\n",
+            encoding="utf-8",
+        )
+        try:
+            ini_path.chmod(0o666)
+        except OSError:
+            pass
 
     def _latest_reshade_addon_url(self) -> str:
         page = self._fetch_text("https://reshade.me/")
@@ -1571,7 +1670,7 @@ class Plugin:
             # Build command - if user selected a specific path, don't pass appid to prevent bash script from overriding
             cmd = ["/bin/bash", str(script_path), action, game_path, dll_override]
             if vulkan_mode:
-                cmd.extend([vulkan_mode, os.path.expanduser(f"~/.local/share/Steam/steamapps/compatdata/{appid}"), appid])
+                cmd.extend([vulkan_mode, self._deck_expanduser(f"~/.local/share/Steam/steamapps/compatdata/{appid}"), appid])
             else:
                 # For non-Vulkan mode, add empty placeholders for vulkan_mode and wineprefix
                 if using_user_selected_path:
@@ -1602,7 +1701,7 @@ class Plugin:
             
             if process.returncode != 0:
                 return {"status": "error", "message": process.stderr}
-                
+            self._fix_deck_user_ownership(game_path)
             return {"status": "success", "output": process.stdout}
         except Exception as e:
             decky.logger.error(str(e))
@@ -1650,13 +1749,6 @@ class Plugin:
             decky.logger.error(str(e))
             return {"status": "error", "games": [], "message": str(e)}
 
-    def _deck_user_home(self) -> Path:
-        for attr in ["DECKY_USER_HOME", "HOME"]:
-            value = getattr(decky, attr, "")
-            if value:
-                return Path(value)
-        return Path.home()
-
     def _steam_root_candidates(self) -> list[Path]:
         home = self._deck_user_home()
         return [
@@ -1694,7 +1786,7 @@ class Plugin:
         """Find games installed through Heroic Launcher using the config file"""
         try:
             # Read the Heroic config file to get the default install path
-            heroic_config_path = os.path.expanduser("~/.var/app/com.heroicgameslauncher.hgl/config/heroic/store/config.json")
+            heroic_config_path = self._deck_expanduser("~/.var/app/com.heroicgameslauncher.hgl/config/heroic/store/config.json")
             
             if not os.path.exists(heroic_config_path):
                 return {"status": "error", "message": "Heroic config file not found"}
@@ -1705,7 +1797,7 @@ class Plugin:
             # Get the install path from config
             default_install_path = heroic_config.get("settings", {}).get("defaultInstallPath")
             if not default_install_path:
-                default_install_path = os.path.expanduser("~/Games/Heroic")  # Fallback
+                default_install_path = self._deck_expanduser("~/Games/Heroic")  # Fallback
             
             decky.logger.info(f"Heroic games install path: {default_install_path}")
             
@@ -1753,7 +1845,7 @@ class Plugin:
                         # Find and cache the config file information if available
                         if "app_id" in game_info:
                             # Check if there's a direct config file match
-                            games_config_dir = os.path.expanduser("~/.var/app/com.heroicgameslauncher.hgl/config/heroic/GamesConfig")
+                            games_config_dir = self._deck_expanduser("~/.var/app/com.heroicgameslauncher.hgl/config/heroic/GamesConfig")
                             for config_file in os.listdir(games_config_dir):
                                 if config_file.endswith(".json"):
                                     config_file_path = os.path.join(games_config_dir, config_file)
@@ -1794,7 +1886,7 @@ class Plugin:
             decky.logger.info(f"Base folder name: {base_folder_name}")
             
             # First, try to read the Heroic config file
-            heroic_config_path = os.path.expanduser("~/.var/app/com.heroicgameslauncher.hgl/config/heroic/store/config.json")
+            heroic_config_path = self._deck_expanduser("~/.var/app/com.heroicgameslauncher.hgl/config/heroic/store/config.json")
             if os.path.exists(heroic_config_path):
                 with open(heroic_config_path, 'r', encoding='utf-8') as f:
                     heroic_config = json.load(f)
@@ -1820,7 +1912,7 @@ class Plugin:
                             decky.logger.info(f"Found appName in config.json for '{game_title}': {app_name}")
                             
                             # Now look for this appName in the GamesConfig directory
-                            games_config_dir = os.path.expanduser("~/.var/app/com.heroicgameslauncher.hgl/config/heroic/GamesConfig")
+                            games_config_dir = self._deck_expanduser("~/.var/app/com.heroicgameslauncher.hgl/config/heroic/GamesConfig")
                             for config_file in os.listdir(games_config_dir):
                                 if not config_file.endswith(".json"):
                                     continue
@@ -1842,7 +1934,7 @@ class Plugin:
                 
                 # If direct matching failed, try checking winePrefix paths in all config files
                 decky.logger.info("Trying to match using winePrefix paths...")
-                games_config_dir = os.path.expanduser("~/.var/app/com.heroicgameslauncher.hgl/config/heroic/GamesConfig")
+                games_config_dir = self._deck_expanduser("~/.var/app/com.heroicgameslauncher.hgl/config/heroic/GamesConfig")
                 
                 for config_file in os.listdir(games_config_dir):
                     if not config_file.endswith(".json"):
@@ -1929,7 +2021,7 @@ class Plugin:
                 
             if exe_files:
                 # Use all executable names for matching, not just the first one
-                games_config_dir = os.path.expanduser("~/.var/app/com.heroicgameslauncher.hgl/config/heroic/GamesConfig")
+                games_config_dir = self._deck_expanduser("~/.var/app/com.heroicgameslauncher.hgl/config/heroic/GamesConfig")
                 
                 for exe_file in exe_files:
                     # Get name without .exe extension
@@ -1984,7 +2076,7 @@ class Plugin:
                         
             # Check install path as before
             decky.logger.info("Trying to match using install path...")
-            games_config_dir = os.path.expanduser("~/.var/app/com.heroicgameslauncher.hgl/config/heroic/GamesConfig")
+            games_config_dir = self._deck_expanduser("~/.var/app/com.heroicgameslauncher.hgl/config/heroic/GamesConfig")
             for config_file in os.listdir(games_config_dir):
                 if not config_file.endswith(".json"):
                     continue
@@ -2025,9 +2117,9 @@ class Plugin:
             
             # Define paths to different store installed.json files
             installed_json_paths = {
-                "epic": os.path.expanduser("~/.var/app/com.heroicgameslauncher.hgl/config/heroic/legendaryConfig/legendary/installed.json"),
-                "gog": os.path.expanduser("~/.var/app/com.heroicgameslauncher.hgl/config/heroic/gog_store/installed.json"),
-                "amazon": os.path.expanduser("~/.var/app/com.heroicgameslauncher.hgl/config/heroic/nile_config/nile/installed.json")
+                "epic": self._deck_expanduser("~/.var/app/com.heroicgameslauncher.hgl/config/heroic/legendaryConfig/legendary/installed.json"),
+                "gog": self._deck_expanduser("~/.var/app/com.heroicgameslauncher.hgl/config/heroic/gog_store/installed.json"),
+                "amazon": self._deck_expanduser("~/.var/app/com.heroicgameslauncher.hgl/config/heroic/nile_config/nile/installed.json")
             }
             
             # Check each store's installed.json file
@@ -2140,7 +2232,7 @@ class Plugin:
 
     def _find_config_for_app_name(self, app_name: str) -> dict:
         """Find config file containing the specified app_name as a key"""
-        games_config_dir = os.path.expanduser("~/.var/app/com.heroicgameslauncher.hgl/config/heroic/GamesConfig")
+        games_config_dir = self._deck_expanduser("~/.var/app/com.heroicgameslauncher.hgl/config/heroic/GamesConfig")
         
         for config_file in os.listdir(games_config_dir):
             if not config_file.endswith(".json"):
@@ -2166,7 +2258,7 @@ class Plugin:
     async def update_heroic_config(self, config_file: str, config_key: str, dll_override: str) -> dict:
         """Update Heroic game configuration with WINEDLLOVERRIDES for ReShade"""
         try:
-            config_path = os.path.expanduser("~/.var/app/com.heroicgameslauncher.hgl/config/heroic/GamesConfig/")
+            config_path = self._deck_expanduser("~/.var/app/com.heroicgameslauncher.hgl/config/heroic/GamesConfig/")
             config_file_path = os.path.join(config_path, config_file)
             
             if not os.path.exists(config_file_path):
@@ -2471,6 +2563,7 @@ Note: If ReShadePreset.ini already existed, your previous settings were preserve
                         decky.logger.info(f"Removing existing AutoHDR addon (incompatible with {dll_override})")
                         os.remove(existing_addon)
                 
+            self._fix_deck_user_ownership(exe_dir)
             return {"status": "success", "output": f"ReShade installed successfully for Heroic game using {dll_override} override."}
         except Exception as e:
             decky.logger.error(f"Error installing ReShade for Heroic game: {str(e)}")
@@ -3440,7 +3533,7 @@ rm -f "$0"
         try:
             query = f"{game_name} RenoDX NexusMods".strip() if game_name else "RenoDX NexusMods"
             url = "https://www.google.com/search?q=" + query.replace(" ", "+")
-            clean_env = os.environ.copy()
+            clean_env = {**os.environ, **self.environment}
             clean_env["LD_LIBRARY_PATH"] = ""
             subprocess.Popen(["xdg-open", url], env=clean_env)
             return {
@@ -3457,8 +3550,8 @@ rm -f "$0"
         try:
             candidates = []
             search_dirs = [
-                Path(decky.HOME) / "Downloads",
-                Path(decky.HOME) / "downloads",
+                self._deck_user_home() / "Downloads",
+                self._deck_user_home() / "downloads",
                 Path(self.renodx_import_path),
             ]
             valid_exts = {".zip", ".7z", ".rar", ".addon64", ".addon32"}
@@ -3539,6 +3632,7 @@ rm -f "$0"
             if not copied:
                 return {"status": "error", "message": "No RenoDX addon file was copied."}
 
+            self._fix_deck_user_ownership(target_dir)
             return {
                 "status": "success",
                 "output": f"Imported RenoDX files to {game_path}",
