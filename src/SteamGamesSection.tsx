@@ -125,6 +125,7 @@ const SteamGamesSection = () => {
   const [selectedDll, setSelectedDll] = useState<DllOverride | null>(null);
   const [games, setGames] = useState<GameInfo[]>([]);
   const [result, setResult] = useState<string>('');
+  const [loadError, setLoadError] = useState<string>('');
   const [loading, setLoading] = useState<boolean>(true);
   const [executableDetection, setExecutableDetection] = useState<ExecutableDetectionResponse | null>(null);
   const [checkingExecutable, setCheckingExecutable] = useState<boolean>(false);
@@ -150,10 +151,16 @@ const SteamGamesSection = () => {
           const sortedGames = response.games
             .sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
           setGames(sortedGames);
+          setLoadError(sortedGames.length === 0 ? "No Steam games found." : "");
+        } else {
+          setGames([]);
+          setLoadError(response.message || "Could not load Steam games.");
+          toaster.toast({ title: "Steam games not found", body: response.message || "Could not load Steam games." });
         }
       } catch (error) {
         console.error('Error fetching games:', error);
         await logError(`SteamGamesSection -> fetchGames: ${String(error)}`);
+        setLoadError(String(error));
       } finally {
         setLoading(false);
       }
@@ -709,6 +716,33 @@ const SteamGamesSection = () => {
         <PanelSectionRow>
           <div>Loading Steam games...</div>
         </PanelSectionRow>
+      ) : loadError ? (
+        <>
+          <PanelSectionRow>
+            <div style={{ padding: "10px", color: "#ff8a3d" }}>{loadError}</div>
+          </PanelSectionRow>
+          <PanelSectionRow>
+            <ButtonItem
+              layout="below"
+              onClick={async () => {
+                setLoading(true);
+                setLoadError("");
+                try {
+                  const response = await listInstalledGames();
+                  if (response.status === "success") {
+                    setGames(response.games.sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase())));
+                  } else {
+                    setLoadError(response.message || "Could not load Steam games.");
+                  }
+                } finally {
+                  setLoading(false);
+                }
+              }}
+            >
+              Reload Steam Games
+            </ButtonItem>
+          </PanelSectionRow>
+        </>
       ) : (
         <>
           <PanelSectionRow>

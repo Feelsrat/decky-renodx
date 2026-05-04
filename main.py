@@ -3,6 +3,8 @@ import asyncio
 import os
 import subprocess
 import shutil
+import shlex
+import signal
 import tempfile
 import urllib.error
 import urllib.request
@@ -1577,36 +1579,26 @@ class Plugin:
 
     async def list_installed_games(self) -> dict:
         try:
-            steam_root = Path(decky.HOME) / ".steam" / "steam"
-            library_file = steam_root / "steamapps" / "libraryfolders.vdf"
+            library_file = self._find_libraryfolders_file()
+            if library_file is None:
+                checked = [str(path / "steamapps" / "libraryfolders.vdf") for path in self._steam_root_candidates()]
+                return {"status": "error", "games": [], "message": f"libraryfolders.vdf not found. Checked: {', '.join(checked)}"}
 
-            if not library_file.exists():
-                return {"status": "error", "message": "libraryfolders.vdf not found"}
-
-            library_paths = []
-            with open(library_file, "r", encoding="utf-8") as file:
-                for line in file:
-                    if '"path"' in line:
-                        path = line.split('"path"')[1].strip().strip('"').replace("\\\\", "/")
-                        library_paths.append(path)
-
+            library_paths = self._steam_library_paths(library_file)
             games = []
+            seen_appids = set()
             for library_path in library_paths:
                 steamapps_path = Path(library_path) / "steamapps"
                 if not steamapps_path.exists():
                     continue
 
                 for appmanifest in steamapps_path.glob("appmanifest_*.acf"):
-                    with open(appmanifest, "r", encoding="utf-8") as file:
-                        game_info = {"appid": None, "name": None}
-                        for line in file:
-                            if '"appid"' in line:
-                                game_info["appid"] = line.split('"appid"')[1].strip().strip('"')
-                            if '"name"' in line:
-                                game_info["name"] = line.split('"name"')[1].strip().strip('"')
-
-                        if game_info["appid"] and game_info["name"]:
-                            games.append(game_info)
+                    game_info = self._read_appmanifest(appmanifest)
+                    appid = game_info.get("appid")
+                    name = game_info.get("name")
+                    if appid and name and appid not in seen_appids:
+                        seen_appids.add(appid)
+                        games.append({"appid": appid, "name": name})
 
             # Filter out system components and redistributables that shouldn't be modded with ReShade
             filtered_games = [g for g in games if not any(exclude in g["name"] for exclude in [
@@ -1620,11 +1612,52 @@ class Plugin:
                 "OpenXR"
             ])]
             
+            filtered_games.sort(key=lambda game: game["name"].lower())
             return {"status": "success", "games": filtered_games}
 
         except Exception as e:
             decky.logger.error(str(e))
-            return {"status": "error", "message": str(e)}
+            return {"status": "error", "games": [], "message": str(e)}
+
+    def _deck_user_home(self) -> Path:
+        for attr in ["DECKY_USER_HOME", "HOME"]:
+            value = getattr(decky, attr, "")
+            if value:
+                return Path(value)
+        return Path.home()
+
+    def _steam_root_candidates(self) -> list[Path]:
+        home = self._deck_user_home()
+        return [
+            home / ".steam" / "steam",
+            home / ".local" / "share" / "Steam",
+            home / ".var" / "app" / "com.valvesoftware.Steam" / ".local" / "share" / "Steam",
+        ]
+
+    def _find_libraryfolders_file(self) -> Path | None:
+        for steam_root in self._steam_root_candidates():
+            candidate = steam_root / "steamapps" / "libraryfolders.vdf"
+            if candidate.exists():
+                return candidate
+        return None
+
+    def _steam_library_paths(self, library_file: Path) -> list[str]:
+        paths = [str(library_file.parents[1])]
+        text = library_file.read_text(encoding="utf-8", errors="ignore")
+        for match in re.finditer(r'"path"\s+"((?:\\.|[^"\\])*)"', text):
+            path = bytes(match.group(1), "utf-8").decode("unicode_escape").replace("\\\\", "/")
+            if path not in paths:
+                paths.append(path)
+        return paths
+
+    def _read_appmanifest(self, manifest_path: Path) -> dict[str, str]:
+        text = manifest_path.read_text(encoding="utf-8", errors="ignore")
+        result = {}
+        for key in ["appid", "name", "installdir"]:
+            match = re.search(rf'"{key}"\s+"((?:\\.|[^"\\])*)"', text)
+            if match:
+                result[key] = bytes(match.group(1), "utf-8").decode("unicode_escape")
+        return result
 
     async def find_heroic_games(self) -> dict:
         """Find games installed through Heroic Launcher using the config file"""
@@ -3299,18 +3332,58 @@ Note: If ReShadePreset.ini already existed, your previous settings were preserve
         decky.logger.info("Scheduling Decky Loader restart: %s", reason)
         unit = f"{PLUGIN_PACKAGE}-restart-{int(time.time())}"
         commands = [
-            ["systemd-run", "--user", "--on-active=2", f"--unit={unit}", "systemctl", "--user", "restart", "plugin_loader.service"],
-            ["systemd-run", "--on-active=2", f"--unit={unit}", "systemctl", "restart", "plugin_loader.service"],
+            {
+                "method": "systemd-run-user",
+                "argv": ["systemd-run", "--user", "--on-active=2", f"--unit={unit}", "systemctl", "--user", "restart", "plugin_loader.service"],
+            },
+            {
+                "method": "systemd-run-system",
+                "argv": ["systemd-run", "--on-active=2", f"--unit={unit}", "systemctl", "restart", "plugin_loader.service"],
+            },
         ]
-        for argv in commands:
+        for command in commands:
             try:
-                result = subprocess.run(argv, check=False, capture_output=True, text=True, timeout=5)
+                result = subprocess.run(command["argv"], check=False, capture_output=True, text=True, timeout=5)
             except (OSError, subprocess.TimeoutExpired) as error:
-                decky.logger.warning("Restart scheduling failed: %s", error)
+                decky.logger.warning("%s restart scheduling failed: %s", command["method"], error)
                 continue
             if result.returncode == 0:
-                return {"scheduled": True, "method": argv[0], "message": "Decky Loader restart scheduled."}
+                return {"scheduled": True, "method": command["method"], "message": "Decky Loader restart scheduled."}
+            decky.logger.warning("%s exited %s: %s", command["method"], result.returncode, result.stderr.strip()[-160:])
+
+        fallback = self._schedule_loader_restart_helper()
+        if fallback["scheduled"]:
+            return fallback
         return {"scheduled": False, "method": "", "message": "Could not schedule Decky Loader restart."}
+
+    def _schedule_loader_restart_helper(self) -> dict[str, Any]:
+        helper_path = Path(tempfile.gettempdir()) / f"{PLUGIN_PACKAGE}-restart-{os.getpid()}-{int(time.time())}.sh"
+        helper = """#!/usr/bin/env bash
+sleep 2
+systemctl --user restart plugin_loader.service \
+  || systemctl --user restart plugin_loader \
+  || systemctl restart plugin_loader.service \
+  || systemctl restart plugin_loader
+rm -f "$0"
+"""
+        try:
+            helper_path.write_text(helper, encoding="utf-8")
+            helper_path.chmod(0o755)
+            command = f"nohup {shlex.quote(str(helper_path))} >/dev/null 2>&1 &"
+            result = subprocess.run(["bash", "-lc", command], check=False, capture_output=True, text=True, timeout=5)
+        except (OSError, subprocess.TimeoutExpired) as error:
+            decky.logger.warning("Helper restart scheduling failed: %s", error)
+            return {"scheduled": False, "method": "helper", "message": str(error)}
+
+        if result.returncode != 0:
+            decky.logger.warning("Helper restart scheduling exited %s: %s", result.returncode, result.stderr.strip()[-160:])
+            try:
+                helper_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return {"scheduled": False, "method": "helper", "message": result.stderr.strip()[-160:]}
+
+        return {"scheduled": True, "method": "helper", "message": "Decky Loader restart helper started."}
 
     def _cleanup_previous_update_artifacts(self) -> None:
         plugin_dir = Path(decky.DECKY_PLUGIN_DIR)

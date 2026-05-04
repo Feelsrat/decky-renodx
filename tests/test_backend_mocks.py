@@ -107,6 +107,51 @@ class BackendMockTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue((game_dir / "renodx-test.addon64").exists())
         self.assertIn("DXVK_HDR=1", result["launch_options"])
 
+    async def test_list_installed_games_parses_steam_libraries(self):
+        plugin = self.module.Plugin()
+        steamapps = self.home / ".local" / "share" / "Steam" / "steamapps"
+        steamapps.mkdir(parents=True)
+        (steamapps / "libraryfolders.vdf").write_text(
+            '"libraryfolders"\n{\n\t"0"\n\t{\n\t\t"path"\t\t"' + str(self.home / ".local" / "share" / "Steam").replace("\\", "\\\\") + '"\n\t}\n}\n',
+            encoding="utf-8",
+        )
+        (steamapps / "appmanifest_123.acf").write_text(
+            '"AppState"\n{\n\t"appid"\t\t"123"\n\t"name"\t\t"Example Game"\n\t"installdir"\t\t"Example Game"\n}\n',
+            encoding="utf-8",
+        )
+
+        result = await plugin.list_installed_games()
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["games"], [{"appid": "123", "name": "Example Game"}])
+
+    async def test_restart_uses_helper_when_systemd_run_fails(self):
+        plugin = self.module.Plugin()
+        calls = []
+
+        class Result:
+            def __init__(self, returncode):
+                self.returncode = returncode
+                self.stderr = "failed"
+
+        original_run = self.module.subprocess.run
+
+        def fake_run(argv, **kwargs):
+            calls.append(argv)
+            if argv[:2] == ["bash", "-lc"]:
+                return Result(0)
+            return Result(1)
+
+        self.module.subprocess.run = fake_run
+        try:
+            result = plugin._schedule_loader_restart("test")
+        finally:
+            self.module.subprocess.run = original_run
+
+        self.assertTrue(result["scheduled"])
+        self.assertEqual(result["method"], "helper")
+        self.assertTrue(any(call[:2] == ["bash", "-lc"] for call in calls))
+
 
 if __name__ == "__main__":
     unittest.main()
