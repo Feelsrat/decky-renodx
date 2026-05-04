@@ -350,11 +350,6 @@ setup_game_reshade() {
 
     # Check d3dcompiler
     local d3dcompiler="$RESHADE_PATH/d3dcompiler_47.dll.${arch}"
-    if [ ! -f "$d3dcompiler" ]; then
-        log_message "Error: d3dcompiler_47.dll not found for $arch-bit"
-        log_message "Looking for: $d3dcompiler"
-        return 1
-    fi
 
     # Create symbolic links
     log_message "Creating symbolic links..."
@@ -367,12 +362,15 @@ setup_game_reshade() {
         return 1
     fi
     
-    # Link d3dcompiler
-    log_message "Linking d3dcompiler: $d3dcompiler"
-    [ -L "$game_path/d3dcompiler_47.dll" ] && unlink "$game_path/d3dcompiler_47.dll"
-    if ! ln -sfv "$d3dcompiler" "$game_path/d3dcompiler_47.dll"; then
-        log_message "Failed to create d3dcompiler symlink"
-        return 1
+    if [ -f "$d3dcompiler" ]; then
+        log_message "Linking d3dcompiler: $d3dcompiler"
+        [ -L "$game_path/d3dcompiler_47.dll" ] && unlink "$game_path/d3dcompiler_47.dll"
+        if ! ln -sfv "$d3dcompiler" "$game_path/d3dcompiler_47.dll"; then
+            log_message "Failed to create d3dcompiler symlink"
+            return 1
+        fi
+    else
+        log_message "d3dcompiler_47.dll not found; relying on Proton/Wine"
     fi
     
     # Link shader directory

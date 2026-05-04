@@ -19,7 +19,7 @@ elif [[ "$SCRIPT_DIR" == */assets ]]; then
 else
     PLUGIN_ROOT="$(dirname "$SCRIPT_DIR")"
 fi
-BIN_PATH="$PLUGIN_ROOT/bin"
+BIN_PATH=${BIN_PATH:-"$PLUGIN_ROOT/bin"}
 
 log_message() {
     echo "[DEBUG] $1" >&2
@@ -57,8 +57,8 @@ setup_d3dcompiler() {
     [[ -f $target_file ]] && return
 
     if [[ ! -f "$BIN_PATH/d3dcompiler_47.dll" ]]; then
-        log_message "Error: d3dcompiler_47.dll not found in bin directory"
-        exit 1
+        log_message "Warning: d3dcompiler_47.dll not found; relying on Proton/Wine d3dcompiler"
+        return
     fi
 
     cp "$BIN_PATH/d3dcompiler_47.dll" "$target_file"
@@ -127,6 +127,8 @@ setup_autohdr() {
 
     if [[ -f "$BIN_PATH/autohdr_addon.tar.gz" ]]; then
         tar -xzf "$BIN_PATH/autohdr_addon.tar.gz" -C "$MAIN_PATH/AutoHDR_addons/"
+        find "$MAIN_PATH/AutoHDR_addons" -type f \( -iname "*64.addon" -o -iname "*.addon64" \) -exec cp {} "$MAIN_PATH/AutoHDR_addons/AutoHDR.addon64" \; 2>/dev/null || true
+        find "$MAIN_PATH/AutoHDR_addons" -type f \( -iname "*32.addon" -o -iname "*.addon32" \) -exec cp {} "$MAIN_PATH/AutoHDR_addons/AutoHDR.addon32" \; 2>/dev/null || true
     else
         log_message "Warning: autohdr_addon.tar.gz not found in bin directory"
     fi

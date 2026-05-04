@@ -13,6 +13,7 @@ import glob
 import re
 import time
 import zipfile
+import tarfile
 
 try:
     import ssl
@@ -47,6 +48,7 @@ class Plugin:
         # Main paths for ReShade
         self.main_path = runtime_path
         self.renodx_import_path = os.path.join(self.environment['XDG_DATA_HOME'], 'decky-renodx', 'imports')
+        self.bin_cache_path = os.path.join(self.environment['XDG_DATA_HOME'], 'decky-renodx', 'bin')
         
         # Cache for executable paths
         self.executable_cache = {}
@@ -59,6 +61,7 @@ class Plugin:
         # Create necessary directories
         os.makedirs(self.main_path, exist_ok=True)
         os.makedirs(self.renodx_import_path, exist_ok=True)
+        os.makedirs(self.bin_cache_path, exist_ok=True)
 
     def _get_assets_dir(self) -> Path:
         """Get the assets directory, checking both possible locations"""
@@ -1286,6 +1289,10 @@ class Plugin:
                 decky.logger.error(f"Install script not found: {script_path}")
                 return {"status": "error", "message": "Install script not found"}
 
+            asset_result = self._ensure_runtime_assets()
+            if not asset_result["ok"]:
+                return {"status": "error", "message": asset_result["message"]}
+
             # Create a new environment dictionary for this installation
             install_env = self.environment.copy()
             
@@ -1301,7 +1308,8 @@ class Plugin:
             install_env.update({
                 'LD_LIBRARY_PATH': '/usr/lib',
                 'XDG_DATA_HOME': self.environment['XDG_DATA_HOME'],
-                'MAIN_PATH': self.main_path
+                'MAIN_PATH': self.main_path,
+                'BIN_PATH': self.bin_cache_path
             })
 
             install_description = f"Installing ReShade {version}"
@@ -1408,6 +1416,82 @@ class Plugin:
         except Exception as e:
             decky.logger.error(str(e))
             return {"status": "error", "message": str(e)}
+
+    def _ensure_runtime_assets(self) -> dict[str, Any]:
+        try:
+            bin_dir = Path(self.bin_cache_path)
+            bin_dir.mkdir(parents=True, exist_ok=True)
+
+            reshade_target = bin_dir / "reshade_latest_addon.exe"
+            if not reshade_target.exists() or reshade_target.stat().st_size < 1024 * 1024:
+                url = self._latest_reshade_addon_url()
+                self._download_url(url, reshade_target)
+            last_target = bin_dir / "reshade_last_addon.exe"
+            if not last_target.exists():
+                shutil.copy2(reshade_target, last_target)
+
+            autohdr_archive = bin_dir / "autohdr_addon.tar.gz"
+            advanced_archive = bin_dir / "advanced_autohdr_effect.tar.gz"
+            if not autohdr_archive.exists() or not advanced_archive.exists():
+                self._download_autohdr_payloads(bin_dir, autohdr_archive, advanced_archive)
+
+            return {"ok": True, "message": "Runtime assets are ready."}
+        except Exception as error:
+            decky.logger.exception("Failed to prepare runtime assets")
+            return {"ok": False, "message": f"Could not download HDR runtime assets: {error}"}
+
+    def _latest_reshade_addon_url(self) -> str:
+        page = self._fetch_text("https://reshade.me/")
+        if page:
+            match = re.search(r'https://reshade\.me/downloads/ReShade_Setup_[^"\']+_Addon\.exe', page)
+            if match:
+                return match.group(0)
+            match = re.search(r'downloads/(ReShade_Setup_[0-9.]+_Addon\.exe)', page)
+            if match:
+                return f"https://reshade.me/downloads/{match.group(1)}"
+
+        # Stable fallback if the homepage changes format.
+        return "https://reshade.me/downloads/ReShade_Setup_6.5.1_Addon.exe"
+
+    def _download_autohdr_payloads(self, bin_dir: Path, autohdr_archive: Path, advanced_archive: Path) -> None:
+        source_zip = bin_dir / "AutoHDR-ReShade-main.zip"
+        self._download_url("https://github.com/MajorPainTheCactus/AutoHDR-ReShade/archive/refs/heads/main.zip", source_zip)
+
+        extract_dir = bin_dir / "AutoHDR-ReShade-main"
+        if extract_dir.exists():
+            shutil.rmtree(extract_dir)
+        with zipfile.ZipFile(source_zip) as archive:
+            self._safe_extract(archive, extract_dir)
+
+        files = [path for path in extract_dir.rglob("*") if path.is_file()]
+        addon_files = [path for path in files if path.name.lower().endswith((".addon", ".addon32", ".addon64")) or ".addon" in path.name.lower()]
+        shader_files = [path for path in files if path.suffix.lower() in [".fx", ".fxh"]]
+
+        if not addon_files:
+            raise FileNotFoundError("AutoHDR add-on files were not found in downloaded archive")
+        if not shader_files:
+            raise FileNotFoundError("AutoHDR shader files were not found in downloaded archive")
+
+        with tarfile.open(autohdr_archive, "w:gz") as tar:
+            for path in addon_files:
+                tar.add(path, arcname=path.name)
+
+        with tarfile.open(advanced_archive, "w:gz") as tar:
+            for path in shader_files:
+                tar.add(path, arcname=f"Shaders/{path.name}")
+
+    def _fetch_text(self, url: str) -> str:
+        try:
+            request = urllib.request.Request(url, headers={"User-Agent": PLUGIN_PACKAGE})
+            with urllib.request.urlopen(request, timeout=15) as response:
+                return response.read().decode("utf-8", "ignore")
+        except Exception as error:
+            decky.logger.warning("Fetch text failed for %s: %s", url, error)
+            return ""
+
+    def _download_url(self, url: str, target: Path) -> None:
+        request = urllib.request.Request(url, headers={"User-Agent": PLUGIN_PACKAGE})
+        self._download_file(request, target)
 
     async def manage_game_reshade(self, appid: str, action: str, dll_override: str = "dxgi", vulkan_mode: str = "", selected_executable_path: str = "") -> dict:
         try:
