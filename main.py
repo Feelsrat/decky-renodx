@@ -17,6 +17,10 @@ import time
 import zipfile
 import tarfile
 import platform
+try:
+    import pwd
+except ImportError:
+    pwd = None
 
 try:
     import ssl
@@ -34,7 +38,7 @@ RUNTIME_RELATIVE_PATH = "decky-renodx/reshade"
 class Plugin:
     def __init__(self):
         deck_user_home = self._deck_user_home()
-        deck_user = getattr(decky, "DECKY_USER", "") or deck_user_home.name or "deck"
+        deck_user = self._deck_user(deck_user_home)
         xdg_data_home = str(deck_user_home / ".local" / "share")
         runtime_path = os.path.join(xdg_data_home, RUNTIME_RELATIVE_PATH)
         self.environment = {
@@ -70,9 +74,29 @@ class Plugin:
         os.makedirs(self.main_path, exist_ok=True)
         os.makedirs(self.renodx_import_path, exist_ok=True)
         os.makedirs(self.bin_cache_path, exist_ok=True)
+        self._fix_deck_user_ownership(Path(xdg_data_home) / PLUGIN_PACKAGE)
+
+    def _deck_user(self, home: Path | None = None) -> str:
+        value = getattr(decky, "DECKY_USER", "") or os.environ.get("SUDO_USER") or ""
+        if value and value != "root":
+            return value
+        if home is not None and home.name and home.name != "root":
+            return home.name
+        return "deck"
 
     def _deck_user_home(self) -> Path:
-        for attr in ["DECKY_USER_HOME", "HOME"]:
+        deck_user_home = getattr(decky, "DECKY_USER_HOME", "")
+        if deck_user_home and deck_user_home != "/root":
+            return Path(deck_user_home)
+
+        deck_user = getattr(decky, "DECKY_USER", "") or os.environ.get("SUDO_USER") or ""
+        if deck_user and deck_user != "root" and pwd is not None:
+            try:
+                return Path(pwd.getpwnam(deck_user).pw_dir)
+            except KeyError:
+                pass
+
+        for attr in ["HOME"]:
             value = getattr(decky, attr, "")
             if value and value != "/root":
                 return Path(value)
@@ -89,7 +113,7 @@ class Plugin:
         return os.path.expanduser(path)
 
     def _fix_deck_user_ownership(self, path: Path | str) -> None:
-        deck_user = getattr(decky, "DECKY_USER", "") or self.environment.get("USER", "deck")
+        deck_user = self._deck_user()
         if not deck_user or deck_user == "root":
             return
         target = Path(path)
@@ -1535,7 +1559,13 @@ class Plugin:
         ini_path = main_path / "ReShade.ini"
         if ini_path.exists():
             return
-        wine_main_path = str(main_path).replace(f"/home/{os.environ.get('USER', 'deck')}/", "").replace("/", "\\")
+        deck_home = str(self._deck_user_home()).rstrip("/")
+        main_path_string = str(main_path)
+        if main_path_string.startswith(deck_home + "/"):
+            wine_main_path = main_path_string[len(deck_home) + 1:]
+        else:
+            wine_main_path = main_path_string
+        wine_main_path = wine_main_path.replace("/", "\\")
         ini_path.write_text(
             "[GENERAL]\n"
             f"EffectSearchPaths={wine_main_path}\\ReShade_shaders\\Merged\\Shaders\n"

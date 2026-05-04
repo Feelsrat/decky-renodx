@@ -136,6 +136,15 @@ class BackendMockTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(plugin.main_path.startswith(str(self.home)))
         self.assertNotIn("/root", plugin.main_path)
 
+    async def test_decky_user_home_takes_priority_over_effective_home(self):
+        self.module.decky.HOME = "/root"
+        self.module.decky.DECKY_USER = "yuri"
+        self.module.decky.DECKY_USER_HOME = str(self.home)
+        plugin = self.module.Plugin()
+
+        self.assertEqual(plugin.environment["USER"], "yuri")
+        self.assertEqual(plugin.environment["HOME"], str(self.home))
+
     async def test_restart_uses_helper_when_systemd_run_fails(self):
         plugin = self.module.Plugin()
         calls = []
