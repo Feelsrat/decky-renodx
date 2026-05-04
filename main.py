@@ -1111,97 +1111,8 @@ class Plugin:
             return {"status": "error", "message": str(e)}
 
     async def get_available_shaders(self) -> dict:
-        """Get list of available shader packages for selection"""
-        try:
-            # Get the bin directory path
-            plugin_dir = Path(decky.DECKY_PLUGIN_DIR)
-            
-            # Check both possible locations for bin directory
-            defaults_bin = plugin_dir / "defaults" / "bin"
-            assets_bin = plugin_dir / "bin"
-            
-            bin_path = None
-            if defaults_bin.exists():
-                bin_path = defaults_bin
-            elif assets_bin.exists():
-                bin_path = assets_bin
-            else:
-                return {"status": "error", "message": "Bin directory not found"}
-
-            # Define available shader packages with descriptions
-            shader_packages = [
-                {
-                    "id": "reshade_shaders",
-                    "name": "ReShade Community Shaders",
-                    "description": "Official ReShade community shader collection",
-                    "file": "reshade_shaders.tar.gz",
-                    "size_mb": "~15MB",
-                    "enabled": True
-                },
-                {
-                    "id": "sweetfx_shaders", 
-                    "name": "SweetFX Shaders",
-                    "description": "Popular SweetFX shader effects collection",
-                    "file": "sweetfx_shaders.tar.gz",
-                    "size_mb": "~8MB",
-                    "enabled": True
-                },
-                {
-                    "id": "martymc_shaders",
-                    "name": "MartyMcFly's RT Shaders",
-                    "description": "High-quality ray tracing and lighting effects",
-                    "file": "martymc_shaders.tar.gz", 
-                    "size_mb": "~12MB",
-                    "enabled": True
-                },
-                {
-                    "id": "astrayfx_shaders",
-                    "name": "AstrayFX Shaders",
-                    "description": "Performance-focused shader collection",
-                    "file": "astrayfx_shaders.tar.gz",
-                    "size_mb": "~5MB", 
-                    "enabled": True
-                },
-                {
-                    "id": "prod80_shaders",
-                    "name": "Prod80's Shaders",
-                    "description": "Professional color grading and enhancement shaders",
-                    "file": "prod80_shaders.tar.gz",
-                    "size_mb": "~6MB",
-                    "enabled": True
-                },
-                {
-                    "id": "retroarch_shaders",
-                    "name": "RetroArch Shaders",
-                    "description": "Retro gaming and CRT emulation effects",
-                    "file": "retroarch_shaders.tar.gz",
-                    "size_mb": "~10MB",
-                    "enabled": True
-                }
-            ]
-
-            # Check which shader packages actually exist
-            available_shaders = []
-            for shader in shader_packages:
-                shader_file = bin_path / shader["file"]
-                if shader_file.exists():
-                    # Get actual file size
-                    file_size = shader_file.stat().st_size
-                    size_mb = round(file_size / (1024 * 1024), 1)
-                    shader["size_mb"] = f"{size_mb}MB"
-                    available_shaders.append(shader)
-                else:
-                    decky.logger.warning(f"Shader package not found: {shader_file}")
-
-            return {
-                "status": "success",
-                "shaders": available_shaders,
-                "total_count": len(available_shaders)
-            }
-
-        except Exception as e:
-            decky.logger.error(f"Error getting available shaders: {str(e)}")
-            return {"status": "error", "message": str(e)}
+        """HDR-only fork: broad ReShade shader package selection is disabled."""
+        return {"status": "success", "shaders": [], "total_count": 0}
 
     async def detect_steam_deck_model(self) -> dict:
         """Detect Steam Deck model (OLED vs LCD) using board name"""
@@ -1353,15 +1264,8 @@ class Plugin:
             install_env['RESHADE_VERSION'] = version
             install_env['AUTOHDR_ENABLED'] = '1' if with_autohdr else '0'
             
-            # Set selected shaders (if provided)
-            if selected_shaders is not None:
-                # Convert selected shaders list to comma-separated string
-                selected_shader_ids = ','.join(selected_shaders) if selected_shaders else ''
-                install_env['SELECTED_SHADERS'] = selected_shader_ids
-                decky.logger.info(f"Selected shader packages: {selected_shader_ids}")
-            else:
-                # Install all shaders (default behavior)
-                install_env['SELECTED_SHADERS'] = 'all'
+            # HDR-only fork: never install the broad ReShade shader packs copied from LetMeReShade.
+            install_env['SELECTED_SHADERS'] = 'autohdr'
             
             # Add other necessary environment variables
             install_env.update({
@@ -1374,8 +1278,7 @@ class Plugin:
                 install_description += " with addon support"
             if with_autohdr:
                 install_description += " and AutoHDR components"
-            if selected_shaders and selected_shaders != ['all']:
-                install_description += f" with {len(selected_shaders)} shader packages"
+            install_description += " with HDR-only payload"
             
             decky.logger.info(install_description)
             decky.logger.info(f"Environment: {install_env}")
@@ -1417,7 +1320,7 @@ class Plugin:
             marker_file.touch()
 
             # Save the installed configuration
-            await self.save_installed_configuration(with_addon, version, with_autohdr, selected_shaders)
+            await self.save_installed_configuration(with_addon, version, with_autohdr, ["autohdr"])
 
             # Clear executable cache since new installation might affect detection
             self.executable_cache.clear()
@@ -1428,8 +1331,7 @@ class Plugin:
                 version_display += ' (with Addon Support)'
             if with_autohdr:
                 version_display += ' and AutoHDR components'
-            if selected_shaders and selected_shaders != ['all']:
-                version_display += f' with {len(selected_shaders)} shader packages'
+            version_display += ' with HDR-only payload'
             
             return {"status": "success", "output": f"{version_display} installed successfully!"}
         except Exception as e:
