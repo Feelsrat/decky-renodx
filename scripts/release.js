@@ -9,10 +9,29 @@ const __dirname = dirname(__filename);
 const rootDir = join(__dirname, "..");
 const zipFilename = "decky-renodx.zip";
 
+function printUsage() {
+  console.log(`Usage:
+  pnpm run release              Run tests, bump patch, build, package, publish release
+  pnpm run release -- --private Run the same flow but create a draft/private review release
+  pnpm run release -- --draft   Alias for --private
+`);
+}
+
 function parseArgs(argv) {
-  return {
-    draft: argv.includes("--private") || argv.includes("--draft"),
-  };
+  const options = { draft: false };
+  for (const arg of argv) {
+    if (arg === "--private" || arg === "--draft") {
+      options.draft = true;
+    } else if (arg === "--help" || arg === "-h") {
+      printUsage();
+      process.exit(0);
+    } else {
+      console.error(`Unknown release option: ${arg}`);
+      printUsage();
+      process.exit(1);
+    }
+  }
+  return options;
 }
 
 function bumpVersion() {
@@ -46,6 +65,7 @@ function run(command) {
 }
 
 function publish(version, draft) {
+  execSync("gh auth status", { cwd: rootDir, stdio: "ignore" });
   const tagName = `v${version}`;
   const args = [
     "release",
@@ -70,6 +90,9 @@ function publish(version, draft) {
 
 function main() {
   const options = parseArgs(process.argv.slice(2));
+  if (options.draft) {
+    console.log("Private review mode: creating a draft GitHub release.");
+  }
   const version = bumpVersion();
   run("pnpm run test");
   cleanup();

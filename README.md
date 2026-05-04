@@ -49,6 +49,6 @@ pnpm run package
 pnpm run release -- --draft
 ```
 
-The release script bumps `package.json`, runs validation, builds `dist`, creates `decky-renodx.zip`, and publishes it as a GitHub release asset for the in-plugin updater.
+Use `--private` or `--draft` to create a draft/private-review GitHub release. The release script bumps `package.json`, runs validation, builds `dist`, creates `decky-renodx.zip`, and publishes it as a GitHub release asset for the in-plugin updater.
 
 Private repo: `https://github.com/Feelsrat/decky-renodx`
