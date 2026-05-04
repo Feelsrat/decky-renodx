@@ -5,6 +5,7 @@ import tempfile
 import types
 import unittest
 import zipfile
+import tarfile
 from pathlib import Path
 
 
@@ -144,6 +145,39 @@ class BackendMockTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(plugin.environment["USER"], "yuri")
         self.assertEqual(plugin.environment["HOME"], str(self.home))
+
+    async def test_reshade_ini_skips_tutorial(self):
+        plugin = self.module.Plugin()
+        ini = self.home / "ReShade.ini"
+        ini.write_text("[GENERAL]\nEffectSearchPaths=.\n", encoding="utf-8")
+
+        plugin._ensure_reshade_tutorial_skipped(ini)
+
+        self.assertIn("TutorialProgress=4", ini.read_text(encoding="utf-8"))
+
+    async def test_autohdr_payload_keeps_reshade_addon_names(self):
+        plugin = self.module.Plugin()
+        bin_dir = self.home / "bin"
+        main_path = self.home / "runtime"
+        bin_dir.mkdir()
+        (main_path / "AutoHDR_addons").mkdir(parents=True)
+        (main_path / "ReShade_shaders" / "Merged" / "Shaders").mkdir(parents=True)
+        (main_path / "ReShade_shaders" / "Merged" / "Textures").mkdir(parents=True)
+        source = self.home / "payload"
+        source.mkdir()
+        (source / "AutoHDR32.addon").write_text("32", encoding="utf-8")
+        (source / "AutoHDR64.addon").write_text("64", encoding="utf-8")
+        (source / "AutoHDR.fx").write_text("fx", encoding="utf-8")
+        with tarfile.open(bin_dir / "autohdr_addon.tar.gz", "w:gz") as archive:
+            archive.add(source / "AutoHDR32.addon", arcname="AutoHDR32.addon")
+            archive.add(source / "AutoHDR64.addon", arcname="AutoHDR64.addon")
+        with tarfile.open(bin_dir / "advanced_autohdr_effect.tar.gz", "w:gz") as archive:
+            archive.add(source / "AutoHDR.fx", arcname="Shaders/AutoHDR.fx")
+
+        plugin._install_autohdr_payloads(main_path, bin_dir)
+
+        for name in ["AutoHDR32.addon", "AutoHDR64.addon", "AutoHDR.addon32", "AutoHDR.addon64"]:
+            self.assertTrue((main_path / "AutoHDR_addons" / name).exists())
 
     async def test_restart_uses_helper_when_systemd_run_fails(self):
         plugin = self.module.Plugin()

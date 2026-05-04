@@ -386,6 +386,11 @@ setup_game_reshade() {
     # Link ReShade.ini
     if [ "$GLOBAL_INI" != "0" ] && [ -f "$MAIN_PATH/$GLOBAL_INI" ]; then
         log_message "Linking ReShade.ini"
+        if grep -qi "^TutorialProgress=" "$MAIN_PATH/$GLOBAL_INI"; then
+            sed -i 's/^TutorialProgress=.*/TutorialProgress=4/I' "$MAIN_PATH/$GLOBAL_INI"
+        else
+            sed -i '/^\[GENERAL\]/a TutorialProgress=4' "$MAIN_PATH/$GLOBAL_INI"
+        fi
         [ -L "$game_path/ReShade.ini" ] && unlink "$game_path/ReShade.ini"
         if ! ln -sfv "$MAIN_PATH/$GLOBAL_INI" "$game_path/ReShade.ini"; then
             log_message "Failed to create ini symlink"
@@ -411,10 +416,11 @@ setup_game_reshade() {
     esac
     
     if [ "$autohdr_compatible" = true ]; then
-        local autohdr_addon="$MAIN_PATH/AutoHDR_addons/AutoHDR.addon${arch}"
+        local autohdr_addon="$MAIN_PATH/AutoHDR_addons/AutoHDR${arch}.addon"
         if [ -f "$autohdr_addon" ]; then
             log_message "Copying AutoHDR addon for ${arch}-bit architecture (API: $dll_override)"
-            if cp "$autohdr_addon" "$game_path/AutoHDR.addon${arch}"; then
+            if cp "$autohdr_addon" "$game_path/AutoHDR${arch}.addon"; then
+                cp "$autohdr_addon" "$game_path/AutoHDR.addon${arch}" 2>/dev/null || true
                 log_message "AutoHDR addon copied successfully"
             else
                 log_message "Warning: Failed to copy AutoHDR addon"
@@ -425,10 +431,7 @@ setup_game_reshade() {
     else
         log_message "Skipping AutoHDR addon installation for API: $dll_override"
         # Remove any existing AutoHDR addon files if they exist from previous installations
-        if [ -f "$game_path/AutoHDR.addon${arch}" ]; then
-            log_message "Removing existing AutoHDR addon (incompatible with $dll_override)"
-            rm -f "$game_path/AutoHDR.addon${arch}"
-        fi
+        rm -f "$game_path/AutoHDR.addon${arch}" "$game_path/AutoHDR${arch}.addon"
     fi
     
     # Handle ReShadePreset.ini - preserve existing user settings
@@ -476,8 +479,8 @@ EOF
     
     # Check if AutoHDR was actually installed
     local autohdr_status=""
-    if [ -f "$game_path/AutoHDR.addon${arch}" ]; then
-        autohdr_status="- AutoHDR.addon$arch: AutoHDR addon (DirectX 10/11/12 compatible)"
+    if [ -f "$game_path/AutoHDR${arch}.addon" ] || [ -f "$game_path/AutoHDR.addon${arch}" ]; then
+        autohdr_status="- AutoHDR${arch}.addon: AutoHDR addon (DirectX 10/11/12 compatible)"
     else
         case "$dll_override" in
             "dxgi"|"d3d11"|"d3d12")

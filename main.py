@@ -1538,9 +1538,11 @@ class Plugin:
             for addon in addon_dir.rglob("*"):
                 lower = addon.name.lower()
                 if addon.is_file() and ("64.addon" in lower or lower.endswith(".addon64")):
-                    shutil.copy2(addon, addon_dir / "AutoHDR.addon64")
+                    self._copy_if_different(addon, addon_dir / "AutoHDR64.addon")
+                    self._copy_if_different(addon, addon_dir / "AutoHDR.addon64")
                 if addon.is_file() and ("32.addon" in lower or lower.endswith(".addon32")):
-                    shutil.copy2(addon, addon_dir / "AutoHDR.addon32")
+                    self._copy_if_different(addon, addon_dir / "AutoHDR32.addon")
+                    self._copy_if_different(addon, addon_dir / "AutoHDR.addon32")
 
         if effect_archive.exists():
             with tempfile.TemporaryDirectory(prefix=f"{PLUGIN_PACKAGE}-autohdr-") as temp_root:
@@ -1555,9 +1557,18 @@ class Plugin:
                     elif "texture" in str(path.parent).lower():
                         shutil.copy2(path, texture_dir / path.name)
 
+    def _copy_if_different(self, source: Path, target: Path) -> None:
+        try:
+            if source.resolve() == target.resolve():
+                return
+        except OSError:
+            pass
+        shutil.copy2(source, target)
+
     def _write_default_reshade_ini(self, main_path: Path) -> None:
         ini_path = main_path / "ReShade.ini"
         if ini_path.exists():
+            self._ensure_reshade_tutorial_skipped(ini_path)
             return
         deck_home = str(self._deck_user_home()).rstrip("/")
         main_path_string = str(main_path)
@@ -1569,6 +1580,7 @@ class Plugin:
         ini_path.write_text(
             "[GENERAL]\n"
             f"EffectSearchPaths={wine_main_path}\\ReShade_shaders\\Merged\\Shaders\n"
+            "TutorialProgress=4\n"
             f"TextureSearchPaths={wine_main_path}\\ReShade_shaders\\Merged\\Textures\n"
             f"PresetPath={wine_main_path}\\ReShadePreset.ini\n",
             encoding="utf-8",
@@ -1577,6 +1589,20 @@ class Plugin:
             ini_path.chmod(0o666)
         except OSError:
             pass
+
+    def _ensure_reshade_tutorial_skipped(self, ini_path: Path) -> None:
+        try:
+            text = ini_path.read_text(encoding="utf-8", errors="ignore") if ini_path.exists() else ""
+            if "[GENERAL]" not in text:
+                text = "[GENERAL]\nTutorialProgress=4\n" + text
+            elif re.search(r"(?im)^TutorialProgress\s*=", text):
+                text = re.sub(r"(?im)^TutorialProgress\s*=.*$", "TutorialProgress=4", text)
+            else:
+                text = re.sub(r"(?im)^\[GENERAL\]\s*$", "[GENERAL]\nTutorialProgress=4", text, count=1)
+            ini_path.write_text(text, encoding="utf-8")
+            ini_path.chmod(0o666)
+        except OSError as error:
+            decky.logger.warning("Could not update ReShade tutorial state for %s: %s", ini_path, error)
 
     def _latest_reshade_addon_url(self) -> str:
         page = self._fetch_text("https://reshade.me/")
@@ -2568,17 +2594,22 @@ Note: If ReShadePreset.ini already existed, your previous settings were preserve
             
             # Set proper permissions for README (read/write for all)
             os.chmod(readme_path, 0o666)
+
+            self._ensure_reshade_tutorial_skipped(Path(exe_dir) / "ReShade.ini")
             
             # Copy AutoHDR addon files if available AND compatible with the selected API
             autohdr_compatible = dll_override.lower() in ['dxgi', 'd3d11', 'd3d12']
             
             if autohdr_compatible:
-                autohdr_addon_path = os.path.join(self.main_path, "AutoHDR_addons", f"AutoHDR.addon{arch}")
+                autohdr_addon_path = os.path.join(self.main_path, "AutoHDR_addons", f"AutoHDR{arch}.addon")
                 if os.path.exists(autohdr_addon_path):
-                    autohdr_dst = os.path.join(exe_dir, f"AutoHDR.addon{arch}")
+                    autohdr_dst = os.path.join(exe_dir, f"AutoHDR{arch}.addon")
                     try:
                         shutil.copy2(autohdr_addon_path, autohdr_dst)
                         os.chmod(autohdr_dst, 0o666)
+                        alias_dst = os.path.join(exe_dir, f"AutoHDR.addon{arch}")
+                        shutil.copy2(autohdr_addon_path, alias_dst)
+                        os.chmod(alias_dst, 0o666)
                         decky.logger.info(f"AutoHDR addon copied successfully for {arch}-bit architecture (API: {dll_override})")
                     except Exception as e:
                         decky.logger.warning(f"Failed to copy AutoHDR addon: {str(e)}")
@@ -2588,10 +2619,11 @@ Note: If ReShadePreset.ini already existed, your previous settings were preserve
                 decky.logger.info(f"Skipping AutoHDR addon installation for API: {dll_override} (requires DirectX 10/11/12)")
                 # Remove any existing AutoHDR addon files if they exist from previous installations
                 for addon_arch in ['32', '64']:
-                    existing_addon = os.path.join(exe_dir, f"AutoHDR.addon{addon_arch}")
-                    if os.path.exists(existing_addon):
-                        decky.logger.info(f"Removing existing AutoHDR addon (incompatible with {dll_override})")
-                        os.remove(existing_addon)
+                    for addon_name in [f"AutoHDR.addon{addon_arch}", f"AutoHDR{addon_arch}.addon"]:
+                        existing_addon = os.path.join(exe_dir, addon_name)
+                        if os.path.exists(existing_addon):
+                            decky.logger.info(f"Removing existing AutoHDR addon (incompatible with {dll_override})")
+                            os.remove(existing_addon)
                 
             self._fix_deck_user_ownership(exe_dir)
             return {"status": "success", "output": f"ReShade installed successfully for Heroic game using {dll_override} override."}
@@ -3336,12 +3368,14 @@ Note: If ReShadePreset.ini already existed, your previous settings were preserve
                 self._last_update_error = f"Python fetch failed: {error}"
 
         try:
+            clean_env = self._clean_subprocess_env()
             result = subprocess.run(
                 ["curl", "-fsSL", "-k", "-H", "Accept: application/vnd.github+json", "-A", PLUGIN_PACKAGE, url],
                 check=False,
                 capture_output=True,
                 text=True,
                 timeout=15,
+                env=clean_env,
             )
         except (OSError, subprocess.TimeoutExpired) as error:
             self._last_update_error += f"; curl failed: {error}"
@@ -3478,9 +3512,16 @@ Note: If ReShadePreset.ini already existed, your previous settings were preserve
             capture_output=True,
             text=True,
             timeout=60,
+            env=self._clean_subprocess_env(),
         )
         if result.returncode != 0:
             raise urllib.error.URLError(result.stderr.strip() or f"curl exited {result.returncode}")
+
+    def _clean_subprocess_env(self) -> dict[str, str]:
+        clean_env = {**os.environ, **self.environment}
+        for key in ["LD_LIBRARY_PATH", "LD_PRELOAD", "PYTHONHOME", "PYTHONPATH"]:
+            clean_env.pop(key, None)
+        return clean_env
 
     def _schedule_loader_restart(self, reason: str) -> dict[str, Any]:
         decky.logger.info("Scheduling Decky Loader restart: %s", reason)

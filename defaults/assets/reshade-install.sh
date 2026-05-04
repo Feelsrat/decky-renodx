@@ -133,8 +133,8 @@ setup_autohdr() {
 
     if [[ -f "$BIN_PATH/autohdr_addon.tar.gz" ]]; then
         tar -xzf "$BIN_PATH/autohdr_addon.tar.gz" -C "$MAIN_PATH/AutoHDR_addons/"
-        find "$MAIN_PATH/AutoHDR_addons" -type f \( -iname "*64.addon" -o -iname "*.addon64" \) -exec cp {} "$MAIN_PATH/AutoHDR_addons/AutoHDR.addon64" \; 2>/dev/null || true
-        find "$MAIN_PATH/AutoHDR_addons" -type f \( -iname "*32.addon" -o -iname "*.addon32" \) -exec cp {} "$MAIN_PATH/AutoHDR_addons/AutoHDR.addon32" \; 2>/dev/null || true
+        find "$MAIN_PATH/AutoHDR_addons" -type f \( -iname "*64.addon" -o -iname "*.addon64" \) -exec cp {} "$MAIN_PATH/AutoHDR_addons/AutoHDR64.addon" \; -exec cp {} "$MAIN_PATH/AutoHDR_addons/AutoHDR.addon64" \; 2>/dev/null || true
+        find "$MAIN_PATH/AutoHDR_addons" -type f \( -iname "*32.addon" -o -iname "*.addon32" \) -exec cp {} "$MAIN_PATH/AutoHDR_addons/AutoHDR32.addon" \; -exec cp {} "$MAIN_PATH/AutoHDR_addons/AutoHDR.addon32" \; 2>/dev/null || true
     else
         log_message "Warning: autohdr_addon.tar.gz not found in bin directory"
     fi
@@ -199,6 +199,11 @@ main() {
     echo "Extra shader packs are intentionally excluded."
     echo "AutoHDR addon path: $MAIN_PATH/AutoHDR_addons"
     echo "Effect path: $MAIN_PATH/ReShade_shaders/Merged/Shaders"
+    if grep -qi "^TutorialProgress=" "$MAIN_PATH/ReShade.ini"; then
+        sed -i 's/^TutorialProgress=.*/TutorialProgress=4/I' "$MAIN_PATH/ReShade.ini"
+    else
+        sed -i '/^\[GENERAL\]/a TutorialProgress=4' "$MAIN_PATH/ReShade.ini"
+    fi
 }
 
 main "$@"
