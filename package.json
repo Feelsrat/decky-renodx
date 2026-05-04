@@ -1,6 +1,6 @@
 {
   "name": "decky-renodx",
-  "version": "0.0.7",
+  "version": "0.0.8",
   "description": "Decky Loader plugin for RenoDX, AutoHDR fallback launch setup, and Proton HDR helpers",
   "type": "module",
   "scripts": {
