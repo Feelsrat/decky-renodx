@@ -1,6 +1,8 @@
 #!/bin/bash
 
-RESHADE_PATH="$HOME/.local/share/reshade"
+XDG_DATA_HOME=${XDG_DATA_HOME:-"$HOME/.local/share"}
+MAIN_PATH=${MAIN_PATH:-"$XDG_DATA_HOME/decky-renodx/reshade"}
+RESHADE_PATH="$MAIN_PATH"
 COMMON_OVERRIDES="d3d8 d3d9 d3d11 ddraw dinput8 dxgi opengl32"
 
 log_message() {

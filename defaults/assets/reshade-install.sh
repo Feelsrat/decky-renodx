@@ -3,7 +3,7 @@
 SEPARATOR="------------------------------------------------------------------------------------------------"
 REQUIRED_EXECUTABLES="7z"
 XDG_DATA_HOME=${XDG_DATA_HOME:-"$HOME/.local/share"}
-MAIN_PATH=${MAIN_PATH:-"$XDG_DATA_HOME/reshade"}
+MAIN_PATH=${MAIN_PATH:-"$XDG_DATA_HOME/decky-renodx/reshade"}
 RESHADE_PATH="$MAIN_PATH/reshade"
 WINE_MAIN_PATH="$(echo "$MAIN_PATH" | sed "s#/home/$USER/##" | sed 's#/#\\\\#g')"
 RESHADE_VERSION=${RESHADE_VERSION:-"latest"}

@@ -25,11 +25,15 @@ PLUGIN_PACKAGE = "decky-renodx"
 GITHUB_RELEASES_URL = "https://api.github.com/repos/Feelsrat/decky-renodx/releases"
 AUTO_CHECK_INTERVAL = 86400
 AUTO_UPDATE_CHECK_ON_STARTUP = False
+RUNTIME_RELATIVE_PATH = "decky-renodx/reshade"
 
 class Plugin:
     def __init__(self):
+        xdg_data_home = os.path.expandvars('$HOME/.local/share')
+        runtime_path = os.path.join(xdg_data_home, RUNTIME_RELATIVE_PATH)
         self.environment = {
-            'XDG_DATA_HOME': os.path.expandvars('$HOME/.local/share'),
+            'XDG_DATA_HOME': xdg_data_home,
+            'MAIN_PATH': runtime_path,
             'UPDATE_RESHADE': '1',
             'MERGE_SHADERS': '1',
             'VULKAN_SUPPORT': '0',
@@ -41,7 +45,7 @@ class Plugin:
             'AUTOHDR_ENABLED': '0'
         }
         # Main paths for ReShade
-        self.main_path = os.path.join(self.environment['XDG_DATA_HOME'], 'reshade')
+        self.main_path = runtime_path
         self.renodx_import_path = os.path.join(self.environment['XDG_DATA_HOME'], 'decky-renodx', 'imports')
         
         # Cache for executable paths
@@ -1247,7 +1251,7 @@ class Plugin:
             }
 
     async def check_reshade_path(self) -> dict:
-        path = Path(os.path.expanduser("~/.local/share/reshade"))
+        path = Path(self.main_path)
         marker_file = path / ".installed"
         addon_marker = path / ".installed_addon"
         
@@ -1296,7 +1300,8 @@ class Plugin:
             # Add other necessary environment variables
             install_env.update({
                 'LD_LIBRARY_PATH': '/usr/lib',
-                'XDG_DATA_HOME': os.path.expandvars('$HOME/.local/share')
+                'XDG_DATA_HOME': self.environment['XDG_DATA_HOME'],
+                'MAIN_PATH': self.main_path
             })
 
             install_description = f"Installing ReShade {version}"

@@ -28,6 +28,8 @@ The intended flow for Nexus-hosted RenoDX files is:
 
 Addon support and AutoHDR runtime components are automatic. The UI intentionally does not expose toggles for them because RenoDX and AutoHDR need those choices to be consistent.
 
+Decky RenoDX keeps its HDR runtime isolated at `~/.local/share/decky-renodx/reshade`. It does not use LetMeReShade's `~/.local/share/reshade` runtime, so both plugins can coexist without one reporting the other's runtime as installed.
+
 ## Current Limitations
 
 - ReShade binary/shader archives must be supplied in the plugin `bin` folder the same way LetMeReShade releases do.
