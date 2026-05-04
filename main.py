@@ -74,6 +74,7 @@ class Plugin:
         os.makedirs(self.main_path, exist_ok=True)
         os.makedirs(self.renodx_import_path, exist_ok=True)
         os.makedirs(self.bin_cache_path, exist_ok=True)
+        self._migrate_existing_runtime_files()
         self._fix_deck_user_ownership(Path(xdg_data_home) / PLUGIN_PACKAGE)
 
     def _deck_user(self, home: Path | None = None) -> str:
@@ -129,6 +130,11 @@ class Plugin:
             )
         except Exception as error:
             decky.logger.warning("Could not fix ownership for %s: %s", target, error)
+
+    def _migrate_existing_runtime_files(self) -> None:
+        ini_path = Path(self.main_path) / "ReShade.ini"
+        if ini_path.exists():
+            self._ensure_reshade_tutorial_skipped(ini_path)
 
     def _get_assets_dir(self) -> Path:
         """Get the assets directory, checking both possible locations"""
@@ -1008,6 +1014,7 @@ class Plugin:
             
             with open(preferences_file, 'w') as f:
                 json.dump(existing_preferences, f, indent=2)
+            self._fix_deck_user_ownership(Path(self.main_path))
             
             decky.logger.info(f"Saved shader preferences: {selected_shaders}")
             return {"status": "success", "message": "Shader preferences saved successfully"}
@@ -1171,6 +1178,7 @@ class Plugin:
             
             with open(config_file, 'w') as f:
                 json.dump(installed_config, f, indent=2)
+            self._fix_deck_user_ownership(Path(self.main_path))
             
             decky.logger.info(f"Saved installed configuration: {installed_config}")
             return {"status": "success"}

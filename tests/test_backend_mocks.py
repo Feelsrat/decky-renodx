@@ -155,6 +155,15 @@ class BackendMockTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("TutorialProgress=4", ini.read_text(encoding="utf-8"))
 
+    async def test_existing_runtime_ini_is_migrated_on_init(self):
+        runtime = self.home / ".local" / "share" / "decky-renodx" / "reshade"
+        runtime.mkdir(parents=True)
+        (runtime / "ReShade.ini").write_text("[GENERAL]\nEffectSearchPaths=.\n", encoding="utf-8")
+
+        self.module.Plugin()
+
+        self.assertIn("TutorialProgress=4", (runtime / "ReShade.ini").read_text(encoding="utf-8"))
+
     async def test_autohdr_payload_keeps_reshade_addon_names(self):
         plugin = self.module.Plugin()
         bin_dir = self.home / "bin"
