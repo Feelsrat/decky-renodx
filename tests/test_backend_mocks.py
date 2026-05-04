@@ -158,11 +158,22 @@ class BackendMockTest(unittest.IsolatedAsyncioTestCase):
     async def test_existing_runtime_ini_is_migrated_on_init(self):
         runtime = self.home / ".local" / "share" / "decky-renodx" / "reshade"
         runtime.mkdir(parents=True)
-        (runtime / "ReShade.ini").write_text("[GENERAL]\nEffectSearchPaths=.\n", encoding="utf-8")
+        (runtime / "ReShade.ini").write_text(
+            "[GENERAL]\n"
+            "EffectSearchPaths=.local\\share\\decky-renodx\\reshade\\ReShade_shaders\\Merged\\Shaders\n"
+            "TextureSearchPaths=.local\\share\\decky-renodx\\reshade\\ReShade_shaders\\Merged\\Textures\n"
+            "PresetPath=.local\\share\\decky-renodx\\reshade\\ReShadePreset.ini\n",
+            encoding="utf-8",
+        )
 
         self.module.Plugin()
 
-        self.assertIn("TutorialProgress=4", (runtime / "ReShade.ini").read_text(encoding="utf-8"))
+        text = (runtime / "ReShade.ini").read_text(encoding="utf-8")
+        self.assertIn("TutorialProgress=4", text)
+        self.assertIn("EffectSearchPaths=.\\ReShade_shaders\\Merged\\Shaders", text)
+        self.assertIn("TextureSearchPaths=.\\ReShade_shaders\\Merged\\Textures", text)
+        self.assertIn("PresetPath=.\\ReShadePreset.ini", text)
+        self.assertNotIn(".local\\share", text)
 
     async def test_autohdr_payload_keeps_reshade_addon_names(self):
         plugin = self.module.Plugin()

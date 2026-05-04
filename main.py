@@ -135,6 +135,7 @@ class Plugin:
         ini_path = Path(self.main_path) / "ReShade.ini"
         if ini_path.exists():
             self._ensure_reshade_tutorial_skipped(ini_path)
+            self._ensure_game_relative_shader_paths(ini_path)
 
     def _get_assets_dir(self) -> Path:
         """Get the assets directory, checking both possible locations"""
@@ -1577,20 +1578,14 @@ class Plugin:
         ini_path = main_path / "ReShade.ini"
         if ini_path.exists():
             self._ensure_reshade_tutorial_skipped(ini_path)
+            self._ensure_game_relative_shader_paths(ini_path)
             return
-        deck_home = str(self._deck_user_home()).rstrip("/")
-        main_path_string = str(main_path)
-        if main_path_string.startswith(deck_home + "/"):
-            wine_main_path = main_path_string[len(deck_home) + 1:]
-        else:
-            wine_main_path = main_path_string
-        wine_main_path = wine_main_path.replace("/", "\\")
         ini_path.write_text(
             "[GENERAL]\n"
-            f"EffectSearchPaths={wine_main_path}\\ReShade_shaders\\Merged\\Shaders\n"
+            "EffectSearchPaths=.\\ReShade_shaders\\Merged\\Shaders\n"
             "TutorialProgress=4\n"
-            f"TextureSearchPaths={wine_main_path}\\ReShade_shaders\\Merged\\Textures\n"
-            f"PresetPath={wine_main_path}\\ReShadePreset.ini\n",
+            "TextureSearchPaths=.\\ReShade_shaders\\Merged\\Textures\n"
+            "PresetPath=.\\ReShadePreset.ini\n",
             encoding="utf-8",
         )
         try:
@@ -1611,6 +1606,27 @@ class Plugin:
             ini_path.chmod(0o666)
         except OSError as error:
             decky.logger.warning("Could not update ReShade tutorial state for %s: %s", ini_path, error)
+
+    def _ensure_game_relative_shader_paths(self, ini_path: Path) -> None:
+        try:
+            text = ini_path.read_text(encoding="utf-8", errors="ignore") if ini_path.exists() else "[GENERAL]\n"
+            replacements = {
+                "EffectSearchPaths": ".\\ReShade_shaders\\Merged\\Shaders",
+                "TextureSearchPaths": ".\\ReShade_shaders\\Merged\\Textures",
+                "PresetPath": ".\\ReShadePreset.ini",
+            }
+            if "[GENERAL]" not in text:
+                text = "[GENERAL]\n" + text
+            for key, value in replacements.items():
+                line = f"{key}={value}"
+                if re.search(rf"(?im)^{re.escape(key)}\s*=", text):
+                    text = re.sub(rf"(?im)^{re.escape(key)}\s*=.*$", lambda _match, line=line: line, text)
+                else:
+                    text = re.sub(r"(?im)^\[GENERAL\]\s*$", lambda _match, line=line: f"[GENERAL]\n{line}", text, count=1)
+            ini_path.write_text(text, encoding="utf-8")
+            ini_path.chmod(0o666)
+        except OSError as error:
+            decky.logger.warning("Could not update ReShade shader paths for %s: %s", ini_path, error)
 
     def _latest_reshade_addon_url(self) -> str:
         page = self._fetch_text("https://reshade.me/")
