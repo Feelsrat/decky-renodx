@@ -3,12 +3,14 @@ import {
   ButtonItem,
   ConfirmModal,
   DropdownItem,
+  Field,
   PanelSection,
   PanelSectionRow,
   ToggleField,
+  staticClasses,
   showModal,
 } from "@decky/ui";
-import { callable, definePlugin } from "@decky/api";
+import { callable, definePlugin, toaster } from "@decky/api";
 import { IoMdColorPalette } from "react-icons/io";
 import HeroicGamesSection from "./HeroicGamesSection";
 import SteamGamesSection from "./SteamGamesSection";
@@ -40,6 +42,20 @@ interface DeckModelResponse {
   message?: string;
 }
 
+type UpdateStatus = {
+  ok: boolean;
+  current?: string;
+  latest?: string;
+  elevated?: boolean;
+  hasUpdate?: boolean;
+  canInstall?: boolean;
+  releaseUrl?: string;
+  installedVersion?: string;
+  requiresRestart?: boolean;
+  restarted?: boolean;
+  message: string;
+};
+
 const runInstallReShade = callable<[boolean, string, boolean, string[]], InstallResult>("run_install_reshade");
 const runUninstallReShade = callable<[], InstallResult>("run_uninstall_reshade");
 const checkReShadePath = callable<[], PathCheckResponse>("check_reshade_path");
@@ -48,6 +64,9 @@ const logError = callable<[string], void>("log_error");
 const saveAutoHdrPreference = callable<[boolean], InstallResult>("save_autohdr_preference");
 const loadAutoHdrPreference = callable<[], any>("load_autohdr_preference");
 const loadInstalledConfiguration = callable<[], any>("load_installed_configuration");
+const getUpdateStatus = callable<[], UpdateStatus>("get_update_status");
+const checkUpdate = callable<[force?: boolean], UpdateStatus>("check_update");
+const installUpdate = callable<[], UpdateStatus>("install_update");
 
 const versionOptions: VersionOption[] = [
   { label: "ReShade Latest", value: "latest" },
@@ -301,15 +320,114 @@ function HdrRuntimeSection() {
   );
 }
 
+function UpdatesSection() {
+  const [status, setStatus] = useState<UpdateStatus>();
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    getUpdateStatus()
+      .then(setStatus)
+      .catch((error) => toaster.toast({ title: "Update status failed", body: String(error) }));
+  }, []);
+
+  const refresh = async () => {
+    setBusy(true);
+    try {
+      const result = await checkUpdate(true);
+      setStatus(result);
+      toaster.toast({ title: "Update Check", body: result.message });
+    } catch (error) {
+      toaster.toast({ title: "Update Check Failed", body: String(error) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const install = async () => {
+    setBusy(true);
+    try {
+      const result = await installUpdate();
+      setStatus(result);
+      toaster.toast({ title: result.ok ? "Update Installed" : "Update Failed", body: result.message });
+      if (result.ok) {
+        window.setTimeout(() => {
+          getUpdateStatus().then(setStatus).catch(() => undefined);
+        }, 2500);
+      }
+    } catch (error) {
+      toaster.toast({ title: "Update Failed", body: String(error) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <PanelSection title="Updates">
+      <PanelSectionRow>
+        <Field
+          focusable
+          label="Installed Version"
+          description={status?.requiresRestart ? "Restart pending" : status?.hasUpdate ? "Update available" : "Ready"}
+        >
+          <div style={{ fontSize: "16px" }}>{status?.current || "Unknown"}</div>
+        </Field>
+      </PanelSectionRow>
+
+      {status?.latest && (
+        <PanelSectionRow>
+          <Field focusable label="Latest Release" description={status.releaseUrl || ""}>
+            <div style={{ color: status.hasUpdate ? "#2ecc71" : "rgba(255,255,255,0.75)", fontSize: "16px" }}>
+              {status.latest}
+            </div>
+          </Field>
+        </PanelSectionRow>
+      )}
+
+      {status?.elevated === false && (
+        <PanelSectionRow>
+          <Field focusable label="Update Permissions" description="Decky root permissions are required for self-update.">
+            <div style={{ color: "#ff8a3d", fontWeight: 700 }}>Missing</div>
+          </Field>
+        </PanelSectionRow>
+      )}
+
+      {status?.message && (
+        <PanelSectionRow>
+          <Field focusable label="Status" description={status.message}>
+            <div style={{ color: status.ok ? "#2ecc71" : "#ff8a3d", fontWeight: 700 }}>
+              {status.ok ? "OK" : "Issue"}
+            </div>
+          </Field>
+        </PanelSectionRow>
+      )}
+
+      <PanelSectionRow>
+        <ButtonItem layout="below" disabled={busy} onClick={refresh}>
+          {busy ? "Checking..." : "Check for Update"}
+        </ButtonItem>
+      </PanelSectionRow>
+
+      {status?.canInstall && (
+        <PanelSectionRow>
+          <ButtonItem layout="below" disabled={busy} onClick={install}>
+            {busy ? "Installing..." : status.hasUpdate ? "Install Update" : "Reinstall Current Release"}
+          </ButtonItem>
+        </PanelSectionRow>
+      )}
+    </PanelSection>
+  );
+}
+
 export default definePlugin(() => ({
   name: "Decky RenoDX",
-  titleView: <div>Decky RenoDX HDR</div>,
+  titleView: <div className={staticClasses.Title}>Decky RenoDX HDR</div>,
   alwaysRender: true,
   content: (
     <>
       <HdrRuntimeSection />
       <SteamGamesSection />
       <HeroicGamesSection />
+      <UpdatesSection />
     </>
   ),
   icon: <IoMdColorPalette />,

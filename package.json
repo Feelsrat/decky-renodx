@@ -6,7 +6,11 @@
   "scripts": {
     "build": "rollup -c",
     "watch": "rollup -c -w",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node scripts/test.js",
+    "test:backend": "python -m unittest tests.test_backend_mocks",
+    "test:types": "tsc --noEmit --skipLibCheck",
+    "package": "python scripts/create_zip.py",
+    "release": "node scripts/release.js"
   },
   "repository": {
     "type": "git",

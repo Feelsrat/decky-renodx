@@ -32,12 +32,23 @@ The intended flow for Nexus-hosted RenoDX files is:
 - Anti-cheat games may block addon injection.
 - Native Linux builds need to be forced to Windows/Proton for ReShade/RenoDX injection.
 - Real Steam Deck testing is still needed.
+- Self-update depends on GitHub releases containing a `decky-renodx.zip` asset.
 
 ## Development
 
 ```bash
 pnpm i
+pnpm run test
 pnpm run build
+pnpm run package
 ```
+
+## Releases
+
+```bash
+pnpm run release -- --draft
+```
+
+The release script bumps `package.json`, runs validation, builds `dist`, creates `decky-renodx.zip`, and publishes it as a GitHub release asset for the in-plugin updater.
 
 Private repo: `https://github.com/Feelsrat/decky-renodx`

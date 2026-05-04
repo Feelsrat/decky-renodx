@@ -1,13 +1,30 @@
 import decky
+import asyncio
 import os
 import subprocess
 import shutil
+import tempfile
+import urllib.error
+import urllib.request
 from pathlib import Path
+from typing import Any
 import json
 import glob
 import re
 import time
 import zipfile
+
+try:
+    import ssl
+    SSL_AVAILABLE = True
+except (ImportError, OSError):
+    SSL_AVAILABLE = False
+
+PLUGIN_NAME = "Decky RenoDX"
+PLUGIN_PACKAGE = "decky-renodx"
+GITHUB_RELEASES_URL = "https://api.github.com/repos/Feelsrat/decky-renodx/releases"
+AUTO_CHECK_INTERVAL = 86400
+AUTO_UPDATE_CHECK_ON_STARTUP = False
 
 class Plugin:
     def __init__(self):
@@ -29,6 +46,11 @@ class Plugin:
         
         # Cache for executable paths
         self.executable_cache = {}
+        self._last_update_error = ""
+        self._cached_update_status: dict[str, Any] | None = None
+        self._last_check_time = 0.0
+        self._auto_update_task: asyncio.Task[None] | None = None
+        self._install_lock = asyncio.Lock()
         
         # Create necessary directories
         os.makedirs(self.main_path, exist_ok=True)
@@ -58,10 +80,14 @@ class Plugin:
         assets_dir = self._get_assets_dir()
         for script in assets_dir.glob("*.sh"):
             script.chmod(0o755)
-        decky.logger.info("ReShade plugin loaded")
+        self._cleanup_previous_update_artifacts()
+        if AUTO_UPDATE_CHECK_ON_STARTUP and self._should_auto_check():
+            self._auto_update_task = asyncio.create_task(self._auto_check_update())
+        decky.logger.info("Decky RenoDX loaded")
 
     async def _unload(self):
-        decky.logger.info("ReShade plugin unloaded")
+        await self._stop_auto_update_task()
+        decky.logger.info("Decky RenoDX unloaded")
 
     async def parse_steam_logs_for_executable(self, appid: str) -> dict:
         """Parse Steam console logs to find the exact executable path Steam uses"""
@@ -2836,6 +2862,382 @@ Note: If ReShadePreset.ini already existed, your previous settings were preserve
         except Exception as e:
             decky.logger.error(f"Error detecting API for Heroic game: {str(e)}")
             return {"status": "error", "message": str(e)}
+
+    async def _stop_auto_update_task(self) -> None:
+        task = self._auto_update_task
+        self._auto_update_task = None
+        if task is None or task.done():
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    async def get_update_status(self) -> dict[str, Any]:
+        current = self._current_version()
+        if self._cached_update_status and (time.time() - self._last_check_time) < AUTO_CHECK_INTERVAL:
+            return {
+                **self._cached_update_status,
+                "current": current,
+                "elevated": self._has_elevated_permissions(),
+            }
+
+        return {
+            "ok": True,
+            "current": current,
+            "elevated": self._has_elevated_permissions(),
+            "hasUpdate": False,
+            "canInstall": False,
+            "message": "Ready to check for updates.",
+        }
+
+    async def check_update(self, force: bool = False) -> dict[str, Any]:
+        if not force and self._cached_update_status and (time.time() - self._last_check_time) < AUTO_CHECK_INTERVAL:
+            return self._cached_update_status
+
+        current = self._current_version()
+        elevated = self._has_elevated_permissions()
+        release = self._latest_release()
+        if release is None:
+            detail = f" {self._last_update_error}" if self._last_update_error else ""
+            result = {
+                "ok": False,
+                "current": current,
+                "elevated": elevated,
+                "hasUpdate": False,
+                "canInstall": False,
+                "message": f"Could not read GitHub releases.{detail}",
+            }
+        else:
+            latest = str(release.get("tag_name", "")).removeprefix("v")
+            asset = self._release_asset(release)
+            has_update = bool(latest and self._is_newer_version(current, latest) and asset)
+            result = {
+                "ok": True,
+                "current": current,
+                "latest": latest,
+                "elevated": elevated,
+                "hasUpdate": has_update,
+                "canInstall": bool(asset and elevated),
+                "releaseUrl": release.get("html_url", ""),
+                "message": (
+                    "Update available." if has_update and elevated
+                    else "Root permissions are required to install updates." if has_update
+                    else "Latest release is already installed."
+                ),
+            }
+
+        self._cached_update_status = result
+        self._update_last_check_time()
+        return result
+
+    async def install_update(self) -> dict[str, Any]:
+        async with self._install_lock:
+            status = await self.check_update(force=True)
+            if not status.get("ok"):
+                return status
+            if not status.get("canInstall"):
+                return {
+                    **status,
+                    "ok": False,
+                    "message": "No installable update was found, or root permissions are missing.",
+                }
+
+            release = self._latest_release()
+            asset = self._release_asset(release or {})
+            if not asset or not asset.get("browser_download_url"):
+                return {
+                    **status,
+                    "ok": False,
+                    "message": "No release zip was found.",
+                }
+
+            latest = str((release or {}).get("tag_name", "")).removeprefix("v")
+            try:
+                install_info = self._install_release_zip(str(asset["browser_download_url"]))
+            except urllib.error.URLError:
+                decky.logger.exception("Update failed - download error")
+                return {**status, "ok": False, "message": "Update failed: Could not download release."}
+            except zipfile.BadZipFile:
+                decky.logger.exception("Update failed - invalid zip")
+                return {**status, "ok": False, "message": "Update failed: Release zip was invalid."}
+            except Exception as error:
+                decky.logger.exception("Update failed")
+                return {**status, "ok": False, "message": f"Update failed: {error}"}
+
+            current = self._current_version()
+            restart = self._schedule_loader_restart("plugin updated")
+            result = {
+                "ok": True,
+                "current": current,
+                "latest": latest,
+                "installedVersion": install_info.get("installedVersion", current),
+                "hasUpdate": self._is_newer_version(current, latest),
+                "canInstall": False,
+                "elevated": self._has_elevated_permissions(),
+                "requiresRestart": True,
+                "restarted": restart["scheduled"],
+                "message": "Update installed. Decky Loader restart scheduled." if restart["scheduled"] else "Update installed. Restart Decky Loader to finish.",
+            }
+            self._cached_update_status = result
+            return result
+
+    async def _auto_check_update(self) -> None:
+        try:
+            await self.check_update()
+        except Exception as error:
+            decky.logger.warning("Auto-update check failed: %s", error)
+
+    def _should_auto_check(self) -> bool:
+        check_file = Path(decky.DECKY_PLUGIN_DIR) / ".last_update_check"
+        try:
+            if not check_file.exists():
+                return True
+            return time.time() - float(check_file.read_text(encoding="utf-8").strip()) > AUTO_CHECK_INTERVAL
+        except (OSError, ValueError):
+            return True
+
+    def _update_last_check_time(self) -> None:
+        try:
+            (Path(decky.DECKY_PLUGIN_DIR) / ".last_update_check").write_text(str(time.time()), encoding="utf-8")
+        except OSError as error:
+            decky.logger.warning("Failed to update last check time: %s", error)
+
+    def _package_version(self, path: Path) -> str:
+        try:
+            package = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return ""
+        return str(package.get("version", ""))
+
+    def _current_version(self) -> str:
+        return self._package_version(Path(decky.DECKY_PLUGIN_DIR) / "package.json")
+
+    def _has_elevated_permissions(self) -> bool:
+        if not hasattr(os, "geteuid"):
+            return True
+        return os.geteuid() == 0
+
+    def _parse_version(self, version: str) -> tuple[int, ...]:
+        try:
+            clean = version.removeprefix("v").split("-")[0]
+            return tuple(int(part) for part in clean.split(".") if part.isdigit())
+        except (ValueError, AttributeError):
+            return (0,)
+
+    def _is_newer_version(self, current: str, latest: str) -> bool:
+        return self._parse_version(latest) > self._parse_version(current)
+
+    def _latest_release(self) -> dict[str, Any] | None:
+        self._last_update_error = ""
+        releases = self._fetch_json(GITHUB_RELEASES_URL)
+        if releases is None:
+            return None
+        if not isinstance(releases, list):
+            self._last_update_error = "GitHub returned an unexpected response."
+            return None
+        for release in releases:
+            if release.get("draft"):
+                continue
+            if self._release_asset(release):
+                return release
+        return None
+
+    def _fetch_json(self, url: str) -> Any | None:
+        if SSL_AVAILABLE:
+            try:
+                ssl_context = ssl.create_default_context()
+                ssl_context.check_hostname = False
+                ssl_context.verify_mode = ssl.CERT_NONE
+                request = urllib.request.Request(
+                    url,
+                    headers={"Accept": "application/vnd.github+json", "User-Agent": PLUGIN_PACKAGE},
+                )
+                with urllib.request.urlopen(request, timeout=10, context=ssl_context) as response:
+                    return json.loads(response.read().decode("utf-8"))
+            except (OSError, json.JSONDecodeError, urllib.error.URLError) as error:
+                self._last_update_error = f"Python fetch failed: {error}"
+
+        try:
+            result = subprocess.run(
+                ["curl", "-fsSL", "-k", "-H", "Accept: application/vnd.github+json", "-A", PLUGIN_PACKAGE, url],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+        except (OSError, subprocess.TimeoutExpired) as error:
+            self._last_update_error += f"; curl failed: {error}"
+            return None
+        if result.returncode != 0:
+            self._last_update_error += f"; curl exited {result.returncode}: {result.stderr.strip()[-120:]}"
+            return None
+        try:
+            return json.loads(result.stdout)
+        except json.JSONDecodeError as error:
+            self._last_update_error += f"; curl JSON parse failed: {error}"
+            return None
+
+    def _release_asset(self, release: dict[str, Any]) -> dict[str, Any] | None:
+        assets = release.get("assets", [])
+        if not isinstance(assets, list):
+            return None
+        for asset in assets:
+            name = str(asset.get("name", ""))
+            if name.endswith(".zip") and PLUGIN_PACKAGE in name:
+                return asset
+        return None
+
+    def _install_release_zip(self, url: str) -> dict[str, Any]:
+        plugin_dir = Path(decky.DECKY_PLUGIN_DIR).resolve()
+        plugin_parent = plugin_dir.parent
+        staging_dir = plugin_parent / f".{plugin_dir.name}.update-{os.getpid()}-{int(time.time())}"
+        request = urllib.request.Request(url, headers={"User-Agent": PLUGIN_PACKAGE})
+
+        with tempfile.TemporaryDirectory(prefix=f"{PLUGIN_PACKAGE}-update-") as temp_root:
+            temp_path = Path(temp_root)
+            archive_path = temp_path / "release.zip"
+            self._download_file(request, archive_path)
+            extract_dir = temp_path / "extract"
+            with zipfile.ZipFile(archive_path) as archive:
+                self._safe_extract(archive, extract_dir)
+
+            extracted_plugin = self._find_extracted_plugin(extract_dir)
+            if extracted_plugin is None:
+                raise ValueError("release zip did not contain a Decky plugin")
+            self._validate_extracted_plugin(extracted_plugin)
+
+            backup_dir = plugin_dir.with_name(f"{plugin_dir.name}.previous")
+            if staging_dir.exists():
+                shutil.rmtree(staging_dir)
+            shutil.copytree(
+                extracted_plugin,
+                staging_dir,
+                symlinks=True,
+                ignore=shutil.ignore_patterns("*.log", "__pycache__", ".last_update_check"),
+            )
+            self._validate_extracted_plugin(staging_dir)
+            if backup_dir.exists():
+                shutil.rmtree(backup_dir)
+
+            moved_existing = False
+            try:
+                if plugin_dir.exists():
+                    plugin_dir.rename(backup_dir)
+                    moved_existing = True
+                staging_dir.rename(plugin_dir)
+            except OSError:
+                decky.logger.exception("Update replacement failed, attempting rollback")
+                if moved_existing and plugin_dir.exists():
+                    shutil.rmtree(plugin_dir)
+                if moved_existing and backup_dir.exists() and not plugin_dir.exists():
+                    backup_dir.rename(plugin_dir)
+                if staging_dir.exists():
+                    shutil.rmtree(staging_dir)
+                raise
+
+            return {
+                "installedVersion": self._package_version(plugin_dir / "package.json"),
+                "backupPath": str(backup_dir),
+            }
+
+    def _find_extracted_plugin(self, root: Path) -> Path | None:
+        for candidate in [root, *root.iterdir()]:
+            if candidate.is_dir() and (candidate / "plugin.json").exists() and (candidate / "package.json").exists():
+                return candidate
+        return None
+
+    def _validate_extracted_plugin(self, plugin_path: Path) -> None:
+        required = [
+            plugin_path / "plugin.json",
+            plugin_path / "package.json",
+            plugin_path / "dist" / "index.js",
+            plugin_path / "main.py",
+        ]
+        for required_path in required:
+            if not required_path.exists():
+                raise ValueError(f"release zip is missing {required_path.relative_to(plugin_path)}")
+
+        try:
+            manifest = json.loads((plugin_path / "plugin.json").read_text(encoding="utf-8"))
+        except json.JSONDecodeError as error:
+            raise ValueError(f"release plugin.json is invalid: {error}") from error
+        if str(manifest.get("name", "")) != PLUGIN_NAME:
+            raise ValueError(f"release zip is not {PLUGIN_NAME}")
+
+        try:
+            package = json.loads((plugin_path / "package.json").read_text(encoding="utf-8"))
+        except json.JSONDecodeError as error:
+            raise ValueError(f"release package.json is invalid: {error}") from error
+        if package.get("name") != PLUGIN_PACKAGE:
+            raise ValueError(f"release package name is not {PLUGIN_PACKAGE}")
+        if not package.get("version"):
+            raise ValueError("release package.json does not contain a version")
+
+    def _safe_extract(self, archive: zipfile.ZipFile, target: Path) -> None:
+        target.mkdir(parents=True, exist_ok=True)
+        resolved_target = target.resolve()
+        for member in archive.infolist():
+            destination = (target / member.filename).resolve()
+            if not destination.is_relative_to(resolved_target):
+                raise ValueError(f"Attempted path traversal in zip: {member.filename}")
+        archive.extractall(target)
+
+    def _download_file(self, request: urllib.request.Request, target: Path) -> None:
+        if SSL_AVAILABLE:
+            try:
+                ssl_context = ssl.create_default_context()
+                ssl_context.check_hostname = False
+                ssl_context.verify_mode = ssl.CERT_NONE
+                with urllib.request.urlopen(request, timeout=45, context=ssl_context) as response:
+                    target.write_bytes(response.read())
+                    return
+            except (OSError, urllib.error.URLError) as error:
+                decky.logger.warning("Python download failed, trying curl: %s", error)
+
+        result = subprocess.run(
+            ["curl", "-fL", "-k", "-A", PLUGIN_PACKAGE, "-o", str(target), request.full_url],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        if result.returncode != 0:
+            raise urllib.error.URLError(result.stderr.strip() or f"curl exited {result.returncode}")
+
+    def _schedule_loader_restart(self, reason: str) -> dict[str, Any]:
+        decky.logger.info("Scheduling Decky Loader restart: %s", reason)
+        unit = f"{PLUGIN_PACKAGE}-restart-{int(time.time())}"
+        commands = [
+            ["systemd-run", "--user", "--on-active=2", f"--unit={unit}", "systemctl", "--user", "restart", "plugin_loader.service"],
+            ["systemd-run", "--on-active=2", f"--unit={unit}", "systemctl", "restart", "plugin_loader.service"],
+        ]
+        for argv in commands:
+            try:
+                result = subprocess.run(argv, check=False, capture_output=True, text=True, timeout=5)
+            except (OSError, subprocess.TimeoutExpired) as error:
+                decky.logger.warning("Restart scheduling failed: %s", error)
+                continue
+            if result.returncode == 0:
+                return {"scheduled": True, "method": argv[0], "message": "Decky Loader restart scheduled."}
+        return {"scheduled": False, "method": "", "message": "Could not schedule Decky Loader restart."}
+
+    def _cleanup_previous_update_artifacts(self) -> None:
+        plugin_dir = Path(decky.DECKY_PLUGIN_DIR)
+        plugin_parent = plugin_dir.parent
+        backup_dir = plugin_dir.with_name(f"{plugin_dir.name}.previous")
+        for path in [backup_dir, *plugin_parent.glob(f".{plugin_dir.name}.update-*")]:
+            if not path.exists():
+                continue
+            try:
+                if path.is_dir():
+                    shutil.rmtree(path)
+                else:
+                    path.unlink()
+                decky.logger.info("Removed previous update artifact: %s", path)
+            except OSError as error:
+                decky.logger.warning("Failed to remove update artifact %s: %s", path, error)
 
     async def log_error(self, error: str) -> None:
         decky.logger.error(f"FRONTEND: {error}")
