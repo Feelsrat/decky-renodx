@@ -30,7 +30,7 @@ Addon support and AutoHDR runtime components are automatic. The UI intentionally
 
 Decky RenoDX keeps its HDR runtime isolated at `~/.local/share/decky-renodx/reshade`. It does not use LetMeReShade's `~/.local/share/reshade` runtime, so both plugins can coexist without one reporting the other's runtime as installed.
 
-On first HDR runtime install, the plugin downloads the ReShade add-on setup tool into `~/.local/share/decky-renodx/bin` and fetches AutoHDR payloads from GitHub. Release zips do not need to bundle LetMeReShade's `bin` payloads.
+On first HDR runtime install, the plugin downloads the ReShade add-on setup tool and a private 7-Zip extractor into `~/.local/share/decky-renodx/bin`, then fetches AutoHDR payloads from GitHub. Release zips do not need to bundle LetMeReShade's `bin` payloads or depend on a system `7z` command.
 
 ## Current Limitations
 

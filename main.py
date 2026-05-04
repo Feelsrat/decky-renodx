@@ -16,6 +16,7 @@ import re
 import time
 import zipfile
 import tarfile
+import platform
 
 try:
     import ssl
@@ -1311,7 +1312,8 @@ class Plugin:
                 'LD_LIBRARY_PATH': '/usr/lib',
                 'XDG_DATA_HOME': self.environment['XDG_DATA_HOME'],
                 'MAIN_PATH': self.main_path,
-                'BIN_PATH': self.bin_cache_path
+                'BIN_PATH': self.bin_cache_path,
+                'SEVENZIP': str(Path(self.bin_cache_path) / "7zz")
             })
 
             install_description = f"Installing ReShade {version}"
@@ -1389,6 +1391,7 @@ class Plugin:
 
             # Create environment with required LD_LIBRARY_PATH fix for Decky v3.1.10+
             clean_env = {**os.environ, **self.environment}
+            clean_env["SEVENZIP"] = str(Path(self.bin_cache_path) / "7zz")
             clean_env["LD_LIBRARY_PATH"] = ""
             
             process = subprocess.run(
@@ -1431,6 +1434,10 @@ class Plugin:
             last_target = bin_dir / "reshade_last_addon.exe"
             if not last_target.exists():
                 shutil.copy2(reshade_target, last_target)
+
+            sevenzip = bin_dir / "7zz"
+            if not sevenzip.exists():
+                self._download_7zip_binary(bin_dir)
 
             autohdr_archive = bin_dir / "autohdr_addon.tar.gz"
             advanced_archive = bin_dir / "advanced_autohdr_effect.tar.gz"
@@ -1481,6 +1488,30 @@ class Plugin:
         with tarfile.open(advanced_archive, "w:gz") as tar:
             for path in shader_files:
                 tar.add(path, arcname=f"Shaders/{path.name}")
+
+    def _download_7zip_binary(self, bin_dir: Path) -> None:
+        machine = platform.machine().lower()
+        archive_name = "7z2501-linux-arm64.tar.xz" if machine in ["aarch64", "arm64"] else "7z2501-linux-x64.tar.xz"
+        archive_path = bin_dir / archive_name
+        self._download_url(f"https://www.7-zip.org/a/{archive_name}", archive_path)
+
+        extract_dir = bin_dir / "7zip"
+        if extract_dir.exists():
+            shutil.rmtree(extract_dir)
+        extract_dir.mkdir(parents=True, exist_ok=True)
+        with tarfile.open(archive_path, "r:xz") as archive:
+            archive.extractall(extract_dir)
+
+        candidate = extract_dir / "7zz"
+        if not candidate.exists():
+            matches = list(extract_dir.rglob("7zz"))
+            if not matches:
+                raise FileNotFoundError("7zz was not found in downloaded 7-Zip archive")
+            candidate = matches[0]
+
+        target = bin_dir / "7zz"
+        shutil.copy2(candidate, target)
+        target.chmod(0o755)
 
     def _fetch_text(self, url: str) -> str:
         try:

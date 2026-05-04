@@ -1,7 +1,7 @@
 #!/bin/bash
 
 SEPARATOR="------------------------------------------------------------------------------------------------"
-REQUIRED_EXECUTABLES="7z"
+REQUIRED_EXECUTABLES=""
 XDG_DATA_HOME=${XDG_DATA_HOME:-"$HOME/.local/share"}
 MAIN_PATH=${MAIN_PATH:-"$XDG_DATA_HOME/decky-renodx/reshade"}
 RESHADE_PATH="$MAIN_PATH/reshade"
@@ -20,6 +20,7 @@ else
     PLUGIN_ROOT="$(dirname "$SCRIPT_DIR")"
 fi
 BIN_PATH=${BIN_PATH:-"$PLUGIN_ROOT/bin"}
+SEVENZIP=${SEVENZIP:-7z}
 
 log_message() {
     echo "[DEBUG] $1" >&2
@@ -87,8 +88,13 @@ setup_reshade() {
         exit 1
     fi
 
+    if [[ ! -x "$SEVENZIP" ]] && ! command -v "$SEVENZIP" &> /dev/null; then
+        log_message "Error: 7-Zip extractor not found: $SEVENZIP"
+        exit 1
+    fi
+
     cp "$BIN_PATH/$installer_name" "./ReShade_Setup.exe"
-    7z -y e "./ReShade_Setup.exe" 1> /dev/null || {
+    "$SEVENZIP" -y e "./ReShade_Setup.exe" 1> /dev/null || {
         log_message "Failed to extract ReShade"
         remove_temp_dir
         exit 1
