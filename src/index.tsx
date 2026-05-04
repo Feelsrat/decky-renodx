@@ -1,14 +1,11 @@
 import { useEffect, useState } from "react";
 import {
   ButtonItem,
-  ConfirmModal,
   DropdownItem,
   Field,
   PanelSection,
   PanelSectionRow,
-  ToggleField,
   staticClasses,
-  showModal,
 } from "@decky/ui";
 import { callable, definePlugin, toaster } from "@decky/api";
 import { IoMdColorPalette } from "react-icons/io";
@@ -79,8 +76,6 @@ function HdrRuntimeSection() {
   const [installResult, setInstallResult] = useState<InstallResult | null>(null);
   const [uninstallResult, setUninstallResult] = useState<InstallResult | null>(null);
   const [pathExists, setPathExists] = useState<boolean | null>(null);
-  const [addonEnabled, setAddonEnabled] = useState(true);
-  const [autoHdrEnabled, setAutoHdrEnabled] = useState(true);
   const [selectedVersion, setSelectedVersion] = useState<VersionOption>(versionOptions[0]);
   const [currentVersionInfo, setCurrentVersionInfo] = useState<{ version: string; addon: boolean } | null>(null);
   const [deckModel, setDeckModel] = useState<DeckModelResponse | null>(null);
@@ -94,7 +89,6 @@ function HdrRuntimeSection() {
         const result = await checkReShadePath();
         setPathExists(result.exists);
         setCurrentVersionInfo(result.version_info ?? null);
-        setAddonEnabled(result.exists ? result.is_addon : true);
         if (result.version_info?.version) {
           setSelectedVersion(versionOptions.find((version) => version.value === result.version_info?.version) ?? versionOptions[0]);
         }
@@ -113,10 +107,7 @@ function HdrRuntimeSection() {
       try {
         setModelLoading(true);
         setDeckModel(await detectSteamDeckModel());
-        const autoHdrPref = await loadAutoHdrPreference();
-        if (autoHdrPref.status === "success") {
-          setAutoHdrEnabled(autoHdrPref.autohdr_enabled ?? true);
-        }
+        await loadAutoHdrPreference();
       } catch (error) {
         await logError(`runtime init: ${String(error)}`);
       } finally {
@@ -147,16 +138,17 @@ function HdrRuntimeSection() {
     }
 
     setConfigChanged(
-      addonEnabled !== installedConfig.with_addon ||
+      true !== installedConfig.with_addon ||
       selectedVersion.value !== installedConfig.version ||
-      autoHdrEnabled !== installedConfig.with_autohdr
+      true !== installedConfig.with_autohdr
     );
-  }, [addonEnabled, autoHdrEnabled, installedConfig, pathExists, selectedVersion]);
+  }, [installedConfig, pathExists, selectedVersion]);
 
   const installHdrRuntime = async () => {
     try {
       setInstalling(true);
-      const result = await runInstallReShade(addonEnabled, selectedVersion.value, autoHdrEnabled, ["autohdr"]);
+      await saveAutoHdrPreference(true);
+      const result = await runInstallReShade(true, selectedVersion.value, true, ["autohdr"]);
       setInstallResult(result);
       if (result.status === "success") {
         const config = await loadInstalledConfiguration();
@@ -186,30 +178,6 @@ function HdrRuntimeSection() {
     } finally {
       setUninstalling(false);
     }
-  };
-
-  const toggleAddon = () => {
-    if (addonEnabled) {
-      setAddonEnabled(false);
-      setAutoHdrEnabled(false);
-      return;
-    }
-
-    showModal(
-      <ConfirmModal
-        strTitle="Enable Addon Support?"
-        strDescription="AutoHDR and RenoDX require ReShade addon support. Avoid using addon injection in online anti-cheat games unless you understand the risk."
-        strOKButtonText="Enable"
-        strCancelButtonText="Cancel"
-        onOK={() => setAddonEnabled(true)}
-      />
-    );
-  };
-
-  const toggleAutoHdr = async () => {
-    const next = !autoHdrEnabled;
-    setAutoHdrEnabled(next);
-    await saveAutoHdrPreference(next);
   };
 
   const installButtonText = installing
@@ -242,7 +210,7 @@ function HdrRuntimeSection() {
 
       <PanelSectionRow>
         <div style={{ fontSize: "0.9em", opacity: 0.8 }}>
-          This installer intentionally excludes extra visual shader packs. It installs ReShade addon support, AutoHDR files, and the minimal support files needed for HDR/RenoDX.
+          HDR runtime setup is automatic. The plugin always uses ReShade addon support plus AutoHDR components, and excludes extra visual shader packs.
         </div>
       </PanelSectionRow>
 
@@ -258,24 +226,10 @@ function HdrRuntimeSection() {
       </PanelSectionRow>
 
       <PanelSectionRow>
-        <ToggleField
-          label="Addon Support"
-          description="Required for AutoHDR and RenoDX."
-          checked={addonEnabled}
-          onChange={toggleAddon}
-        />
+        <Field focusable label="HDR Components" description="Addon support and AutoHDR are enabled automatically.">
+          <div style={{ color: "#2ecc71", fontWeight: 700 }}>Automatic</div>
+        </Field>
       </PanelSectionRow>
-
-      {addonEnabled && (
-        <PanelSectionRow>
-          <ToggleField
-            label="AutoHDR Components"
-            description="HDR fallback for DX10/11/12 games on Steam Deck OLED."
-            checked={autoHdrEnabled}
-            onChange={toggleAutoHdr}
-          />
-        </PanelSectionRow>
-      )}
 
       {pathExists && configChanged && (
         <PanelSectionRow>

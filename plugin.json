@@ -1,7 +1,7 @@
 {
   "name": "Decky RenoDX",
   "author": "Feelsrat",
-  "flags": ["debug", "_root"],
+  "flags": ["debug", "_root", "root"],
   "api_version": 1,
   "publish": {
     "tags": ["hdr", "renodx", "proton", "root"],

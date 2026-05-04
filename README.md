@@ -12,6 +12,7 @@ It aims to automate as much Steam Deck OLED HDR setup as Decky can reasonably ha
 - Open a browser search for game-specific RenoDX files.
 - Detect a downloaded RenoDX `.addon64`, `.addon32`, or `.zip` in `~/Downloads`.
 - Copy RenoDX addon files into the selected game executable folder and apply HDR launch options.
+- Fall back to AutoHDR setup when no downloaded RenoDX addon is found.
 
 ## Reality Check
 
@@ -20,10 +21,12 @@ This cannot make perfect native HDR universal. AutoHDR is a fallback for DX10/11
 The intended flow for Nexus-hosted RenoDX files is:
 
 1. Select the game in Decky RenoDX.
-2. Use `Open RenoDX download search`.
+2. Use `Open RenoDX download search` to open an embedded Decky browser attempt with a Steam web view fallback.
 3. Download the RenoDX addon/archive in the browser.
 4. Return to Decky RenoDX.
 5. Use `Import downloaded RenoDX addon`.
+
+Addon support and AutoHDR runtime components are automatic. The UI intentionally does not expose toggles for them because RenoDX and AutoHDR need those choices to be consistent.
 
 ## Current Limitations
 
@@ -51,4 +54,4 @@ pnpm run release -- --draft
 
 Use `--private` or `--draft` to create a draft/private-review GitHub release. The release script bumps `package.json`, runs validation, builds `dist`, creates `decky-renodx.zip`, and publishes it as a GitHub release asset for the in-plugin updater.
 
-Private repo: `https://github.com/Feelsrat/decky-renodx`
+Repo: `https://github.com/Feelsrat/decky-renodx`

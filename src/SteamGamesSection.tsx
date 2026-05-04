@@ -5,9 +5,11 @@ import {
   ButtonItem,
   DropdownItem,
   showModal,
-  ConfirmModal
+  ConfirmModal,
+  ModalRoot,
 } from "@decky/ui";
-import { callable } from "@decky/api";
+import { callable, toaster } from "@decky/api";
+import { Navigation } from "@decky/ui";
 
 // Import the callable functions
 const manageGameReShade = callable<[string, string, string, string, string], ReShadeResponse>("manage_game_reshade");
@@ -15,7 +17,6 @@ const checkReShadePath = callable<[], PathCheckResponse>("check_reshade_path");
 const listInstalledGames = callable<[], GameListResponse>("list_installed_games");
 const findGameExecutablePath = callable<[string], ExecutableDetectionResponse>("find_game_executable_path");
 const logError = callable<[string], void>("log_error");
-const openRenoDxSearch = callable<[string], ReShadeResponse>("open_renodx_search");
 const importRenoDxForGame = callable<[string, string, string], ReShadeResponse & { launch_options?: string }>("import_renodx_for_game");
 
 interface GameInfo {
@@ -85,6 +86,38 @@ interface ExecutableDetectionResponse {
   recommended_method?: string;
   message?: string;
   linux_game_warning?: boolean;
+}
+
+function RenoDxBrowserModal({ url, closeModal }: { url: string; closeModal?: () => void }) {
+  return (
+    <ModalRoot closeModal={closeModal} bAllowFullSize>
+      <div style={{ display: "flex", flexDirection: "column", gap: "12px", width: "80vw", height: "78vh" }}>
+        <div style={{ fontSize: "13px", opacity: 0.8 }}>
+          Some download sites block embedded pages. If the page is blank, open the Steam web view.
+        </div>
+        <iframe
+          src={url}
+          title="RenoDX download search"
+          style={{
+            flex: 1,
+            width: "100%",
+            border: "1px solid rgba(255,255,255,0.18)",
+            borderRadius: "4px",
+            background: "white",
+          }}
+        />
+        <ButtonItem
+          layout="below"
+          onClick={() => {
+            Navigation.NavigateToExternalWeb(url);
+            closeModal?.();
+          }}
+        >
+          Open Steam Web View
+        </ButtonItem>
+      </div>
+    </ModalRoot>
+  );
 }
 
 const SteamGamesSection = () => {
@@ -373,8 +406,53 @@ const SteamGamesSection = () => {
       return;
     }
 
-    const response = await openRenoDxSearch(selectedGame.name);
-    setResult(response.message || response.output || 'Browser opened.');
+    const url = `https://www.google.com/search?q=${encodeURIComponent(`${selectedGame.name} RenoDX NexusMods`)}`;
+    let modal: { Close: () => void };
+    modal = showModal(
+      <RenoDxBrowserModal
+        url={url}
+        closeModal={() => modal.Close()}
+      />,
+      undefined,
+      {
+        strTitle: "RenoDX Download Search",
+        bForcePopOut: true,
+        bHideActionIcons: false,
+        popupWidth: 1100,
+        popupHeight: 760,
+      }
+    );
+    setResult("Opened RenoDX search. Download the addon/archive, then use Import downloaded RenoDX addon.");
+  };
+
+  const installAutoHdrFallback = async () => {
+    if (!selectedGame) return false;
+
+    const reshadeCheck = await checkReShadePath();
+    if (!reshadeCheck.exists) {
+      setResult('Install the HDR runtime first, then retry game setup.');
+      return false;
+    }
+
+    const response = await manageGameReShade(
+      selectedGame.appid,
+      "install",
+      selectedDll?.value || "auto",
+      "",
+      selectedExecutablePath
+    );
+
+    if (response.status !== "success") {
+      setResult(`AutoHDR fallback failed: ${response.message || 'Unknown error'}`);
+      return false;
+    }
+
+    const launchOptionsMatch = response.output?.match(/Use this launch option: (.+)/);
+    const fallbackDll = selectedDll?.value || "dxgi";
+    const launchOptions = launchOptionsMatch?.[1] || `WINEDLLOVERRIDES="d3dcompiler_47=n;${fallbackDll}=n,b" %command%`;
+    await SteamClient.Apps.SetAppLaunchOptions(parseInt(selectedGame.appid), launchOptions);
+    setResult(`No RenoDX addon was imported. AutoHDR fallback was installed for ${selectedGame.name}.`);
+    return true;
   };
 
   const handleImportRenoDx = async () => {
@@ -391,7 +469,8 @@ const SteamGamesSection = () => {
         }
         setResult(`${response.output || 'RenoDX imported.'}\nHDR launch options applied.`);
       } else {
-        setResult(`RenoDX import failed: ${response.message || 'Unknown error'}`);
+        toaster.toast({ title: "RenoDX not found", body: "Installing AutoHDR fallback instead." });
+        await installAutoHdrFallback();
       }
     } catch (error) {
       setResult(`RenoDX import error: ${error instanceof Error ? error.message : String(error)}`);
