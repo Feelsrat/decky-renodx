@@ -31,6 +31,7 @@ except (ImportError, OSError):
 PLUGIN_NAME = "Decky RenoDX"
 PLUGIN_PACKAGE = "decky-renodx"
 GITHUB_RELEASES_URL = "https://api.github.com/repos/Feelsrat/decky-renodx/releases"
+RENODX_MODS_URL = "https://raw.githubusercontent.com/wiki/clshortfuse/renodx/Mods.md"
 AUTO_CHECK_INTERVAL = 86400
 AUTO_UPDATE_CHECK_ON_STARTUP = False
 RUNTIME_RELATIVE_PATH = "decky-renodx/reshade"
@@ -1705,6 +1706,124 @@ class Plugin:
         request = urllib.request.Request(url, headers={"User-Agent": PLUGIN_PACKAGE})
         self._download_file(request, target)
 
+    async def check_renodx_support(self, game_name: str) -> dict[str, Any]:
+        try:
+            mods = self._renodx_mod_list()
+            match = self._match_renodx_mod(game_name, mods)
+            if match is None:
+                return {
+                    "status": "success",
+                    "supported": False,
+                    "query": game_name,
+                    "message": "No RenoDX mod was found for this title.",
+                }
+            return {
+                "status": "success",
+                "supported": True,
+                "query": game_name,
+                "match": match,
+                "message": f"RenoDX mod found: {match['name']}",
+            }
+        except Exception as error:
+            decky.logger.exception("RenoDX support check failed")
+            return {"status": "error", "supported": False, "query": game_name, "message": str(error)}
+
+    def _renodx_mod_list(self) -> list[dict[str, Any]]:
+        cache_file = Path(self.main_path) / "renodx_mods_cache.json"
+        cached = self._read_renodx_mod_cache(cache_file)
+        if cached and time.time() - float(cached.get("fetched_at", 0)) < 86400:
+            return list(cached.get("mods", []))
+
+        request = urllib.request.Request(RENODX_MODS_URL, headers={"User-Agent": PLUGIN_PACKAGE})
+        temp_file = Path(tempfile.gettempdir()) / f"{PLUGIN_PACKAGE}-mods.md"
+        self._download_file(request, temp_file)
+        mods = self._parse_renodx_mods(temp_file.read_text(encoding="utf-8", errors="ignore"))
+        if not mods:
+            raise ValueError("RenoDX mods list was empty or could not be parsed.")
+
+        cache_file.parent.mkdir(parents=True, exist_ok=True)
+        cache_file.write_text(json.dumps({"fetched_at": time.time(), "mods": mods}, indent=2), encoding="utf-8")
+        self._fix_deck_user_ownership(cache_file.parent)
+        return mods
+
+    def _read_renodx_mod_cache(self, cache_file: Path) -> dict[str, Any] | None:
+        try:
+            if cache_file.exists():
+                return json.loads(cache_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        return None
+
+    def _parse_renodx_mods(self, markdown: str) -> list[dict[str, Any]]:
+        mods = []
+        cells = [cell.strip() for cell in markdown.split("|") if cell.strip()]
+        rows = [cells[index:index + 4] for index in range(0, len(cells) - 3, 4)]
+        for name_cell, maintainer, links_cell, status_cell in rows:
+            name = self._strip_markdown(name_cell)
+            if not name or name.lower() == "name" or set(name) <= {":", "-"}:
+                continue
+            links = re.findall(r"https?://[^\s)]+", links_cell)
+            status = self._strip_markdown(status_cell)
+            mods.append({
+                "name": name,
+                "normalized": self._normalize_game_title(name),
+                "maintainer": self._strip_markdown(maintainer),
+                "status": self._renodx_status_label(status_cell),
+                "links": links,
+                "snapshotLinks": [url for url in links if ".addon" in url.lower()],
+                "pageLinks": [url for url in links if ".addon" not in url.lower()],
+            })
+        return mods
+
+    def _strip_markdown(self, value: str) -> str:
+        value = re.sub(r"!\[[^\]]*\]\([^)]+\)", "", value)
+        value = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", value)
+        value = re.sub(r":(?:white_check_mark|construction):", "", value)
+        value = re.sub(r"<[^>]+>", "", value)
+        return re.sub(r"\s+", " ", value).strip()
+
+    def _renodx_status_label(self, status_cell: str) -> str:
+        lower = status_cell.lower()
+        if "white_check_mark" in lower:
+            return "working"
+        if "construction" in lower:
+            return "in_progress"
+        return self._strip_markdown(status_cell) or "listed"
+
+    def _normalize_game_title(self, title: str) -> str:
+        title = title.lower()
+        title = title.replace("™", "").replace("®", "")
+        title = re.sub(r"\([^)]*\)", " ", title)
+        title = re.sub(r"\b(the|definitive edition|directors cut|director's cut|remastered|remake|dx10|dx11|dx12|steam only)\b", " ", title)
+        return re.sub(r"[^a-z0-9]+", "", title)
+
+    def _match_renodx_mod(self, game_name: str, mods: list[dict[str, Any]]) -> dict[str, Any] | None:
+        query = self._normalize_game_title(game_name)
+        if not query:
+            return None
+
+        best: tuple[int, dict[str, Any]] | None = None
+        for mod in mods:
+            candidate = str(mod.get("normalized", ""))
+            if not candidate:
+                continue
+            score = 0
+            if candidate == query:
+                score = 100
+            elif candidate in query or query in candidate:
+                score = 88 if min(len(candidate), len(query)) >= 6 else 60
+            else:
+                overlap = len(set(re.findall(r"[a-z0-9]+", game_name.lower())) & set(re.findall(r"[a-z0-9]+", str(mod.get("name", "")).lower())))
+                score = overlap * 12
+            if score >= 70 and (best is None or score > best[0]):
+                best = (score, mod)
+
+        if best is None:
+            return None
+        result = dict(best[1])
+        result["score"] = best[0]
+        return result
+
     async def manage_game_reshade(self, appid: str, action: str, dll_override: str = "dxgi", vulkan_mode: str = "", selected_executable_path: str = "") -> dict:
         try:
             assets_dir = self._get_assets_dir()
@@ -3299,7 +3418,6 @@ Note: If ReShadePreset.ini already existed, your previous settings were preserve
                 return {**status, "ok": False, "message": f"Update failed: {error}"}
 
             current = self._current_version()
-            restart = self._schedule_loader_restart("plugin updated")
             result = {
                 "ok": True,
                 "current": current,
@@ -3309,8 +3427,8 @@ Note: If ReShadePreset.ini already existed, your previous settings were preserve
                 "canInstall": False,
                 "elevated": self._has_elevated_permissions(),
                 "requiresRestart": True,
-                "restarted": restart["scheduled"],
-                "message": "Update installed. Decky Loader restart scheduled." if restart["scheduled"] else "Update installed. Restart Decky Loader to finish.",
+                "restarted": False,
+                "message": "Update installed. Restart Decky or Steam manually when convenient.",
             }
             self._cached_update_status = result
             return result

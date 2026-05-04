@@ -111,6 +111,22 @@ class BackendMockTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue((game_dir / "renodx-test.addon64").exists())
         self.assertIn("DXVK_HDR=1", result["launch_options"])
 
+    async def test_renodx_mod_parser_and_matcher(self):
+        plugin = self.module.Plugin()
+        markdown = (
+            "| Name | Maintainer | Links | Status | "
+            "| Bayonetta | ShortFuse | [![Snapshot](badge)](https://example.com/renodx-bayonetta.addon32) | :white_check_mark: | "
+            "| Other Game | Dev | [![Nexus Mods](badge)](https://www.nexusmods.com/other/mods/1) | :construction: |"
+        )
+
+        mods = plugin._parse_renodx_mods(markdown)
+        match = plugin._match_renodx_mod("Bayonetta", mods)
+
+        self.assertIsNotNone(match)
+        self.assertEqual(match["name"], "Bayonetta")
+        self.assertEqual(match["status"], "working")
+        self.assertEqual(match["snapshotLinks"], ["https://example.com/renodx-bayonetta.addon32"])
+
     async def test_list_installed_games_parses_steam_libraries(self):
         plugin = self.module.Plugin()
         steamapps = self.home / ".local" / "share" / "Steam" / "steamapps"

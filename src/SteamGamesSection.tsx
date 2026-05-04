@@ -18,6 +18,7 @@ const listInstalledGames = callable<[], GameListResponse>("list_installed_games"
 const findGameExecutablePath = callable<[string], ExecutableDetectionResponse>("find_game_executable_path");
 const logError = callable<[string], void>("log_error");
 const importRenoDxForGame = callable<[string, string, string], ReShadeResponse & { launch_options?: string }>("import_renodx_for_game");
+const checkRenoDxSupport = callable<[string], RenoDxSupportResponse>("check_renodx_support");
 
 interface GameInfo {
   appid: string;
@@ -88,6 +89,24 @@ interface ExecutableDetectionResponse {
   linux_game_warning?: boolean;
 }
 
+interface RenoDxModMatch {
+  name: string;
+  maintainer?: string;
+  status?: string;
+  links?: string[];
+  snapshotLinks?: string[];
+  pageLinks?: string[];
+  score?: number;
+}
+
+interface RenoDxSupportResponse {
+  status: string;
+  supported: boolean;
+  query: string;
+  message?: string;
+  match?: RenoDxModMatch;
+}
+
 function RenoDxBrowserModal({ url, closeModal }: { url: string; closeModal?: () => void }) {
   return (
     <ModalRoot closeModal={closeModal} bAllowFullSize>
@@ -130,6 +149,8 @@ const SteamGamesSection = () => {
   const [executableDetection, setExecutableDetection] = useState<ExecutableDetectionResponse | null>(null);
   const [checkingExecutable, setCheckingExecutable] = useState<boolean>(false);
   const [selectedExecutablePath, setSelectedExecutablePath] = useState<string>('');
+  const [renoDxSupport, setRenoDxSupport] = useState<RenoDxSupportResponse | null>(null);
+  const [checkingRenoDx, setCheckingRenoDx] = useState<boolean>(false);
 
   const dllOverrides: DllOverride[] = [
     { label: 'Automatic (Enhanced Detection)', value: 'auto' },
@@ -174,6 +195,7 @@ const SteamGamesSection = () => {
       if (!selectedGame) {
         setExecutableDetection(null);
         setSelectedExecutablePath('');
+        setRenoDxSupport(null);
         return;
       }
 
@@ -201,6 +223,27 @@ const SteamGamesSection = () => {
     };
 
     checkExecutableDetection();
+  }, [selectedGame]);
+
+  useEffect(() => {
+    const checkSupport = async () => {
+      if (!selectedGame) {
+        setRenoDxSupport(null);
+        return;
+      }
+
+      try {
+        setCheckingRenoDx(true);
+        setRenoDxSupport(await checkRenoDxSupport(selectedGame.name));
+      } catch (error) {
+        await logError(`RenoDX support check error: ${String(error)}`);
+        setRenoDxSupport({ status: "error", supported: false, query: selectedGame.name, message: String(error) });
+      } finally {
+        setCheckingRenoDx(false);
+      }
+    };
+
+    checkSupport();
   }, [selectedGame]);
 
   // Helper function to extract Linux detection info from integrated result
@@ -413,7 +456,8 @@ const SteamGamesSection = () => {
       return;
     }
 
-    const url = `https://www.google.com/search?q=${encodeURIComponent(`${selectedGame.name} RenoDX NexusMods`)}`;
+    const directUrl = renoDxSupport?.match?.snapshotLinks?.[0] || renoDxSupport?.match?.pageLinks?.[0];
+    const url = directUrl || `https://www.google.com/search?q=${encodeURIComponent(`${selectedGame.name} RenoDX NexusMods`)}`;
     let modal: { Close: () => void };
     modal = showModal(
       <RenoDxBrowserModal
@@ -429,7 +473,7 @@ const SteamGamesSection = () => {
         popupHeight: 760,
       }
     );
-    setResult("Opened RenoDX search. Download the addon/archive, then use Import downloaded RenoDX addon.");
+    setResult(directUrl ? "Opened the matched RenoDX mod link. Download it, then use Import downloaded RenoDX addon." : "Opened RenoDX search. Download the addon/archive, then use Import downloaded RenoDX addon.");
   };
 
   const installAutoHdrFallback = async () => {
@@ -551,6 +595,49 @@ const SteamGamesSection = () => {
 
         {renderExecutableSelection()}
       </>
+    );
+  };
+
+  const renderRenoDxSupport = () => {
+    if (!selectedGame) return null;
+
+    if (checkingRenoDx) {
+      return (
+        <PanelSectionRow>
+          <div style={{ fontSize: "0.9em", opacity: 0.75 }}>Checking RenoDX mod list...</div>
+        </PanelSectionRow>
+      );
+    }
+
+    if (!renoDxSupport) return null;
+    const match = renoDxSupport.match;
+    const supported = renoDxSupport.supported && match;
+    const statusText = match?.status === "working" ? "Working" : match?.status === "in_progress" ? "In progress" : match?.status || "Listed";
+    const linkCount = (match?.links || []).length;
+
+    return (
+      <PanelSectionRow>
+        <div style={{
+          padding: "10px",
+          marginTop: "8px",
+          backgroundColor: supported ? "rgba(76, 175, 80, 0.14)" : "rgba(255, 167, 38, 0.12)",
+          border: supported ? "1px solid rgba(76, 175, 80, 0.35)" : "1px solid rgba(255, 167, 38, 0.35)",
+          borderRadius: "4px",
+          fontSize: "0.86em"
+        }}>
+          <div style={{ fontWeight: "bold", marginBottom: "4px" }}>
+            {supported ? `RenoDX mod found: ${match?.name}` : "No RenoDX mod match found"}
+          </div>
+          {supported ? (
+            <>
+              <div>Status: {statusText}{match?.maintainer ? ` • Maintainer: ${match.maintainer}` : ""}</div>
+              <div style={{ opacity: 0.75 }}>{linkCount} link{linkCount === 1 ? "" : "s"} available from the RenoDX wiki.</div>
+            </>
+          ) : (
+            <div style={{ opacity: 0.75 }}>The plugin will fall back to AutoHDR/ReShade unless you import a compatible addon manually.</div>
+          )}
+        </div>
+      </PanelSectionRow>
     );
   };
 
@@ -767,6 +854,8 @@ const SteamGamesSection = () => {
               </div>
             </PanelSectionRow>
           )}
+
+          {renderRenoDxSupport()}
 
           {renderDetectionInfo()}
 
