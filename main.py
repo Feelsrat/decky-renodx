@@ -32,6 +32,7 @@ PLUGIN_NAME = "Decky RenoDX"
 PLUGIN_PACKAGE = "decky-renodx"
 GITHUB_RELEASES_URL = "https://api.github.com/repos/Feelsrat/decky-renodx/releases"
 RENODX_MODS_URL = "https://raw.githubusercontent.com/wiki/clshortfuse/renodx/Mods.md"
+RESHADE_FXH_URL = "https://raw.githubusercontent.com/crosire/reshade-shaders/slim/Shaders/ReShade.fxh"
 AUTO_CHECK_INTERVAL = 86400
 AUTO_UPDATE_CHECK_ON_STARTUP = False
 RUNTIME_RELATIVE_PATH = "decky-renodx/reshade"
@@ -1471,6 +1472,9 @@ class Plugin:
             advanced_archive = bin_dir / "advanced_autohdr_effect.tar.gz"
             if not autohdr_archive.exists() or not advanced_archive.exists():
                 self._download_autohdr_payloads(bin_dir, autohdr_archive, advanced_archive)
+            reshade_fxh = bin_dir / "ReShade.fxh"
+            if not reshade_fxh.exists() or reshade_fxh.stat().st_size < 1024:
+                self._download_url(RESHADE_FXH_URL, reshade_fxh)
 
             return {"ok": True, "message": "Runtime assets are ready."}
         except Exception as error:
@@ -1566,6 +1570,10 @@ class Plugin:
                         shutil.copy2(path, shader_dir / path.name)
                     elif "texture" in str(path.parent).lower():
                         shutil.copy2(path, texture_dir / path.name)
+
+        reshade_fxh = bin_dir / "ReShade.fxh"
+        if reshade_fxh.exists():
+            shutil.copy2(reshade_fxh, shader_dir / "ReShade.fxh")
 
     def _copy_if_different(self, source: Path, target: Path) -> None:
         try:
