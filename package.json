@@ -1,7 +1,7 @@
 {
-  "name": "decky-plugin-template",
+  "name": "decky-renodx",
   "version": "0.0.1",
-  "description": "A template to quickly create decky plugins from scratch, based on TypeScript and webpack",
+  "description": "Decky Loader plugin for RenoDX, AutoHDR fallback launch setup, and Proton HDR helpers",
   "type": "module",
   "scripts": {
     "build": "rollup -c",
@@ -10,21 +10,23 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/SteamDeckHomebrew/decky-plugin-template.git"
+    "url": "git+https://github.com/Feelsrat/decky-renodx.git"
   },
   "keywords": [
     "decky",
     "plugin",
-    "plugin-template",
+    "hdr",
+    "renodx",
+    "proton",
     "steam-deck",
     "deck"
   ],
-  "author": "You <you@you.tld>",
+  "author": "Feelsrat",
   "license": "BSD-3-Clause",
   "bugs": {
-    "url": "https://github.com/SteamDeckHomebrew/decky-plugin-template/issues"
+    "url": "https://github.com/Feelsrat/decky-renodx/issues"
   },
-  "homepage": "https://github.com/SteamDeckHomebrew/decky-plugin-template#readme",
+  "homepage": "https://github.com/Feelsrat/decky-renodx#readme",
   "devDependencies": {
     "@decky/rollup": "^1.0.2",
     "@decky/ui": "^4.11.0",

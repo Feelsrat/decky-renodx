@@ -1,11 +1,11 @@
 {
-  "name": "Example Plugin",
-  "author": "John Doe",
+  "name": "Decky RenoDX",
+  "author": "Feelsrat",
   "flags": ["debug", "_root"],
   "api_version": 1,
   "publish": {
-    "tags": ["template", "root"],
-    "description": "Decky example plugin.",
+    "tags": ["hdr", "renodx", "proton", "root"],
+    "description": "Manage per-game HDR launch options and run RenoDX, protontricks, or ReShade fallback helper commands from Decky.",
     "image": "https://opengraph.githubassets.com/1/SteamDeckHomebrew/PluginLoader"
   }
 }
