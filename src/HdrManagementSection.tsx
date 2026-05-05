@@ -57,11 +57,14 @@ const HdrManagementSection = () => {
       }
     };
 
+    // SteamClient is injected by Steam/Decky at runtime. On some systems/Decky
+    // versions it may not be available immediately (or at all), so guard it.
     // @ts-ignore
-    const appFocusSub = SteamClient.Apps.OnGameFocusChanged.subscribe(onAppFocus);
+    const focusEvent = globalThis?.SteamClient?.Apps?.OnGameFocusChanged;
+    const appFocusSub = focusEvent?.subscribe?.(onAppFocus);
     
     return () => {
-      appFocusSub.unsubscribe();
+      appFocusSub?.unsubscribe?.();
     };
   }, [games]);
 
@@ -74,7 +77,7 @@ const HdrManagementSection = () => {
         
         // Initial detection: find current active game
         // @ts-ignore
-        const activeApp = await SteamClient.Apps.GetActiveAppID();
+        const activeApp = await globalThis?.SteamClient?.Apps?.GetActiveAppID?.();
         if (activeApp) {
           const game = sortedGames.find((g: any) => g.appid === activeApp.toString());
           if (game) setSelectedGame(game);
