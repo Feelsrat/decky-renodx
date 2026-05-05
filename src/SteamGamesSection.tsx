@@ -15,6 +15,7 @@ import { Navigation } from "@decky/ui";
 const manageGameReShade = callable<[string, string, string, string, string], ReShadeResponse>("manage_game_reshade");
 const installHdrFallback = callable<[string, string, string], ReShadeResponse & { launch_options?: string; method?: string }>("install_hdr_fallback");
 const repairSpecialKHdrWidget = callable<[string, string, string], ReShadeResponse & { method?: string }>("repair_specialk_hdr_widget");
+const getGameHdrStatus = callable<[string, string], GameHdrStatusResponse>("get_game_hdr_status");
 const checkReShadePath = callable<[], PathCheckResponse>("check_reshade_path");
 const listInstalledGames = callable<[], GameListResponse>("list_installed_games");
 const findGameExecutablePath = callable<[string], ExecutableDetectionResponse>("find_game_executable_path");
@@ -109,6 +110,24 @@ interface RenoDxSupportResponse {
   match?: RenoDxModMatch;
 }
 
+interface GameHdrStatusResponse {
+  status: string;
+  installed: boolean;
+  method?: string;
+  needs_update?: boolean;
+  plugin_version?: string;
+  installed_version?: string;
+  launch_has_hdr?: boolean;
+  exe_dir?: string;
+  message?: string;
+  files?: {
+    renodx?: string[];
+    specialk?: string[];
+    reshade?: string[];
+    marker?: string[];
+  };
+}
+
 function RenoDxBrowserModal({ url, closeModal }: { url: string; closeModal?: () => void }) {
   return (
     <ModalRoot closeModal={closeModal} bAllowFullSize>
@@ -195,6 +214,8 @@ const SteamGamesSection = () => {
   const [selectedExecutablePath, setSelectedExecutablePath] = useState<string>('');
   const [renoDxSupport, setRenoDxSupport] = useState<RenoDxSupportResponse | null>(null);
   const [checkingRenoDx, setCheckingRenoDx] = useState<boolean>(false);
+  const [hdrStatus, setHdrStatus] = useState<GameHdrStatusResponse | null>(null);
+  const [checkingHdrStatus, setCheckingHdrStatus] = useState<boolean>(false);
 
   const dllOverrides: DllOverride[] = [
     { label: 'Automatic (Enhanced Detection)', value: 'auto' },
@@ -268,6 +289,26 @@ const SteamGamesSection = () => {
 
     checkExecutableDetection();
   }, [selectedGame]);
+
+  useEffect(() => {
+    refreshHdrStatus();
+  }, [selectedGame, selectedExecutablePath]);
+
+  const refreshHdrStatus = async () => {
+    if (!selectedGame) {
+      setHdrStatus(null);
+      return;
+    }
+    try {
+      setCheckingHdrStatus(true);
+      setHdrStatus(await getGameHdrStatus(selectedGame.appid, selectedExecutablePath));
+    } catch (error) {
+      await logError(`HDR status check error: ${String(error)}`);
+      setHdrStatus({ status: "error", installed: false, message: String(error) });
+    } finally {
+      setCheckingHdrStatus(false);
+    }
+  };
 
   useEffect(() => {
     const checkSupport = async () => {
@@ -483,6 +524,7 @@ const SteamGamesSection = () => {
 
             if (response.status === "success") {
               await removeHdrLaunchOptions(selectedGame.appid);
+              await refreshHdrStatus();
               setResult(`Successfully removed ReShade from ${selectedGame.name}`);
             } else {
               setResult(`Failed to unpatch: ${response.message || 'Unknown error'}`);
@@ -546,6 +588,7 @@ const SteamGamesSection = () => {
     const fallbackDll = selectedDll?.value && selectedDll.value !== "auto" ? selectedDll.value : "dxgi";
     const launchOptions = response.launch_options || launchOptionsMatch?.[1] || `PROTON_ENABLE_HDR=1 DXVK_HDR=1 ENABLE_HDR_WSI=1 WINEDLLOVERRIDES="d3dcompiler_47=n;${fallbackDll}=n,b" %command%`;
     await setMergedHdrLaunchOptions(selectedGame.appid, launchOptions);
+    await refreshHdrStatus();
     setResult(`No RenoDX addon was imported. Installed ${response.method === "specialk" ? "Special K HDR" : "ReShade HDR shader"} fallback for ${selectedGame.name}. Existing launch wrappers such as decky-lsfg-vk were preserved.`);
     return true;
   };
@@ -566,6 +609,7 @@ const SteamGamesSection = () => {
         setResult(`Special K HDR widget repair failed: ${response.message || 'Unknown error'}`);
         return;
       }
+      await refreshHdrStatus();
       setResult(`${response.output || 'Special K HDR widget state repaired.'}\nRelaunch the game before testing the HDR pop-out again.`);
     } catch (error) {
       setResult(`Special K HDR widget repair error: ${error instanceof Error ? error.message : String(error)}`);
@@ -585,6 +629,7 @@ const SteamGamesSection = () => {
         if (response.launch_options) {
           await setMergedHdrLaunchOptions(selectedGame.appid, response.launch_options);
         }
+        await refreshHdrStatus();
         setResult(`${response.output || 'RenoDX imported.'}\nHDR launch options applied. Existing launch wrappers such as decky-lsfg-vk were preserved.`);
       } else {
         toaster.toast({ title: "RenoDX not found", body: "Installing automatic HDR fallback instead." });
@@ -702,6 +747,57 @@ const SteamGamesSection = () => {
             </>
           ) : (
             <div style={{ opacity: 0.75 }}>The plugin falls back through Special K, then ReShade HDR shaders, unless you import a compatible addon manually.</div>
+          )}
+        </div>
+      </PanelSectionRow>
+    );
+  };
+
+  const renderHdrStatus = () => {
+    if (!selectedGame) return null;
+    if (checkingHdrStatus) {
+      return (
+        <PanelSectionRow>
+          <div style={{ fontSize: '0.9em', opacity: 0.7 }}>Checking HDR install status...</div>
+        </PanelSectionRow>
+      );
+    }
+    if (!hdrStatus) return null;
+
+    const installed = hdrStatus.status === "success" && hdrStatus.installed;
+    const needsUpdate = Boolean(hdrStatus.needs_update);
+    const borderColor = needsUpdate ? "#ffa726" : installed ? "#4CAF50" : "rgba(255, 255, 255, 0.18)";
+    const title = needsUpdate ? "HDR installed, refresh recommended" : installed ? "HDR already installed" : "HDR not installed";
+    const fileCount = [
+      ...(hdrStatus.files?.renodx || []),
+      ...(hdrStatus.files?.specialk || []),
+      ...(hdrStatus.files?.reshade || []),
+    ].length;
+
+    return (
+      <PanelSectionRow>
+        <div style={{
+          padding: '12px',
+          marginTop: '8px',
+          backgroundColor: 'var(--decky-highlighted-ui-bg)',
+          borderRadius: '4px',
+          border: `1px solid ${borderColor}`,
+          fontSize: '0.9em'
+        }}>
+          <div style={{ fontWeight: 'bold', marginBottom: '6px' }}>{title}</div>
+          <div style={{ opacity: 0.82 }}>{hdrStatus.message || "No status details available."}</div>
+          {installed && (
+            <div style={{ opacity: 0.72, marginTop: '6px' }}>
+              Method: {hdrStatus.method || "unknown"}
+              {hdrStatus.installed_version && ` • Installed by v${hdrStatus.installed_version}`}
+              {hdrStatus.plugin_version && ` • Current v${hdrStatus.plugin_version}`}
+              {fileCount > 0 && ` • ${fileCount} HDR file${fileCount === 1 ? "" : "s"} found`}
+            </div>
+          )}
+          {installed && !hdrStatus.launch_has_hdr && (
+            <div style={{ color: "#ffa726", marginTop: '6px' }}>
+              Launch options may need to be re-applied.
+            </div>
           )}
         </div>
       </PanelSectionRow>
@@ -923,6 +1019,8 @@ const SteamGamesSection = () => {
           )}
 
           {renderRenoDxSupport()}
+
+          {renderHdrStatus()}
 
           {renderDetectionInfo()}
 

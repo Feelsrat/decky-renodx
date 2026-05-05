@@ -17,6 +17,7 @@ import time
 import zipfile
 import tarfile
 import platform
+from datetime import datetime, timezone
 try:
     import pwd
 except ImportError:
@@ -1995,6 +1996,8 @@ class Plugin:
             
             if process.returncode != 0:
                 return {"status": "error", "message": process.stderr}
+            if action == "uninstall":
+                self._remove_game_hdr_marker(Path(game_path))
             self._fix_deck_user_ownership(game_path)
             return {"status": "success", "output": process.stdout}
         except Exception as e:
@@ -2026,6 +2029,7 @@ class Plugin:
             specialk_result = self._install_specialk_for_game(exe_dir, api, arch)
             if specialk_result.get("status") == "success":
                 launch_options = self._hdr_launch_options(str(specialk_result["dll"]))
+                self._write_game_hdr_marker(exe_dir, appid, "specialk", str(specialk_result["dll"]), arch)
                 self._fix_deck_user_ownership(exe_dir)
                 return {
                     "status": "success",
@@ -2041,6 +2045,7 @@ class Plugin:
             decky.logger.warning("Special K fallback was not applied: %s", specialk_result.get("message"))
             reshade_result = await self.manage_game_reshade(appid, "install", api, "", selected_executable_path)
             if reshade_result.get("status") == "success":
+                self._write_game_hdr_marker(exe_dir, appid, "reshade-hdr", api, arch)
                 reshade_result["method"] = "reshade-hdr"
                 reshade_result["output"] = (
                     f"Special K was not available for this game, so ReShade HDR shaders were installed instead.\n"
@@ -2051,6 +2056,51 @@ class Plugin:
         except Exception as e:
             decky.logger.exception("HDR fallback install failed")
             return {"status": "error", "message": str(e)}
+
+    async def get_game_hdr_status(self, appid: str, selected_executable_path: str = "") -> dict:
+        try:
+            exe_dir = self._resolve_game_exe_dir(appid, selected_executable_path)
+            marker = self._read_game_hdr_marker(exe_dir)
+            files = self._detect_game_hdr_files(exe_dir)
+            launch_options = self._steam_launch_options(appid)
+            launch_has_hdr = self._launch_options_have_hdr(launch_options)
+            current_version = self._current_version()
+            installed_version = str(marker.get("plugin_version", "")) if marker else ""
+            installed = bool(files["renodx"] or files["specialk"] or files["reshade"] or launch_has_hdr)
+            needs_update = bool(installed and installed_version and current_version and self._is_newer_version(installed_version, current_version))
+            method = (
+                "renodx" if files["renodx"]
+                else "specialk" if files["specialk"]
+                else "reshade-hdr" if files["reshade"]
+                else str(marker.get("method", "")) if marker
+                else "launch-options" if launch_has_hdr
+                else ""
+            )
+            messages = []
+            if installed:
+                messages.append(f"HDR appears installed via {method or 'existing launch options'}.")
+            else:
+                messages.append("HDR injection is not detected for this game.")
+            if installed and not launch_has_hdr:
+                messages.append("HDR files are present, but HDR launch options are missing.")
+            if needs_update:
+                messages.append(f"Installed by plugin {installed_version}; current plugin is {current_version}. Refresh recommended.")
+            return {
+                "status": "success",
+                "installed": installed,
+                "method": method,
+                "needs_update": needs_update,
+                "plugin_version": current_version,
+                "installed_version": installed_version,
+                "launch_has_hdr": launch_has_hdr,
+                "launch_options": launch_options,
+                "exe_dir": str(exe_dir),
+                "files": files,
+                "message": " ".join(messages),
+            }
+        except Exception as e:
+            decky.logger.exception("Game HDR status check failed")
+            return {"status": "error", "installed": False, "needs_update": False, "message": str(e)}
 
     async def repair_specialk_hdr_widget(self, appid: str, dll_override: str = "auto", selected_executable_path: str = "") -> dict:
         """Reset Special K UI/widget state and re-apply HDR defaults for the selected game."""
@@ -2091,6 +2141,61 @@ class Plugin:
         if selected_executable_path and os.path.exists(selected_executable_path):
             return Path(selected_executable_path).parent
         return Path(self._find_game_path(appid))
+
+    def _write_game_hdr_marker(self, exe_dir: Path, appid: str, method: str, dll: str, arch: str) -> None:
+        marker = {
+            "appid": appid,
+            "method": method,
+            "dll": dll,
+            "arch": arch,
+            "plugin_version": self._current_version(),
+            "installed_at": datetime.now(timezone.utc).isoformat(),
+        }
+        (exe_dir / ".decky-renodx-hdr.json").write_text(json.dumps(marker, indent=2), encoding="utf-8")
+
+    def _read_game_hdr_marker(self, exe_dir: Path) -> dict[str, Any]:
+        marker_path = exe_dir / ".decky-renodx-hdr.json"
+        if not marker_path.exists():
+            return {}
+        try:
+            data = json.loads(marker_path.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else {}
+        except (OSError, json.JSONDecodeError):
+            return {}
+
+    def _remove_game_hdr_marker(self, exe_dir: Path) -> None:
+        try:
+            marker = exe_dir / ".decky-renodx-hdr.json"
+            if marker.exists():
+                marker.unlink()
+        except OSError as error:
+            decky.logger.warning("Could not remove game HDR marker for %s: %s", exe_dir, error)
+
+    def _detect_game_hdr_files(self, exe_dir: Path) -> dict[str, Any]:
+        renodx_files = sorted(path.name for path in exe_dir.glob("*.addon*") if "renodx" in path.name.lower())
+        specialk_files = sorted(path.name for path in exe_dir.glob("*.dll") if (exe_dir / f"{path.stem}.ini").exists() and "reshade" not in path.name.lower())
+        reshade_files = sorted(path.name for path in exe_dir.glob("ReShade.ini"))
+        return {
+            "renodx": renodx_files,
+            "specialk": specialk_files,
+            "reshade": reshade_files,
+            "marker": [".decky-renodx-hdr.json"] if (exe_dir / ".decky-renodx-hdr.json").exists() else [],
+        }
+
+    def _steam_launch_options(self, appid: str) -> str:
+        try:
+            appinfo = self._steam_root_candidates()[0] / "appcache" / "appinfo.vdf"
+            if appinfo.exists():
+                text = appinfo.read_text(encoding="utf-8", errors="ignore")
+                match = re.search(rf'"appid"\s+"{re.escape(str(appid))}".{{0,5000}}?"LaunchOptions"\s+"((?:\\.|[^"\\])*)"', text, re.S | re.I)
+                if match:
+                    return bytes(match.group(1), "utf-8").decode("unicode_escape")
+        except Exception:
+            pass
+        return ""
+
+    def _launch_options_have_hdr(self, launch_options: str) -> bool:
+        return any(token in launch_options for token in ["PROTON_ENABLE_HDR=1", "DXVK_HDR=1", "ENABLE_HDR_WSI=1", "ENABLE_GAMESCOPE_WSI=1", "WINEDLLOVERRIDES="])
 
     async def _detect_api_for_path(self, path: str) -> dict:
         try:

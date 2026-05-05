@@ -265,6 +265,26 @@ class BackendMockTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse((game_dir / "imgui.ini").exists())
         self.assertTrue(list(game_dir.glob("imgui.ini.decky-renodx-backup-*")))
 
+    async def test_game_hdr_status_reports_installed_and_update_needed(self):
+        plugin = self.module.Plugin()
+        plugin._current_version = lambda: "0.2.0"
+        game_dir = self.home / "game"
+        game_dir.mkdir()
+        (game_dir / "dxgi.dll").write_text("dll", encoding="utf-8")
+        (game_dir / "dxgi.ini").write_text("[SpecialK.HDR]\nHDR.Enable=true\n", encoding="utf-8")
+        (game_dir / ".decky-renodx-hdr.json").write_text(
+            json.dumps({"method": "specialk", "plugin_version": "0.1.0"}),
+            encoding="utf-8",
+        )
+        plugin._resolve_game_exe_dir = lambda _appid, _selected="": game_dir
+
+        result = await plugin.get_game_hdr_status("123")
+
+        self.assertEqual(result["status"], "success")
+        self.assertTrue(result["installed"])
+        self.assertEqual(result["method"], "specialk")
+        self.assertTrue(result["needs_update"])
+
     async def test_restart_uses_helper_when_systemd_run_fails(self):
         plugin = self.module.Plugin()
         calls = []
