@@ -145,6 +145,24 @@ class BackendMockTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["status"], "success")
         self.assertEqual(result["games"], [{"appid": "123", "name": "Example Game"}])
 
+    async def test_find_game_path_uses_deck_user_home_when_decky_home_is_root(self):
+        self.module.decky.HOME = "/root"
+        plugin = self.module.Plugin()
+        steamapps = self.home / ".local" / "share" / "Steam" / "steamapps"
+        game_dir = steamapps / "common" / "Example Game"
+        steamapps.mkdir(parents=True)
+        game_dir.mkdir(parents=True)
+        (steamapps / "libraryfolders.vdf").write_text(
+            '"libraryfolders"\n{\n\t"0"\n\t{\n\t\t"path"\t\t"' + str(self.home / ".local" / "share" / "Steam").replace("\\", "\\\\") + '"\n\t}\n}\n',
+            encoding="utf-8",
+        )
+        (steamapps / "appmanifest_123.acf").write_text(
+            '"AppState"\n{\n\t"appid"\t\t"123"\n\t"name"\t\t"Example Game"\n\t"installdir"\t\t"Example Game"\n}\n',
+            encoding="utf-8",
+        )
+
+        self.assertEqual(plugin._find_game_path("123"), str(game_dir))
+
     async def test_root_home_does_not_move_runtime_to_root(self):
         self.module.decky.HOME = "/root"
         plugin = self.module.Plugin()

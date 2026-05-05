@@ -3419,18 +3419,12 @@ Note: If ReShadePreset.ini already existed, your previous settings were preserve
             return None
 
     def _find_game_path(self, appid: str) -> str:
-        steam_root = Path(decky.HOME) / ".steam" / "steam"
-        library_file = steam_root / "steamapps" / "libraryfolders.vdf"
+        library_file = self._find_libraryfolders_file()
+        if library_file is None or not library_file.exists():
+            checked = [str(path / "steamapps" / "libraryfolders.vdf") for path in self._steam_root_candidates()]
+            raise ValueError(f"Steam library file not found. Checked: {', '.join(checked)}")
 
-        if not library_file.exists():
-            raise ValueError(f"Steam library file not found: {library_file}")
-
-        library_paths = []
-        with open(library_file, "r", encoding="utf-8") as file:
-            for line in file:
-                if '"path"' in line:
-                    path = line.split('"path"')[1].strip().strip('"').replace("\\\\", "/")
-                    library_paths.append(path)
+        library_paths = self._steam_library_paths(library_file)
 
         for library_path in library_paths:
             manifest_path = Path(library_path) / "steamapps" / f"appmanifest_{appid}.acf"
