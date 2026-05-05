@@ -289,28 +289,25 @@ class BackendMockTest(unittest.IsolatedAsyncioTestCase):
         plugin = self.module.Plugin()
         calls = []
 
-        class Result:
-            def __init__(self, returncode):
-                self.returncode = returncode
-                self.stderr = "failed"
+        original_popen = self.module.subprocess.Popen
 
-        original_run = self.module.subprocess.run
-
-        def fake_run(argv, **kwargs):
+        def fake_popen(argv, **kwargs):
             calls.append(argv)
-            if argv[:2] == ["bash", "-lc"]:
-                return Result(0)
-            return Result(1)
+            # Simulate systemd-run failing by raising an exception
+            if argv[0] == "systemd-run":
+                raise OSError("fail")
+            # Simulate helper script succeeding
+            return None
 
-        self.module.subprocess.run = fake_run
+        self.module.subprocess.Popen = fake_popen
         try:
             result = plugin._schedule_loader_restart("test")
         finally:
-            self.module.subprocess.run = original_run
+            self.module.subprocess.Popen = original_popen
 
         self.assertTrue(result["scheduled"])
         self.assertEqual(result["method"], "helper")
-        self.assertTrue(any(call[:2] == ["bash", "-lc"] for call in calls))
+        self.assertTrue(any("restart" in str(call) for call in calls))
 
 
 if __name__ == "__main__":
