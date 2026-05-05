@@ -205,7 +205,7 @@ class Plugin:
         decky.logger.info("Decky RenoDX loaded")
 
     async def _unload(self):
-        await self._stop_auto_update_task()
+        await self._stop_all_tasks()
         decky.logger.info("Decky RenoDX unloaded")
 
     async def parse_steam_logs_for_executable(self, appid: str) -> dict:
@@ -4104,6 +4104,25 @@ Note: If ReShadePreset.ini already existed, your previous settings were preserve
         self._update_last_check_time()
         return result
 
+    async def _stop_all_tasks(self) -> None:
+        """Cleanly stop all background tasks and close handlers."""
+        decky.logger.info("Stopping all plugin tasks for update/restart")
+        
+        # 1. Stop auto-update task
+        await self._stop_auto_update_task()
+        
+        # 2. Close all per-game loggers
+        import logging
+        for logger_name in list(logging.Logger.manager.loggerDict.keys()):
+            if logger_name.startswith("HDR_"):
+                logger = logging.getLogger(logger_name)
+                for handler in logger.handlers[:]:
+                    handler.close()
+                    logger.removeHandler(handler)
+        
+        # 3. Any other cleanup (e.g. active downloads)
+        # self._download_task.cancel() if self._download_task else None
+
     async def install_update(self) -> dict[str, Any]:
         async with self._install_lock:
             status = await self.check_update(force=True)
@@ -4139,19 +4158,33 @@ Note: If ReShadePreset.ini already existed, your previous settings were preserve
                 return {**status, "ok": False, "message": f"Update failed: {error}"}
 
             current = self._current_version()
+            decky.logger.info(f"Successfully installed v{latest}. Scheduling restart.")
+            
+            # Stop everything before restart to prevent zombies
+            await self._stop_all_tasks()
+            
+            # Schedule restart and EXIT
+            restart_res = self._schedule_loader_restart(f"Plugin updated to v{latest}")
+            
             result = {
                 "ok": True,
                 "current": current,
                 "latest": latest,
                 "installedVersion": install_info.get("installedVersion", current),
-                "hasUpdate": self._is_newer_version(current, latest),
+                "hasUpdate": False,
                 "canInstall": False,
                 "elevated": self._has_elevated_permissions(),
                 "requiresRestart": True,
-                "restarted": False,
-                "message": "Update installed. Restart Decky or Steam manually when convenient.",
+                "restarted": restart_res["scheduled"],
+                "message": f"Update v{latest} installed. {restart_res['message']}",
             }
             self._cached_update_status = result
+            
+            # Give systemd a tiny bit of time to register the restart request then commit suicide
+            if restart_res["scheduled"]:
+                # Using a slightly longer delay to ensure the frontend receives the success response
+                asyncio.get_event_loop().call_later(2, lambda: os._exit(0))
+                
             return result
 
     async def _auto_check_update(self) -> None:
@@ -4389,59 +4422,36 @@ Note: If ReShadePreset.ini already existed, your previous settings were preserve
     def _schedule_loader_restart(self, reason: str) -> dict[str, Any]:
         decky.logger.info("Scheduling Decky Loader restart: %s", reason)
         unit = f"{PLUGIN_PACKAGE}-restart-{int(time.time())}"
-        commands = [
-            {
-                "method": "systemd-run-user",
-                "argv": ["systemd-run", "--user", "--on-active=2", f"--unit={unit}", "systemctl", "--user", "restart", "plugin_loader.service"],
-            },
-            {
-                "method": "systemd-run-system",
-                "argv": ["systemd-run", "--on-active=2", f"--unit={unit}", "systemctl", "restart", "plugin_loader.service"],
-            },
-        ]
-        for command in commands:
-            try:
-                result = subprocess.run(command["argv"], check=False, capture_output=True, text=True, timeout=5)
-            except (OSError, subprocess.TimeoutExpired) as error:
-                decky.logger.warning("%s restart scheduling failed: %s", command["method"], error)
-                continue
-            if result.returncode == 0:
-                return {"scheduled": True, "method": command["method"], "message": "Decky Loader restart scheduled."}
-            decky.logger.warning("%s exited %s: %s", command["method"], result.returncode, result.stderr.strip()[-160:])
+        
+        # Primary method: systemd-run (delayed, detached)
+        cmd = ["systemd-run", "--user", "--on-active=2s", f"--unit={unit}", "systemctl", "--user", "restart", "plugin_loader.service"]
+        
+        try:
+            # Use Popen to detach completely and avoid waiting on the command
+            subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+            return {"scheduled": True, "method": "systemd-run-user", "message": "Decky Loader restart scheduled in 2s."}
+        except Exception as e:
+            decky.logger.warning(f"systemd-run failed: {e}")
 
-        fallback = self._schedule_loader_restart_helper()
-        if fallback["scheduled"]:
-            return fallback
-        return {"scheduled": False, "method": "", "message": "Could not schedule Decky Loader restart."}
+        # Fallback: helper script
+        return self._schedule_loader_restart_helper()
 
     def _schedule_loader_restart_helper(self) -> dict[str, Any]:
         helper_path = Path(tempfile.gettempdir()) / f"{PLUGIN_PACKAGE}-restart-{os.getpid()}-{int(time.time())}.sh"
-        helper = """#!/usr/bin/env bash
+        helper = f"""#!/usr/bin/env bash
 sleep 2
-systemctl --user restart plugin_loader.service \
-  || systemctl --user restart plugin_loader \
-  || systemctl restart plugin_loader.service \
-  || systemctl restart plugin_loader
-rm -f "$0"
+systemctl --user restart plugin_loader.service || systemctl restart plugin_loader.service
+rm -f "{helper_path}"
 """
         try:
             helper_path.write_text(helper, encoding="utf-8")
             helper_path.chmod(0o755)
-            command = f"nohup {shlex.quote(str(helper_path))} >/dev/null 2>&1 &"
-            result = subprocess.run(["bash", "-lc", command], check=False, capture_output=True, text=True, timeout=5)
-        except (OSError, subprocess.TimeoutExpired) as error:
-            decky.logger.warning("Helper restart scheduling failed: %s", error)
-            return {"scheduled": False, "method": "helper", "message": str(error)}
-
-        if result.returncode != 0:
-            decky.logger.warning("Helper restart scheduling exited %s: %s", result.returncode, result.stderr.strip()[-160:])
-            try:
-                helper_path.unlink(missing_ok=True)
-            except OSError:
-                pass
-            return {"scheduled": False, "method": "helper", "message": result.stderr.strip()[-160:]}
-
-        return {"scheduled": True, "method": "helper", "message": "Decky Loader restart helper started."}
+            # Spawn the helper in its own session
+            subprocess.Popen([str(helper_path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+            return {"scheduled": True, "method": "helper", "message": "Decky Loader restart helper started."}
+        except Exception as e:
+            decky.logger.error(f"Helper restart failed: {e}")
+            return {"scheduled": False, "method": "helper", "message": str(e)}
 
     def _cleanup_previous_update_artifacts(self) -> None:
         plugin_dir = Path(decky.DECKY_PLUGIN_DIR)
