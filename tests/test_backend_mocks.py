@@ -388,6 +388,33 @@ class BackendMockTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["method"], "helper")
         self.assertTrue(any("restart" in str(call) for call in calls))
 
+    async def test_install_update_does_not_schedule_restart_or_exit(self):
+        plugin = self.module.Plugin()
+        async def fake_check_update(force=False):
+            return {
+                "ok": True,
+                "canInstall": True,
+                "latest": "9.9.9",
+                "hasUpdate": True,
+                "elevated": True,
+            }
+
+        plugin.check_update = fake_check_update
+        plugin._latest_release = lambda: {
+            "tag_name": "v9.9.9",
+            "assets": [{"name": "decky-renodx.zip", "browser_download_url": "https://example.invalid/decky-renodx.zip"}],
+        }
+        plugin._install_release_zip = lambda _url: {"installedVersion": "9.9.9"}
+        scheduled = []
+        plugin._schedule_loader_restart = lambda reason: scheduled.append(reason) or {"scheduled": True, "message": "bad"}
+
+        result = await plugin.install_update()
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["requiresRestart"])
+        self.assertFalse(result["restarted"])
+        self.assertEqual(scheduled, [])
+
 
 if __name__ == "__main__":
     unittest.main()

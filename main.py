@@ -4258,13 +4258,7 @@ Note: If ReShadePreset.ini already existed, your previous settings were preserve
                 return {**status, "ok": False, "message": f"Update failed: {error}"}
 
             current = self._current_version()
-            decky.logger.info(f"Successfully installed v{latest}. Scheduling restart.")
-            
-            # Stop everything before restart to prevent zombies
-            await self._stop_all_tasks()
-            
-            # Schedule restart and EXIT
-            restart_res = self._schedule_loader_restart(f"Plugin updated to v{latest}")
+            decky.logger.info(f"Successfully installed v{latest}. Manual Decky restart required.")
             
             result = {
                 "ok": True,
@@ -4275,16 +4269,10 @@ Note: If ReShadePreset.ini already existed, your previous settings were preserve
                 "canInstall": False,
                 "elevated": self._has_elevated_permissions(),
                 "requiresRestart": True,
-                "restarted": restart_res["scheduled"],
-                "message": f"Update v{latest} installed. {restart_res['message']}",
+                "restarted": False,
+                "message": f"Update v{latest} installed. Restart Decky or Steam manually when convenient.",
             }
             self._cached_update_status = result
-            
-            # Give systemd a tiny bit of time to register the restart request then commit suicide
-            if restart_res["scheduled"]:
-                # Using a slightly longer delay to ensure the frontend receives the success response
-                asyncio.get_event_loop().call_later(2, lambda: os._exit(0))
-                
             return result
 
     async def _auto_check_update(self) -> None:
