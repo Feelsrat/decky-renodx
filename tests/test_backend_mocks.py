@@ -89,10 +89,13 @@ class BackendMockTest(unittest.IsolatedAsyncioTestCase):
         plugin = self.module.Plugin()
         plugin_dir = self.home / "decky-renodx"
         (plugin_dir / "dist").mkdir(parents=True)
+        (plugin_dir / "backend").mkdir(parents=True)
         (plugin_dir / "plugin.json").write_text(json.dumps({"name": "Decky RenoDX"}), encoding="utf-8")
         (plugin_dir / "package.json").write_text(json.dumps({"name": "decky-renodx", "version": "0.1.0"}), encoding="utf-8")
         (plugin_dir / "dist" / "index.js").write_text("// ok", encoding="utf-8")
         (plugin_dir / "main.py").write_text("# ok", encoding="utf-8")
+        (plugin_dir / "backend" / "__init__.py").write_text("# ok", encoding="utf-8")
+        (plugin_dir / "backend" / "cache.py").write_text("# ok", encoding="utf-8")
 
         plugin._validate_extracted_plugin(plugin_dir)
 
