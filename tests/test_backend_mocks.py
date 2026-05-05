@@ -204,6 +204,7 @@ class BackendMockTest(unittest.IsolatedAsyncioTestCase):
         (source / "AutoHDR32.addon").write_text("32", encoding="utf-8")
         (source / "AutoHDR64.addon").write_text("64", encoding="utf-8")
         (source / "AutoHDR.fx").write_text("fx", encoding="utf-8")
+        (bin_dir / "ReShade.fxh").write_text("fxh", encoding="utf-8")
         with tarfile.open(bin_dir / "autohdr_addon.tar.gz", "w:gz") as archive:
             archive.add(source / "AutoHDR32.addon", arcname="AutoHDR32.addon")
             archive.add(source / "AutoHDR64.addon", arcname="AutoHDR64.addon")
@@ -214,6 +215,7 @@ class BackendMockTest(unittest.IsolatedAsyncioTestCase):
 
         for name in ["AutoHDR32.addon", "AutoHDR64.addon", "AutoHDR.addon32", "AutoHDR.addon64"]:
             self.assertTrue((main_path / "AutoHDR_addons" / name).exists())
+        self.assertTrue((main_path / "ReShade_shaders" / "Merged" / "Shaders" / "ReShade.fxh").exists())
 
     async def test_restart_uses_helper_when_systemd_run_fails(self):
         plugin = self.module.Plugin()

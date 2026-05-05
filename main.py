@@ -2632,7 +2632,13 @@ class Plugin:
                     ini_content = re.sub(r'TextureSearchPaths=.*', r'TextureSearchPaths=.\\ReShade_shaders', ini_content)
                     
                 # Update the PresetPath to use the local directory
-                ini_content = re.sub(r'PresetPath=.*', r'PresetPath=.', ini_content)
+                ini_content = re.sub(r'PresetPath=.*', r'PresetPath=.\\ReShadePreset.ini', ini_content)
+                if re.search(r'(?im)^TutorialProgress\s*=', ini_content):
+                    ini_content = re.sub(r'(?im)^TutorialProgress\s*=.*$', 'TutorialProgress=4', ini_content)
+                elif re.search(r'(?im)^\[GENERAL\]\s*$', ini_content):
+                    ini_content = re.sub(r'(?im)^\[GENERAL\]\s*$', '[GENERAL]\nTutorialProgress=4', ini_content, count=1)
+                else:
+                    ini_content = "[GENERAL]\nTutorialProgress=4\n" + ini_content
                 
                 # Write the modified ini file with proper permissions
                 with open(reshade_ini_dst, 'w', encoding='utf-8') as f:
@@ -2647,7 +2653,8 @@ class Plugin:
                     f.write("""[GENERAL]
 EffectSearchPaths=.\\ReShade_shaders
 TextureSearchPaths=.\\ReShade_shaders
-PresetPath=.
+PresetPath=.\\ReShadePreset.ini
+TutorialProgress=4
 PerformanceMode=0
 PreprocessorDefinitions=
 Effects=
