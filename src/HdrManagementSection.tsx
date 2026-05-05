@@ -49,23 +49,9 @@ const HdrManagementSection = () => {
   const [exePath, setExePath] = useState("");
 
   useEffect(() => {
-    // Listen for Steam App focus changes to update the UI automatically
-    const onAppFocus = (e: any) => {
-      if (e?.unAppID) {
-        const game = games.find(g => g.appid === e.unAppID.toString());
-        if (game) setSelectedGame(game);
-      }
-    };
-
-    // SteamClient is injected by Steam/Decky at runtime. On some systems/Decky
-    // versions it may not be available immediately (or at all), so guard it.
-    // @ts-ignore
-    const focusEvent = globalThis?.SteamClient?.Apps?.OnGameFocusChanged;
-    const appFocusSub = focusEvent?.subscribe?.(onAppFocus);
-    
-    return () => {
-      appFocusSub?.unsubscribe?.();
-    };
+    // Intentionally no Steam focus tracking:
+    // HDR setup requires the game to be closed (launch options / injections),
+    // and SteamClient event availability varies across Decky/Steam builds.
   }, [games]);
 
   useEffect(() => {
@@ -74,14 +60,6 @@ const HdrManagementSection = () => {
       if (response.status === "success") {
         const sortedGames = response.games.sort((a: any, b: any) => a.name.localeCompare(b.name));
         setGames(sortedGames);
-        
-        // Initial detection: find current active game
-        // @ts-ignore
-        const activeApp = await globalThis?.SteamClient?.Apps?.GetActiveAppID?.();
-        if (activeApp) {
-          const game = sortedGames.find((g: any) => g.appid === activeApp.toString());
-          if (game) setSelectedGame(game);
-        }
       }
     };
     fetchGames();
