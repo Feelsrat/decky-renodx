@@ -1,6 +1,7 @@
 import decky
 import asyncio
 import os
+import sys
 import subprocess
 import shutil
 import shlex
@@ -21,6 +22,13 @@ from datetime import datetime, timezone
 
 # Import new backend modules
 try:
+    # Decky runs plugins in a sandbox where the current working directory and
+    # sys.path are not guaranteed. Ensure this plugin's directory is importable
+    # so `import backend...` works reliably.
+    _PLUGIN_DIR = Path(__file__).resolve().parent
+    if str(_PLUGIN_DIR) not in sys.path:
+        sys.path.insert(0, str(_PLUGIN_DIR))
+
     from backend.logger import setup_per_game_logger, get_game_log_path
     from backend.manifest import ManifestManager
     from backend.scraper import PCGamingWikiScraper, AntiCheatDetector
@@ -29,6 +37,7 @@ try:
     from backend.cache import PersistentCache
 except ImportError as e:
     decky.logger.error(f"Failed to import backend modules: {e}")
+    raise
 
 try:
     import pwd
@@ -4351,6 +4360,9 @@ Note: If ReShadePreset.ini already existed, your previous settings were preserve
             plugin_path / "package.json",
             plugin_path / "dist" / "index.js",
             plugin_path / "main.py",
+            # Backend modules are imported by main.py at runtime; ensure releases include them.
+            plugin_path / "backend" / "__init__.py",
+            plugin_path / "backend" / "cache.py",
         ]
         for required_path in required:
             if not required_path.exists():
