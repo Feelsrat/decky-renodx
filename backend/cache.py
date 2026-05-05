@@ -47,6 +47,9 @@ class PersistentCache:
         return self.get(f"metadata_{appid}", expiry_days=14)
 
     def set_game_metadata(self, appid: str, metadata: dict):
+        if metadata.get("graphics_api") == "unknown":
+            metadata = dict(metadata)
+            metadata.pop("graphics_api", None)
         self.set(f"metadata_{appid}", metadata)
 
     def get_api_info(self, exe_path: str):
@@ -58,6 +61,8 @@ class PersistentCache:
         return self.get(key, expiry_days=30)
 
     def set_api_info(self, exe_path: str, info: dict):
+        if info.get("api") == "unknown":
+            return
         mtime = os.path.getmtime(exe_path)
         key = f"api_{exe_path}_{mtime}"
         self.set(key, info)

@@ -364,6 +364,22 @@ class BackendMockTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["status"], "success")
         self.assertEqual(result["recommendations"][0]["method"], "special_k")
 
+    async def test_unknown_api_is_not_cached(self):
+        cache = self.module.PersistentCache(str(self.home / "cache.json"))
+        game_dir = self.home / "game"
+        game_dir.mkdir()
+
+        cache.set_api_info(str(game_dir), {"status": "success", "api": "unknown"})
+
+        self.assertIsNone(cache.get_api_info(str(game_dir)))
+
+    async def test_cached_metadata_does_not_preserve_unknown_api(self):
+        cache = self.module.PersistentCache(str(self.home / "cache.json"))
+
+        cache.set_game_metadata("123", {"graphics_api": "unknown", "native_hdr": "unknown"})
+
+        self.assertNotIn("graphics_api", cache.get_game_metadata("123"))
+
     async def test_restart_uses_helper_when_systemd_run_fails(self):
         plugin = self.module.Plugin()
         calls = []

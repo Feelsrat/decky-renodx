@@ -2131,11 +2131,10 @@ class Plugin:
                 context.update(cached_metadata)
                 if self._normalize_title(title) in SPECIAL_K_HDR_KNOWN_TITLES:
                     context["special_k_verified"] = True
-                if context.get("graphics_api") == "unknown" and game_path and os.path.exists(game_path):
-                    api_info = await self._detect_api_for_path(game_path)
-                    context["graphics_api"] = api_info.get("api", "unknown")
-                    self.persistent_cache.set_api_info(game_path, api_info)
-                    logger.info(f"Refreshed unknown cached API: {context['graphics_api']}")
+                if game_path and os.path.exists(game_path):
+                    api_info = await self._detect_api_with_cache(game_path, logger)
+                    if api_info.get("status") == "success":
+                        context["graphics_api"] = api_info.get("api", "unknown")
             else:
                 # Fetch PCGamingWiki data
                 wiki_data = self.wiki_scraper.get_game_data(appid)
@@ -2154,16 +2153,8 @@ class Plugin:
                 
                 # Detect API and Anti-cheat (if path exists)
                 if game_path and os.path.exists(game_path):
-                    # Check API cache
-                    cached_api = self.persistent_cache.get_api_info(game_path)
-                    if cached_api:
-                        context["graphics_api"] = cached_api.get("api", "unknown")
-                        logger.info(f"Using cached API info: {context['graphics_api']}")
-                    else:
-                        api_info = await self._detect_api_for_path(game_path)
-                        context["graphics_api"] = api_info.get("api", "unknown")
-                        self.persistent_cache.set_api_info(game_path, api_info)
-                        logger.info(f"Detected and cached API: {context['graphics_api']}")
+                    api_info = await self._detect_api_with_cache(game_path, logger)
+                    context["graphics_api"] = api_info.get("api", "unknown")
                     
                     context["anti_cheat"] = self.ac_detector.detect(game_path)
                 
@@ -2190,6 +2181,23 @@ class Plugin:
         except Exception as e:
             decky.logger.error(f"Error in get_hdr_recommendation: {str(e)}")
             return {"status": "error", "message": str(e)}
+
+    async def _detect_api_with_cache(self, game_path: str, logger=None) -> dict[str, Any]:
+        cached_api = self.persistent_cache.get_api_info(game_path)
+        if cached_api and cached_api.get("api") != "unknown":
+            if logger:
+                logger.info(f"Using cached API info: {cached_api.get('api')}")
+            return cached_api
+
+        api_info = await self._detect_api_for_path(game_path)
+        api = api_info.get("api", "unknown")
+        if api != "unknown":
+            self.persistent_cache.set_api_info(game_path, api_info)
+            if logger:
+                logger.info(f"Detected and cached API: {api}")
+        elif logger:
+            logger.info("API detection returned unknown; not caching transient result.")
+        return api_info
 
     async def get_per_game_log(self, appid: str) -> dict:
         """Read and return the content of the per-game log."""
