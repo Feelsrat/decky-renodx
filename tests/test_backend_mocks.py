@@ -8,6 +8,8 @@ import zipfile
 import tarfile
 from pathlib import Path
 
+from backend.decision import DecisionTree
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -287,6 +289,34 @@ class BackendMockTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["installed"])
         self.assertEqual(result["method"], "specialk")
         self.assertTrue(result["needs_update"])
+
+    async def test_decision_tree_uses_reshade_when_api_unknown(self):
+        recommendations = DecisionTree().evaluate({
+            "appid": "123",
+            "title": "Unknown Game",
+            "graphics_api": "unknown",
+            "anti_cheat": [],
+            "is_multiplayer": False,
+            "native_hdr": "unknown",
+            "special_k_wiki": False,
+        })
+
+        self.assertEqual(recommendations[0]["method"], "reshade")
+        self.assertEqual(recommendations[0]["score"], 50)
+
+    async def test_decision_tree_skips_special_k_for_dx9_without_exact_support(self):
+        recommendations = DecisionTree().evaluate({
+            "appid": "460790",
+            "title": "Bayonetta",
+            "graphics_api": "dx9",
+            "anti_cheat": [],
+            "is_multiplayer": False,
+            "native_hdr": "unknown",
+            "special_k_wiki": False,
+        })
+
+        self.assertNotIn("special_k", [item["method"] for item in recommendations])
+        self.assertEqual(recommendations[0]["method"], "reshade")
 
     async def test_restart_uses_helper_when_systemd_run_fails(self):
         plugin = self.module.Plugin()

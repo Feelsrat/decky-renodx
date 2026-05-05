@@ -2112,7 +2112,11 @@ class Plugin:
                 "anti_cheat": [],
                 "is_multiplayer": False,
                 "native_hdr": "unknown",
-                "special_k_wiki": False
+                "special_k_wiki": False,
+                "renodx_supported": False,
+                "luma_supported": False,
+                "special_k_verified": False,
+                "special_k_wrapper": False,
             }
 
             # Try to load metadata from cache
@@ -2127,6 +2131,14 @@ class Plugin:
                     context["native_hdr"] = wiki_data.get("native_hdr", "unknown")
                     context["special_k_wiki"] = wiki_data.get("special_k_compatible", False)
                     logger.info(f"Wiki data fetched: Native HDR={context['native_hdr']}, SK Compatible={context['special_k_wiki']}")
+
+                try:
+                    renodx_result = await self.check_renodx_support(title)
+                    context["renodx_supported"] = bool(renodx_result.get("supported"))
+                    if context["renodx_supported"]:
+                        logger.info(f"RenoDX exact match found: {renodx_result.get('match', {}).get('name', title)}")
+                except Exception as error:
+                    logger.warning(f"RenoDX support lookup failed: {error}")
                 
                 # Detect API and Anti-cheat (if path exists)
                 if game_path and os.path.exists(game_path):
@@ -2148,7 +2160,11 @@ class Plugin:
                     "native_hdr": context["native_hdr"],
                     "special_k_wiki": context["special_k_wiki"],
                     "graphics_api": context["graphics_api"],
-                    "anti_cheat": context["anti_cheat"]
+                    "anti_cheat": context["anti_cheat"],
+                    "renodx_supported": context["renodx_supported"],
+                    "luma_supported": context["luma_supported"],
+                    "special_k_verified": context["special_k_verified"],
+                    "special_k_wrapper": context["special_k_wrapper"],
                 })
 
             # 3. Evaluate recommendations

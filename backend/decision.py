@@ -21,6 +21,10 @@ class DecisionTree:
         is_multiplayer = context.get("is_multiplayer", False)
         native_hdr = context.get("native_hdr", "unknown")
         special_k_wiki = context.get("special_k_wiki", False)
+        renodx_supported = context.get("renodx_supported", False)
+        luma_supported = context.get("luma_supported", False)
+        special_k_verified = context.get("special_k_verified", False)
+        special_k_wrapper = context.get("special_k_wrapper", False)
         
         recommendations = []
 
@@ -46,7 +50,7 @@ class DecisionTree:
             })
 
         # 3. RenoDX / Luma (Score 90)
-        if self._is_renodx_supported(title, appid):
+        if renodx_supported or luma_supported or self._is_renodx_supported(title, appid):
             recommendations.append({
                 "method": "renodx",
                 "score": 90,
@@ -58,14 +62,16 @@ class DecisionTree:
         sk_notes = []
         sk_eligible = False
         
-        if special_k_wiki:
-            sk_notes.append("PCGamingWiki confirms Special K compatibility.")
-            sk_eligible = True
-        elif graphics_api in ["dx11", "dx12"]:
-            sk_notes.append("Modern DirectX API detected (DX11/DX12).")
+        if special_k_wiki or special_k_verified or special_k_wrapper:
+            if special_k_wiki:
+                sk_notes.append("PCGamingWiki confirms exact-game Special K HDR compatibility.")
+            if special_k_verified:
+                sk_notes.append("Special K HDR was verified for this game.")
+            if special_k_wrapper:
+                sk_notes.append("Known wrapper path exists for Special K HDR.")
             sk_eligible = True
         elif graphics_api == "dx9":
-            sk_notes.append("DX9 detected. Special K HDR typically requires a wrapper (e.g., d3d9.dll wrapper).")
+            sk_notes.append("DX9 detected. Special K HDR requires exact-game support or a known wrapper path.")
             sk_eligible = False
             
         if sk_eligible:
@@ -78,13 +84,13 @@ class DecisionTree:
             })
 
         # 5. ReShade AutoHDR (Score 50)
-        if graphics_api in ["dx10", "dx11", "dx12"]:
-            recommendations.append({
-                "method": "reshade",
-                "score": 50,
-                "reason": "ReShade AutoHDR is a safe general-purpose fallback.",
-                "confidence": "medium"
-            })
+        recommendations.append({
+            "method": "reshade",
+            "score": 50,
+            "reason": "ReShade AutoHDR is the safe fallback when exact RenoDX/Luma or verified Special K HDR is unavailable.",
+            "confidence": "medium" if graphics_api != "unknown" else "low",
+            "notes": [f"Detected API: {graphics_api}."] if graphics_api != "unknown" else ["Graphics API is unknown; install will still attempt automatic DLL detection."]
+        })
 
         # 6. Fallback SDR (Score 0)
         recommendations.append({

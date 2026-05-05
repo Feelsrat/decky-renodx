@@ -67,7 +67,16 @@ const HdrManagementSection = () => {
 
   useEffect(() => {
     if (selectedGame) {
+      setRecommendation(null);
+      setContext(null);
+      setExePath("");
+      setLogContent("");
+      setShowLog(false);
       refreshState();
+    } else {
+      setRecommendation(null);
+      setContext(null);
+      setExePath("");
     }
   }, [selectedGame]);
 
@@ -86,9 +95,24 @@ const HdrManagementSection = () => {
       if (recResponse.status === "success") {
         setRecommendation(recResponse.recommendations[0]);
         setContext(recResponse.context);
+      } else {
+        setRecommendation({
+          method: "sdr",
+          score: 0,
+          reason: recResponse.message || "Could not build HDR recommendation.",
+          confidence: "high",
+        });
+        toaster.toast({ title: "HDR recommendation failed", body: recResponse.message || "See logs for details." });
       }
     } catch (e) {
       console.error(e);
+      setRecommendation({
+        method: "sdr",
+        score: 0,
+        reason: String(e),
+        confidence: "high",
+      });
+      toaster.toast({ title: "HDR recommendation failed", body: String(e) });
     } finally {
       setLoading(false);
     }
