@@ -229,7 +229,11 @@ class BackendMockTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["status"], "success")
         self.assertTrue((game_dir / "dxgi.dll").exists())
-        self.assertIn("UsingWINE=true", (game_dir / "SpecialK.ini").read_text(encoding="utf-8"))
+        specialk_ini = (game_dir / "SpecialK.ini").read_text(encoding="utf-8")
+        dxgi_ini = (game_dir / "dxgi.ini").read_text(encoding="utf-8")
+        self.assertIn("UsingWINE=true", specialk_ini)
+        self.assertIn("HDR.Enable=true", specialk_ini)
+        self.assertIn("Use16BitSwapChain=true", dxgi_ini)
 
     async def test_restart_uses_helper_when_systemd_run_fails(self):
         plugin = self.module.Plugin()

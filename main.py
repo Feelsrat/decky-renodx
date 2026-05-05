@@ -2113,17 +2113,55 @@ class Plugin:
         shutil.copy2(candidates[0], target)
         target.chmod(0o666)
         ini = exe_dir / "SpecialK.ini"
-        if not ini.exists():
-            ini.write_text(
-                "[SpecialK.System]\n"
-                "UsingWINE=true\n"
-                "\n"
-                "[Render.Output]\n"
-                "HDR=true\n",
-                encoding="utf-8",
-            )
-            ini.chmod(0o666)
+        self._write_specialk_hdr_ini(ini)
+        self._write_specialk_hdr_ini(exe_dir / f"{dll}.ini")
         return {"status": "success", "dll": dll}
+
+    def _write_specialk_hdr_ini(self, ini: Path) -> None:
+        text = ini.read_text(encoding="utf-8", errors="ignore") if ini.exists() else ""
+        updates = {
+            "SpecialK.System": {
+                "UsingWINE": "true",
+            },
+            "Render.DXGI": {
+                "UseFlipDiscard": "true",
+            },
+            "Render.OSD": {
+                "HDRLuminance": "9.375",
+            },
+            "SpecialK.HDR": {
+                "HDR.Enable": "true",
+                "Use16BitSwapChain": "true",
+                "AllowFullLuminance": "true",
+                "scRGBLuminance_[0]": "18.75",
+                "scRGBGamma_[0]": "1.0",
+                "ToneMapper_[0]": "1",
+                "Saturation_[0]": "1.0",
+                "MiddleGray_[0]": "1.25",
+                "Preset": "0",
+            },
+        }
+        for section, values in updates.items():
+            text = self._upsert_ini_section_values(text, section, values)
+        ini.write_text(text, encoding="utf-8")
+        ini.chmod(0o666)
+
+    def _upsert_ini_section_values(self, text: str, section: str, values: dict[str, str]) -> str:
+        if not text.strip():
+            text = ""
+        section_pattern = rf"(?ims)^\[{re.escape(section)}\]\s*(.*?)(?=^\[[^\]]+\]|\Z)"
+        match = re.search(section_pattern, text)
+        body = match.group(1) if match else ""
+        for key, value in values.items():
+            line = f"{key}={value}"
+            if re.search(rf"(?im)^{re.escape(key)}\s*=", body):
+                body = re.sub(rf"(?im)^{re.escape(key)}\s*=.*$", line, body)
+            else:
+                body = body.rstrip() + ("\n" if body.strip() else "") + line + "\n"
+        replacement = f"[{section}]\n{body.strip()}\n\n"
+        if match:
+            return text[:match.start()] + replacement + text[match.end():]
+        return text.rstrip() + ("\n\n" if text.strip() else "") + replacement
 
     def _specialk_hook_dll(self, dll_override: str) -> str:
         dll = (dll_override or "dxgi").lower()
