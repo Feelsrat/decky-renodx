@@ -14,6 +14,7 @@ It aims to automate as much Steam Deck OLED HDR setup as Decky can reasonably ha
 - Copy RenoDX addon files into the selected game executable folder and apply HDR launch options.
 - Fall back through Special K first, then ReShade HDR shader/add-on setup when no downloaded RenoDX addon is found.
 - Preserve existing Steam launch wrappers such as decky-lsfg-vk's `~/lsfg %command%` when applying or removing HDR launch options.
+- Repair Special K HDR pop-out/widget state when the main overlay works but the HDR setup window will not appear in Game Mode.
 
 ## Reality Check
 

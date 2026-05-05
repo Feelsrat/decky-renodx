@@ -2052,6 +2052,41 @@ class Plugin:
             decky.logger.exception("HDR fallback install failed")
             return {"status": "error", "message": str(e)}
 
+    async def repair_specialk_hdr_widget(self, appid: str, dll_override: str = "auto", selected_executable_path: str = "") -> dict:
+        """Reset Special K UI/widget state and re-apply HDR defaults for the selected game."""
+        try:
+            exe_dir = self._resolve_game_exe_dir(appid, selected_executable_path)
+            api = dll_override
+            arch = "64"
+            detected = await self._detect_api_for_path(str(exe_dir))
+            if detected.get("status") == "success":
+                arch = str(detected.get("architecture") or "64")
+                if api == "auto":
+                    api = str(detected.get("api") or "dxgi")
+            elif api == "auto":
+                api = "dxgi"
+
+            dll = self._specialk_hook_dll(api)
+            result = self._install_specialk_for_game(exe_dir, dll, arch)
+            if result.get("status") != "success":
+                return result
+
+            backed_up = self._reset_specialk_imgui_state(exe_dir)
+            for ini in [exe_dir / "SpecialK.ini", exe_dir / f"{dll}.ini"]:
+                self._write_specialk_hdr_ini(ini, repair_widget=True)
+            self._fix_deck_user_ownership(exe_dir)
+            return {
+                "status": "success",
+                "method": "specialk-widget-repair",
+                "output": (
+                    f"Repaired Special K HDR widget state for {dll.upper()} ({arch}-bit).\n"
+                    f"Backed up {backed_up} Special K UI state file(s). Relaunch the game, open the main Special K overlay, then try HDR Setup again."
+                ),
+            }
+        except Exception as e:
+            decky.logger.exception("Special K HDR widget repair failed")
+            return {"status": "error", "message": str(e)}
+
     def _resolve_game_exe_dir(self, appid: str, selected_executable_path: str = "") -> Path:
         if selected_executable_path and os.path.exists(selected_executable_path):
             return Path(selected_executable_path).parent
@@ -2117,7 +2152,7 @@ class Plugin:
         self._write_specialk_hdr_ini(exe_dir / f"{dll}.ini")
         return {"status": "success", "dll": dll}
 
-    def _write_specialk_hdr_ini(self, ini: Path) -> None:
+    def _write_specialk_hdr_ini(self, ini: Path, repair_widget: bool = False) -> None:
         text = ini.read_text(encoding="utf-8", errors="ignore") if ini.exists() else ""
         updates = {
             "SpecialK.System": {
@@ -2141,10 +2176,41 @@ class Plugin:
                 "Preset": "0",
             },
         }
+        if repair_widget:
+            updates["Render.FrameRate"] = {
+                "SleeplessRenderThread": "false",
+                "SleeplessWindowThread": "false",
+            }
+            updates["ImGui.Render"] = {
+                "Scale": "1.0",
+                "UseHardwareCursor": "false",
+            }
         for section, values in updates.items():
             text = self._upsert_ini_section_values(text, section, values)
         ini.write_text(text, encoding="utf-8")
         ini.chmod(0o666)
+
+    def _reset_specialk_imgui_state(self, exe_dir: Path) -> int:
+        backed_up = 0
+        patterns = [
+            "imgui.ini",
+            "imgui*.ini",
+            "SpecialK*.log",
+            "logs/SpecialK*.log",
+            "logs/imgui*.ini",
+        ]
+        timestamp = int(time.time())
+        for pattern in patterns:
+            for path in exe_dir.glob(pattern):
+                if not path.is_file():
+                    continue
+                backup = path.with_name(f"{path.name}.decky-renodx-backup-{timestamp}")
+                try:
+                    path.rename(backup)
+                    backed_up += 1
+                except OSError as error:
+                    decky.logger.warning("Could not back up Special K UI state file %s: %s", path, error)
+        return backed_up
 
     def _upsert_ini_section_values(self, text: str, section: str, values: dict[str, str]) -> str:
         if not text.strip():

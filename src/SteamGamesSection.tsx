@@ -14,6 +14,7 @@ import { Navigation } from "@decky/ui";
 // Import the callable functions
 const manageGameReShade = callable<[string, string, string, string, string], ReShadeResponse>("manage_game_reshade");
 const installHdrFallback = callable<[string, string, string], ReShadeResponse & { launch_options?: string; method?: string }>("install_hdr_fallback");
+const repairSpecialKHdrWidget = callable<[string, string, string], ReShadeResponse & { method?: string }>("repair_specialk_hdr_widget");
 const checkReShadePath = callable<[], PathCheckResponse>("check_reshade_path");
 const listInstalledGames = callable<[], GameListResponse>("list_installed_games");
 const findGameExecutablePath = callable<[string], ExecutableDetectionResponse>("find_game_executable_path");
@@ -549,6 +550,29 @@ const SteamGamesSection = () => {
     return true;
   };
 
+  const handleRepairSpecialKWidget = async () => {
+    if (!selectedGame) {
+      setResult('Please select a game first.');
+      return;
+    }
+
+    try {
+      const response = await repairSpecialKHdrWidget(
+        selectedGame.appid,
+        selectedDll?.value || "auto",
+        selectedExecutablePath
+      );
+      if (response.status !== "success") {
+        setResult(`Special K HDR widget repair failed: ${response.message || 'Unknown error'}`);
+        return;
+      }
+      setResult(`${response.output || 'Special K HDR widget state repaired.'}\nRelaunch the game before testing the HDR pop-out again.`);
+    } catch (error) {
+      setResult(`Special K HDR widget repair error: ${error instanceof Error ? error.message : String(error)}`);
+      await logError(`SteamGamesSection -> handleRepairSpecialKWidget: ${String(error)}`);
+    }
+  };
+
   const handleImportRenoDx = async () => {
     if (!selectedGame) {
       setResult('Please select a game first.');
@@ -944,6 +968,15 @@ const SteamGamesSection = () => {
                   disabled={!selectedDll}
                 >
                   Install automatic HDR fallback
+                </ButtonItem>
+              </PanelSectionRow>
+              <PanelSectionRow>
+                <ButtonItem
+                  layout="below"
+                  onClick={handleRepairSpecialKWidget}
+                  disabled={!selectedDll}
+                >
+                  Repair Special K HDR pop-out
                 </ButtonItem>
               </PanelSectionRow>
               <PanelSectionRow>

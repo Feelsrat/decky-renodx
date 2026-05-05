@@ -235,6 +235,18 @@ class BackendMockTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("HDR.Enable=true", specialk_ini)
         self.assertIn("Use16BitSwapChain=true", dxgi_ini)
 
+    async def test_specialk_widget_repair_backs_up_imgui_state(self):
+        plugin = self.module.Plugin()
+        game_dir = self.home / "game"
+        game_dir.mkdir()
+        (game_dir / "imgui.ini").write_text("old-window-state", encoding="utf-8")
+
+        backed_up = plugin._reset_specialk_imgui_state(game_dir)
+
+        self.assertEqual(backed_up, 1)
+        self.assertFalse((game_dir / "imgui.ini").exists())
+        self.assertTrue(list(game_dir.glob("imgui.ini.decky-renodx-backup-*")))
+
     async def test_restart_uses_helper_when_systemd_run_fails(self):
         plugin = self.module.Plugin()
         calls = []
