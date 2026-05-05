@@ -21,23 +21,14 @@ from datetime import datetime, timezone
 
 # Import new backend modules
 try:
-    from .backend.logger import setup_per_game_logger, get_game_log_path
-    from .backend.manifest import ManifestManager
-    from .backend.scraper import PCGamingWikiScraper, AntiCheatDetector
-    from .backend.decision import DecisionTree
-    from .backend.installer import HDRInstaller
-    from .backend.cache import PersistentCache
-except ImportError:
-    # Fallback for different import environments
-    try:
-        from backend.logger import setup_per_game_logger, get_game_log_path
-        from backend.manifest import ManifestManager
-        from backend.scraper import PCGamingWikiScraper, AntiCheatDetector
-        from backend.decision import DecisionTree
-        from backend.installer import HDRInstaller
-        from backend.cache import PersistentCache
-    except ImportError:
-        decky.logger.error("Failed to import backend modules")
+    from backend.logger import setup_per_game_logger, get_game_log_path
+    from backend.manifest import ManifestManager
+    from backend.scraper import PCGamingWikiScraper, AntiCheatDetector
+    from backend.decision import DecisionTree
+    from backend.installer import HDRInstaller
+    from backend.cache import PersistentCache
+except ImportError as e:
+    decky.logger.error(f"Failed to import backend modules: {e}")
 
 try:
     import pwd
