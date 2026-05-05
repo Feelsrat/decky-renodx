@@ -593,30 +593,6 @@ const SteamGamesSection = () => {
     return true;
   };
 
-  const handleRepairSpecialKWidget = async () => {
-    if (!selectedGame) {
-      setResult('Please select a game first.');
-      return;
-    }
-
-    try {
-      const response = await repairSpecialKHdrWidget(
-        selectedGame.appid,
-        selectedDll?.value || "auto",
-        selectedExecutablePath
-      );
-      if (response.status !== "success") {
-        setResult(`Special K HDR widget repair failed: ${response.message || 'Unknown error'}`);
-        return;
-      }
-      await refreshHdrStatus();
-      setResult(`${response.output || 'Special K HDR widget state repaired.'}\nRelaunch the game before testing the HDR pop-out again.`);
-    } catch (error) {
-      setResult(`Special K HDR widget repair error: ${error instanceof Error ? error.message : String(error)}`);
-      await logError(`SteamGamesSection -> handleRepairSpecialKWidget: ${String(error)}`);
-    }
-  };
-
   const handleImportRenoDx = async () => {
     if (!selectedGame) {
       setResult('Please select a game first.');
@@ -1066,15 +1042,6 @@ const SteamGamesSection = () => {
                   disabled={!selectedDll}
                 >
                   Install automatic HDR fallback
-                </ButtonItem>
-              </PanelSectionRow>
-              <PanelSectionRow>
-                <ButtonItem
-                  layout="below"
-                  onClick={handleRepairSpecialKWidget}
-                  disabled={!selectedDll}
-                >
-                  Repair Special K HDR pop-out
                 </ButtonItem>
               </PanelSectionRow>
               <PanelSectionRow>
