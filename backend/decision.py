@@ -25,6 +25,8 @@ class DecisionTree:
         luma_supported = context.get("luma_supported", False)
         special_k_verified = context.get("special_k_verified", False)
         special_k_wrapper = context.get("special_k_wrapper", False)
+        injection_dll = context.get("injection_dll", "auto")
+        engine = context.get("engine", "unknown")
         
         recommendations = []
 
@@ -89,7 +91,11 @@ class DecisionTree:
             "score": 50,
             "reason": "ReShade AutoHDR is the safe fallback when exact RenoDX/Luma or verified Special K HDR is unavailable.",
             "confidence": "medium" if graphics_api != "unknown" else "low",
-            "notes": [f"Detected API: {graphics_api}."] if graphics_api != "unknown" else ["Graphics API is unknown; install will still attempt automatic DLL detection."]
+            "notes": (
+                [f"Detected API family: {graphics_api}.", f"Injection DLL: {injection_dll}.", f"Engine: {engine}."]
+                if graphics_api != "unknown"
+                else ["Graphics API is unknown; install will still attempt automatic DLL detection."]
+            )
         })
 
         # 6. Fallback SDR (Score 0)

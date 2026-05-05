@@ -329,7 +329,9 @@ class BackendMockTest(unittest.IsolatedAsyncioTestCase):
         result = await plugin._detect_api_for_path(str(game_dir / "Game.exe"))
 
         self.assertEqual(result["status"], "success")
-        self.assertEqual(result["api"], "d3d11")
+        self.assertEqual(result["api"], "dx11_dx12")
+        self.assertEqual(result["injection_dll"], "dxgi")
+        self.assertEqual(result["engine"], "unity")
 
     async def test_api_detection_prefers_letmereshade_detector(self):
         plugin = self.module.Plugin()
@@ -348,21 +350,26 @@ class BackendMockTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["api"], "dxgi")
         self.assertEqual(result["detector"], "letmereshade")
 
-    async def test_wobbly_life_gets_special_k_candidate(self):
+    async def test_unreal_dxgi_detection_becomes_dx11_dx12_family(self):
         plugin = self.module.Plugin()
-        plugin.persistent_cache.get_game_metadata = lambda _appid: {
-            "graphics_api": "d3d11",
-            "anti_cheat": [],
-            "native_hdr": "unknown",
-            "special_k_wiki": False,
-            "renodx_supported": False,
-            "luma_supported": False,
+        game_dir = self.home / "unreal-game"
+        exe = game_dir / "Project" / "Binaries" / "Win64" / "Game-Win64-Shipping.exe"
+        exe.parent.mkdir(parents=True)
+        exe.write_bytes(b"unreal bootstrap")
+        plugin._detect_api_with_letmereshade_script = lambda _path: {
+            "status": "success",
+            "api": "dxgi",
+            "architecture": "64",
+            "injection_dll": "dxgi",
+            "detector": "letmereshade",
         }
 
-        result = await plugin.get_hdr_recommendation("1211020", "Wobbly Life", "")
+        result = await plugin._detect_api_for_path(str(game_dir))
 
         self.assertEqual(result["status"], "success")
-        self.assertEqual(result["recommendations"][0]["method"], "special_k")
+        self.assertEqual(result["api"], "dx11_dx12")
+        self.assertEqual(result["injection_dll"], "dxgi")
+        self.assertEqual(result["engine"], "unreal")
 
     async def test_unknown_api_is_not_cached(self):
         cache = self.module.PersistentCache(str(self.home / "cache.json"))

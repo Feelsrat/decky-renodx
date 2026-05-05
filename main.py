@@ -61,9 +61,6 @@ PUMBO_AUTOHDR_ZIP_URL = "https://github.com/Filoppi/PumboAutoHDR/archive/refs/he
 AUTO_CHECK_INTERVAL = 86400
 AUTO_UPDATE_CHECK_ON_STARTUP = False
 RUNTIME_RELATIVE_PATH = "decky-renodx/reshade"
-SPECIAL_K_HDR_KNOWN_TITLES = {
-    "wobbly life",
-}
 
 class Plugin:
     def __init__(self):
@@ -2120,21 +2117,21 @@ class Plugin:
                 "luma_supported": False,
                 "special_k_verified": False,
                 "special_k_wrapper": False,
+                "injection_dll": "auto",
+                "engine": "unknown",
             }
-            if self._normalize_title(title) in SPECIAL_K_HDR_KNOWN_TITLES:
-                context["special_k_verified"] = True
 
             # Try to load metadata from cache
             cached_metadata = self.persistent_cache.get_game_metadata(appid)
             if cached_metadata:
                 logger.info(f"Using cached metadata for {appid}")
                 context.update(cached_metadata)
-                if self._normalize_title(title) in SPECIAL_K_HDR_KNOWN_TITLES:
-                    context["special_k_verified"] = True
                 if game_path and os.path.exists(game_path):
                     api_info = await self._detect_api_with_cache(game_path, logger)
                     if api_info.get("status") == "success":
                         context["graphics_api"] = api_info.get("api", "unknown")
+                        context["injection_dll"] = api_info.get("injection_dll", context.get("injection_dll", "auto"))
+                        context["engine"] = api_info.get("engine", context.get("engine", "unknown"))
             else:
                 # Fetch PCGamingWiki data
                 wiki_data = self.wiki_scraper.get_game_data(appid)
@@ -2155,6 +2152,8 @@ class Plugin:
                 if game_path and os.path.exists(game_path):
                     api_info = await self._detect_api_with_cache(game_path, logger)
                     context["graphics_api"] = api_info.get("api", "unknown")
+                    context["injection_dll"] = api_info.get("injection_dll", "auto")
+                    context["engine"] = api_info.get("engine", "unknown")
                     
                     context["anti_cheat"] = self.ac_detector.detect(game_path)
                 
@@ -2168,6 +2167,8 @@ class Plugin:
                     "luma_supported": context["luma_supported"],
                     "special_k_verified": context["special_k_verified"],
                     "special_k_wrapper": context["special_k_wrapper"],
+                    "injection_dll": context["injection_dll"],
+                    "engine": context["engine"],
                 })
 
             # 3. Evaluate recommendations
@@ -2522,7 +2523,7 @@ class Plugin:
             game_path = Path(path)
             script_result = self._detect_api_with_letmereshade_script(game_path)
             if script_result.get("status") == "success":
-                return script_result
+                return self._apply_engine_api_hints(game_path, script_result)
 
             detected_api = "unknown"
             arch = "64"
@@ -2550,7 +2551,7 @@ class Plugin:
 
                 detected_api = self._detect_api_from_binary_imports(exe)
                 if detected_api != "unknown":
-                    return {"status": "success", "api": detected_api, "architecture": arch}
+                    return self._apply_engine_api_hints(game_path, {"status": "success", "api": detected_api, "architecture": arch, "injection_dll": self._api_to_injection_dll(detected_api)})
 
             dll_candidates = []
             for pattern in ["*.dll", "*.DLL"]:
@@ -2560,16 +2561,56 @@ class Plugin:
             for dll in dll_candidates[:12]:
                 detected_api = self._detect_api_from_binary_imports(dll)
                 if detected_api != "unknown":
-                    return {"status": "success", "api": detected_api, "architecture": arch}
+                    return self._apply_engine_api_hints(game_path, {"status": "success", "api": detected_api, "architecture": arch, "injection_dll": self._api_to_injection_dll(detected_api)})
 
             if any((search_root / name).exists() for name in ["UnityPlayer.dll", "GameAssembly.dll"]):
-                return {"status": "success", "api": "d3d11", "architecture": arch, "confidence": "heuristic", "notes": "Unity runtime detected; defaulting to D3D11."}
+                return {"status": "success", "api": "dx11_dx12", "architecture": arch, "injection_dll": "dxgi", "engine": "unity", "confidence": "heuristic", "notes": "Unity runtime detected; treating API as DX11/DX12 family."}
 
             if arch == "32" and detected_api == "unknown":
                 detected_api = "d3d9"
-            return {"status": "success", "api": detected_api, "architecture": arch}
+            return self._apply_engine_api_hints(game_path, {"status": "success", "api": detected_api, "architecture": arch, "injection_dll": self._api_to_injection_dll(detected_api)})
         except Exception as e:
             return {"status": "error", "message": str(e)}
+
+    def _apply_engine_api_hints(self, path: Path, result: dict[str, Any]) -> dict[str, Any]:
+        search_root = path if path.is_dir() else path.parent
+        engine = self._detect_engine_family(search_root)
+        if engine != "unknown":
+            result = dict(result)
+            result["engine"] = engine
+        if engine == "unreal" and result.get("architecture") == "64" and result.get("api") in ["unknown", "dxgi"]:
+            result.update({
+                "api": "dx11_dx12",
+                "injection_dll": "dxgi",
+                "confidence": "heuristic",
+                "notes": "Unreal Engine Win64/Shipping layout detected; treating API as DX11/DX12 selectable and using DXGI injection.",
+            })
+        elif engine == "unity" and result.get("architecture") == "64" and result.get("api") in ["unknown", "dxgi", "d3d11"]:
+            result.update({
+                "api": "dx11_dx12",
+                "injection_dll": "dxgi",
+                "confidence": "heuristic",
+                "notes": "Unity runtime detected; treating API as DX11/DX12 family and using DXGI injection.",
+            })
+        elif "injection_dll" not in result:
+            result["injection_dll"] = self._api_to_injection_dll(str(result.get("api", "unknown")))
+        return result
+
+    def _detect_engine_family(self, search_root: Path) -> str:
+        try:
+            lower_paths = [str(path.relative_to(search_root)).lower().replace("\\", "/") for path in search_root.rglob("*") if path.is_file()]
+        except OSError:
+            lower_paths = []
+        if any("binaries/win64" in path and "shipping.exe" in path for path in lower_paths):
+            return "unreal"
+        if any(path.endswith("unityplayer.dll") or path.endswith("gameassembly.dll") for path in lower_paths):
+            return "unity"
+        return "unknown"
+
+    def _api_to_injection_dll(self, api: str) -> str:
+        if api in ["dx11_dx12", "dx10", "dx11", "dx12", "d3d11", "d3d12", "dxgi"]:
+            return "dxgi"
+        return api if api in ["d3d9", "d3d8", "opengl32", "ddraw", "dinput8"] else "dxgi"
 
     def _detect_api_with_letmereshade_script(self, path: Path) -> dict[str, Any]:
         game_dir = path if path.is_dir() else path.parent
@@ -2600,6 +2641,7 @@ class Plugin:
             "status": "success",
             "api": api,
             "architecture": arch,
+            "injection_dll": self._api_to_injection_dll(api),
             "detector": "letmereshade",
             "stdout": result.stdout[-1000:],
         }
