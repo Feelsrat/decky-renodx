@@ -640,6 +640,16 @@ main() {
     log_message "Vulkan mode: $vulkan_mode"
     log_message "WINEPREFIX: $wineprefix"
     log_message "App ID: $appid"
+
+    if [ "$action" = "detect" ]; then
+        game_path="${game_path//\"}"
+        if [ ! -d "$game_path" ]; then
+            echo "Error: Invalid game path" >&2
+            exit 1
+        fi
+        detect_game_arch_and_api_enhanced "$game_path"
+        exit $?
+    fi
     
     if [ ! -d "$RESHADE_PATH" ]; then
         log_message "Error: RESHADE_PATH does not exist: $RESHADE_PATH"

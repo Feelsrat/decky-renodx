@@ -61,6 +61,9 @@ PUMBO_AUTOHDR_ZIP_URL = "https://github.com/Filoppi/PumboAutoHDR/archive/refs/he
 AUTO_CHECK_INTERVAL = 86400
 AUTO_UPDATE_CHECK_ON_STARTUP = False
 RUNTIME_RELATIVE_PATH = "decky-renodx/reshade"
+SPECIAL_K_HDR_KNOWN_TITLES = {
+    "wobbly life",
+}
 
 class Plugin:
     def __init__(self):
@@ -2118,12 +2121,21 @@ class Plugin:
                 "special_k_verified": False,
                 "special_k_wrapper": False,
             }
+            if self._normalize_title(title) in SPECIAL_K_HDR_KNOWN_TITLES:
+                context["special_k_verified"] = True
 
             # Try to load metadata from cache
             cached_metadata = self.persistent_cache.get_game_metadata(appid)
             if cached_metadata:
                 logger.info(f"Using cached metadata for {appid}")
                 context.update(cached_metadata)
+                if self._normalize_title(title) in SPECIAL_K_HDR_KNOWN_TITLES:
+                    context["special_k_verified"] = True
+                if context.get("graphics_api") == "unknown" and game_path and os.path.exists(game_path):
+                    api_info = await self._detect_api_for_path(game_path)
+                    context["graphics_api"] = api_info.get("api", "unknown")
+                    self.persistent_cache.set_api_info(game_path, api_info)
+                    logger.info(f"Refreshed unknown cached API: {context['graphics_api']}")
             else:
                 # Fetch PCGamingWiki data
                 wiki_data = self.wiki_scraper.get_game_data(appid)
@@ -2500,7 +2512,11 @@ class Plugin:
     async def _detect_api_for_path(self, path: str) -> dict:
         try:
             game_path = Path(path)
-            detected_api = "dxgi"
+            script_result = self._detect_api_with_letmereshade_script(game_path)
+            if script_result.get("status") == "success":
+                return script_result
+
+            detected_api = "unknown"
             arch = "64"
             exe_files = []
             search_root = game_path if game_path.is_dir() else game_path.parent
@@ -2524,21 +2540,81 @@ class Plugin:
                 except Exception:
                     pass
 
-                try:
-                    result = subprocess.run(["objdump", "-p", str(exe)], capture_output=True, text=True, env=self._clean_subprocess_env(), timeout=15)
-                    imports = result.stdout.lower()
-                    for api in ["d3d12", "d3d11", "dxgi", "d3d9", "d3d8", "opengl32", "ddraw", "dinput8"]:
-                        if f"{api}.dll" in imports:
-                            detected_api = api
-                            return {"status": "success", "api": detected_api, "architecture": arch}
-                except Exception:
-                    pass
+                detected_api = self._detect_api_from_binary_imports(exe)
+                if detected_api != "unknown":
+                    return {"status": "success", "api": detected_api, "architecture": arch}
 
-            if arch == "32" and detected_api == "dxgi":
+            dll_candidates = []
+            for pattern in ["*.dll", "*.DLL"]:
+                dll_candidates.extend(search_root.glob(pattern))
+            priority_names = ["unityplayer.dll", "gameassembly.dll", "mono.dll", "mono-2.0-bdwgc.dll"]
+            dll_candidates.sort(key=lambda item: (0 if item.name.lower() in priority_names else 1, item.name.lower()))
+            for dll in dll_candidates[:12]:
+                detected_api = self._detect_api_from_binary_imports(dll)
+                if detected_api != "unknown":
+                    return {"status": "success", "api": detected_api, "architecture": arch}
+
+            if any((search_root / name).exists() for name in ["UnityPlayer.dll", "GameAssembly.dll"]):
+                return {"status": "success", "api": "d3d11", "architecture": arch, "confidence": "heuristic", "notes": "Unity runtime detected; defaulting to D3D11."}
+
+            if arch == "32" and detected_api == "unknown":
                 detected_api = "d3d9"
             return {"status": "success", "api": detected_api, "architecture": arch}
         except Exception as e:
             return {"status": "error", "message": str(e)}
+
+    def _detect_api_with_letmereshade_script(self, path: Path) -> dict[str, Any]:
+        game_dir = path if path.is_dir() else path.parent
+        script_path = self._get_assets_dir() / "reshade-game-manager.sh"
+        if not script_path.exists() or not game_dir.exists():
+            return {"status": "error", "message": "LetMeReShade detector unavailable."}
+        try:
+            clean_env = {**os.environ, **self.environment}
+            clean_env["LD_LIBRARY_PATH"] = ""
+            result = subprocess.run(
+                ["/bin/bash", str(script_path), "detect", str(game_dir), "auto"],
+                cwd=str(script_path.parent),
+                env=clean_env,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except (OSError, subprocess.TimeoutExpired) as error:
+            return {"status": "error", "message": str(error)}
+        if result.returncode != 0:
+            return {"status": "error", "message": result.stderr.strip() or result.stdout.strip()}
+
+        matches = re.findall(r"(?m)^(32|64),(d3d8|d3d9|d3d11|d3d12|dxgi|opengl32|ddraw|dinput8)\s*$", result.stdout)
+        if not matches:
+            return {"status": "error", "message": f"Could not parse LetMeReShade detector output: {result.stdout[-200:]}"}
+        arch, api = matches[-1]
+        return {
+            "status": "success",
+            "api": api,
+            "architecture": arch,
+            "detector": "letmereshade",
+            "stdout": result.stdout[-1000:],
+        }
+
+    def _detect_api_from_binary_imports(self, binary_path: Path) -> str:
+        imports = ""
+        try:
+            result = subprocess.run(["objdump", "-p", str(binary_path)], capture_output=True, text=True, env=self._clean_subprocess_env(), timeout=15)
+            imports = result.stdout.lower()
+        except Exception:
+            pass
+        if not imports:
+            try:
+                imports = binary_path.read_bytes().decode("latin-1", errors="ignore").lower()
+            except OSError:
+                imports = ""
+        for api in ["d3d12", "d3d11", "dxgi", "d3d9", "d3d8", "opengl32", "ddraw", "dinput8"]:
+            if f"{api}.dll" in imports or f"{api.lower()}.dll" in imports:
+                return api
+        return "unknown"
+
+    def _normalize_title(self, title: str) -> str:
+        return re.sub(r"[^a-z0-9]+", " ", title.lower()).strip()
 
     def _install_specialk_for_game(self, exe_dir: Path, dll_override: str, arch: str) -> dict:
         specialk_dir = Path(self.main_path) / "SpecialK"

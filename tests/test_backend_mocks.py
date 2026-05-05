@@ -318,6 +318,52 @@ class BackendMockTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("special_k", [item["method"] for item in recommendations])
         self.assertEqual(recommendations[0]["method"], "reshade")
 
+    async def test_api_detection_scans_unity_player_imports(self):
+        plugin = self.module.Plugin()
+        game_dir = self.home / "unity-game"
+        game_dir.mkdir()
+        (game_dir / "Game.exe").write_bytes(b"Unity bootstrap")
+        (game_dir / "UnityPlayer.dll").write_bytes(b"noise D3D11.dll more noise")
+        plugin._detect_api_with_letmereshade_script = lambda _path: {"status": "error", "message": "skip script"}
+
+        result = await plugin._detect_api_for_path(str(game_dir / "Game.exe"))
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["api"], "d3d11")
+
+    async def test_api_detection_prefers_letmereshade_detector(self):
+        plugin = self.module.Plugin()
+        game_dir = self.home / "game"
+        game_dir.mkdir()
+        plugin._detect_api_with_letmereshade_script = lambda _path: {
+            "status": "success",
+            "api": "dxgi",
+            "architecture": "64",
+            "detector": "letmereshade",
+        }
+
+        result = await plugin._detect_api_for_path(str(game_dir))
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["api"], "dxgi")
+        self.assertEqual(result["detector"], "letmereshade")
+
+    async def test_wobbly_life_gets_special_k_candidate(self):
+        plugin = self.module.Plugin()
+        plugin.persistent_cache.get_game_metadata = lambda _appid: {
+            "graphics_api": "d3d11",
+            "anti_cheat": [],
+            "native_hdr": "unknown",
+            "special_k_wiki": False,
+            "renodx_supported": False,
+            "luma_supported": False,
+        }
+
+        result = await plugin.get_hdr_recommendation("1211020", "Wobbly Life", "")
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["recommendations"][0]["method"], "special_k")
+
     async def test_restart_uses_helper_when_systemd_run_fails(self):
         plugin = self.module.Plugin()
         calls = []
