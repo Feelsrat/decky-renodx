@@ -2585,8 +2585,7 @@ class Plugin:
             return {"status": "error", "message": str(e)}
 
     def _apply_engine_api_hints(self, path: Path, result: dict[str, Any]) -> dict[str, Any]:
-        search_root = path if path.is_dir() else path.parent
-        engine = self._detect_engine_family(search_root)
+        engine = self._detect_engine_family(path)
         if engine != "unknown":
             result = dict(result)
             result["engine"] = engine
@@ -2609,15 +2608,37 @@ class Plugin:
         return result
 
     def _detect_engine_family(self, search_root: Path) -> str:
-        try:
-            lower_paths = [str(path.relative_to(search_root)).lower().replace("\\", "/") for path in search_root.rglob("*") if path.is_file()]
-        except OSError:
-            lower_paths = []
-        if any("binaries/win64" in path and "shipping.exe" in path for path in lower_paths):
-            return "unreal"
-        if any(path.endswith("unityplayer.dll") or path.endswith("gameassembly.dll") for path in lower_paths):
-            return "unity"
+        roots = self._engine_scan_roots(search_root)
+        for root in roots:
+            root_parts = [part.lower() for part in root.parts]
+            if (
+                any(path.is_file() for path in root.glob("*.uproject"))
+                or any(path.is_file() and "shipping" in path.name.lower() for path in root.glob("*.exe"))
+                or any(path.is_file() and "shipping" in path.name.lower() for path in root.glob("*/*/Binaries/Win64/*.exe"))
+                or any(path.is_file() and "shipping" in path.name.lower() for path in root.glob("*/Binaries/Win64/*.exe"))
+                or ("binaries" in root_parts and "win64" in root_parts and any(path.is_file() and "shipping" in path.name.lower() for path in root.glob("*.exe")))
+            ):
+                return "unreal"
+            if (
+                (root / "UnityPlayer.dll").exists()
+                or (root / "GameAssembly.dll").exists()
+                or any(path.is_file() and path.name.lower() == "globalgamemanagers" for path in root.glob("*_Data/globalgamemanagers"))
+            ):
+                return "unity"
         return "unknown"
+
+    def _engine_scan_roots(self, path: Path) -> list[Path]:
+        start = path if path.is_dir() else path.parent
+        roots = []
+        current = start
+        for _ in range(5):
+            if current not in roots and current.exists():
+                roots.append(current)
+            parent = current.parent
+            if parent == current:
+                break
+            current = parent
+        return roots
 
     def _api_to_injection_dll(self, api: str) -> str:
         if api in ["dx11_dx12", "dx10", "dx11", "dx12", "d3d11", "d3d12", "dxgi"]:

@@ -30,6 +30,8 @@ interface GameContext {
   appid: string;
   title: string;
   graphics_api: string;
+  injection_dll?: string;
+  engine?: string;
   anti_cheat: string[];
   is_multiplayer: boolean;
   native_hdr: string;
@@ -218,14 +220,25 @@ const HdrManagementSection = () => {
                     padding: "12px",
                     borderRadius: "4px",
                     backgroundColor: "rgba(255, 255, 255, 0.05)",
-                    borderLeft: `4px solid ${getConfidenceColor(recommendation.confidence)}`
+                    borderLeft: `4px solid ${getConfidenceColor(recommendation.confidence)}`,
+                    width: "100%",
+                    boxSizing: "border-box",
+                    overflowWrap: "anywhere"
                   }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                      <div style={{ fontWeight: "bold", color: getConfidenceColor(recommendation.confidence) }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px", minWidth: 0 }}>
+                      <div style={{ fontWeight: "bold", color: getConfidenceColor(recommendation.confidence), minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" }}>
                         {recommendation.method.toUpperCase()}
                       </div>
-                      <div style={{ fontSize: "0.8em", opacity: 0.5 }}>Score: {recommendation.score}</div>
+                      <div style={{ fontSize: "0.8em", opacity: 0.5, flexShrink: 0 }}>Score: {recommendation.score}</div>
                     </div>
+                    {context && (
+                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "4px 8px", fontSize: "0.78em", opacity: 0.7, marginTop: "6px" }}>
+                        <div>API: {context.graphics_api || "unknown"}</div>
+                        <div>Hook: {context.injection_dll || "auto"}</div>
+                        <div>Engine: {context.engine || "unknown"}</div>
+                        <div>Confidence: {recommendation.confidence}</div>
+                      </div>
+                    )}
                     <div style={{ fontSize: "0.9em", marginTop: "4px", color: "#eee" }}>
                       {recommendation.reason}
                     </div>
@@ -246,7 +259,8 @@ const HdrManagementSection = () => {
                     borderRadius: "4px",
                     border: "1px solid #e74c3c",
                     fontSize: "0.9em",
-                    color: "#ff6b6b"
+                    color: "#ff6b6b",
+                    overflowWrap: "anywhere"
                   }}>
                     ⚠️ Anti-cheat: {context.anti_cheat.join(", ")}. 
                     Injection tools are blocked for your safety.
@@ -260,13 +274,13 @@ const HdrManagementSection = () => {
                 </ButtonItem>
               </PanelSectionRow>
 
-              <div style={{ display: "flex", gap: "8px", padding: "0 8px" }}>
-                <div style={{ flex: 1 }}>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px", padding: "0 8px" }}>
+                <div style={{ minWidth: 0 }}>
                   <ButtonItem layout="below" onClick={handleVerify}>
                     Verify
                   </ButtonItem>
                 </div>
-                <div style={{ flex: 1 }}>
+                <div style={{ minWidth: 0 }}>
                   <ButtonItem layout="below" onClick={handleTryNext} disabled={!!context?.anti_cheat.length}>
                     Try Next
                   </ButtonItem>
