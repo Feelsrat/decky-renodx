@@ -4126,7 +4126,7 @@ rm -f "$0"
                 "status": "success",
                 "output": f"Imported RenoDX files to {game_path}",
                 "copied": copied,
-                "launch_options": 'WINEDLLOVERRIDES="d3dcompiler_47=n;dxgi=n,b" DXVK_HDR=1 ENABLE_GAMESCOPE_WSI=1 %command%',
+                "launch_options": self._hdr_launch_options("dxgi"),
             }
         except Exception as e:
             decky.logger.error(f"RenoDX import failed: {str(e)}")

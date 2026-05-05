@@ -13,6 +13,7 @@ It aims to automate as much Steam Deck OLED HDR setup as Decky can reasonably ha
 - Detect a downloaded RenoDX `.addon64`, `.addon32`, or `.zip` in `~/Downloads`.
 - Copy RenoDX addon files into the selected game executable folder and apply HDR launch options.
 - Fall back through Special K first, then ReShade HDR shader/add-on setup when no downloaded RenoDX addon is found.
+- Preserve existing Steam launch wrappers such as decky-lsfg-vk's `~/lsfg %command%` when applying or removing HDR launch options.
 
 ## Reality Check
 
@@ -29,6 +30,8 @@ The intended flow for Nexus-hosted RenoDX files is:
 Addon support and HDR runtime components are automatic. The UI intentionally does not expose toggles for them because the plugin chooses the fallback chain per game.
 
 Decky RenoDX keeps its HDR runtime isolated at `~/.local/share/decky-renodx/reshade`. It does not use LetMeReShade's `~/.local/share/reshade` runtime, so both plugins can coexist without one reporting the other's runtime as installed.
+
+Decky LSFG-VK compatibility is handled by merging launch options instead of replacing them. If a game already uses `~/lsfg %command%`, Decky RenoDX injects its HDR environment variables into that command chain and leaves the LSFG wrapper in place. Removing HDR injection strips only the HDR-related variables/DLL override and preserves unrelated launch options.
 
 On first HDR runtime install, the plugin downloads the ReShade add-on setup tool and a private 7-Zip extractor into `~/.local/share/decky-renodx/bin`, then fetches Special K, AutoHDR, Pumbo AdvancedAutoHDR, and Lilium HDR shader payloads from GitHub. Release zips do not need to bundle LetMeReShade's `bin` payloads or depend on a system `7z` command.
 

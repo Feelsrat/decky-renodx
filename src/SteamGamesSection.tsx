@@ -140,6 +140,48 @@ function RenoDxBrowserModal({ url, closeModal }: { url: string; closeModal?: () 
   );
 }
 
+async function getSteamLaunchOptions(appid: string): Promise<string> {
+  const apps = (SteamClient.Apps as any);
+  if (typeof apps.GetAppLaunchOptions !== "function") {
+    return "";
+  }
+  const value = await apps.GetAppLaunchOptions(parseInt(appid));
+  return typeof value === "string" ? value : value?.strLaunchOptions || value?.launchOptions || "";
+}
+
+function stripHdrLaunchTokens(options: string): string {
+  return options
+    .replace(/\bPROTON_ENABLE_HDR=\S+\s*/g, "")
+    .replace(/\bDXVK_HDR=\S+\s*/g, "")
+    .replace(/\bENABLE_HDR_WSI=\S+\s*/g, "")
+    .replace(/\bENABLE_GAMESCOPE_WSI=\S+\s*/g, "")
+    .replace(/\bWINEDLLOVERRIDES="[^"]*(?:d3dcompiler_47|dxgi|d3d11|d3d12|d3d9|d3d8|ddraw|dinput8|opengl32)[^"]*"\s*/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function mergeHdrLaunchOptions(existing: string, hdrOptions: string): string {
+  const cleanExisting = stripHdrLaunchTokens(existing || "");
+  const hdrPrefix = (hdrOptions || "").replace(/\s*%command%\s*/g, " ").replace(/\s+/g, " ").trim();
+  if (!cleanExisting) {
+    return `${hdrPrefix} %command%`.trim();
+  }
+  if (cleanExisting.includes("%command%")) {
+    return cleanExisting.replace("%command%", `${hdrPrefix} %command%`).replace(/\s+/g, " ").trim();
+  }
+  return `${hdrPrefix} ${cleanExisting}`.replace(/\s+/g, " ").trim();
+}
+
+async function setMergedHdrLaunchOptions(appid: string, hdrOptions: string) {
+  const existing = await getSteamLaunchOptions(appid);
+  await SteamClient.Apps.SetAppLaunchOptions(parseInt(appid), mergeHdrLaunchOptions(existing, hdrOptions));
+}
+
+async function removeHdrLaunchOptions(appid: string) {
+  const existing = await getSteamLaunchOptions(appid);
+  await SteamClient.Apps.SetAppLaunchOptions(parseInt(appid), stripHdrLaunchTokens(existing));
+}
+
 const SteamGamesSection = () => {
   const [selectedGame, setSelectedGame] = useState<GameInfo | null>(null);
   const [selectedDll, setSelectedDll] = useState<DllOverride | null>(null);
@@ -375,7 +417,7 @@ const SteamGamesSection = () => {
                 if (launchOptionsMatch) {
                   const launchOptions = launchOptionsMatch[1];
                   const detectedApi = launchOptions.match(/;(\w+)=n,b/)?.pop() || 'dxgi';
-                  await SteamClient.Apps.SetAppLaunchOptions(parseInt(selectedGame.appid), launchOptions);
+                  await setMergedHdrLaunchOptions(selectedGame.appid, launchOptions);
                   
                   let successMessage = `Successfully patched ${selectedGame.name}.\nDetected ${detectedApi.toUpperCase()} as the best API.\nPress HOME key in-game to open ReShade overlay.`;
                   
@@ -387,12 +429,12 @@ const SteamGamesSection = () => {
                   setResult(successMessage);
                 } else {
                   // Fallback if we can't extract from output
-                  await SteamClient.Apps.SetAppLaunchOptions(parseInt(selectedGame.appid), `WINEDLLOVERRIDES="d3dcompiler_47=n;${dllValue}=n,b" %command%`);
+                  await setMergedHdrLaunchOptions(selectedGame.appid, `WINEDLLOVERRIDES="d3dcompiler_47=n;${dllValue}=n,b" %command%`);
                   setResult(`Successfully patched ${selectedGame.name} with ${dllValue.toUpperCase()}.\nPress HOME key in-game to open ReShade overlay.`);
                 }
               } else {
                 // Manual DLL selection
-                await SteamClient.Apps.SetAppLaunchOptions(parseInt(selectedGame.appid), `WINEDLLOVERRIDES="d3dcompiler_47=n;${dllValue}=n,b" %command%`);
+                await setMergedHdrLaunchOptions(selectedGame.appid, `WINEDLLOVERRIDES="d3dcompiler_47=n;${dllValue}=n,b" %command%`);
                 setResult(`Successfully patched ${selectedGame.name} with ${dllValue.toUpperCase()}.\nPress HOME key in-game to open ReShade overlay.`);
               }
             } else {
@@ -439,7 +481,7 @@ const SteamGamesSection = () => {
             );
 
             if (response.status === "success") {
-              await SteamClient.Apps.SetAppLaunchOptions(parseInt(selectedGame.appid), '');
+              await removeHdrLaunchOptions(selectedGame.appid);
               setResult(`Successfully removed ReShade from ${selectedGame.name}`);
             } else {
               setResult(`Failed to unpatch: ${response.message || 'Unknown error'}`);
@@ -502,8 +544,8 @@ const SteamGamesSection = () => {
     const launchOptionsMatch = response.output?.match(/Use this launch option: (.+)/);
     const fallbackDll = selectedDll?.value && selectedDll.value !== "auto" ? selectedDll.value : "dxgi";
     const launchOptions = response.launch_options || launchOptionsMatch?.[1] || `PROTON_ENABLE_HDR=1 DXVK_HDR=1 ENABLE_HDR_WSI=1 WINEDLLOVERRIDES="d3dcompiler_47=n;${fallbackDll}=n,b" %command%`;
-    await SteamClient.Apps.SetAppLaunchOptions(parseInt(selectedGame.appid), launchOptions);
-    setResult(`No RenoDX addon was imported. Installed ${response.method === "specialk" ? "Special K HDR" : "ReShade HDR shader"} fallback for ${selectedGame.name}.`);
+    await setMergedHdrLaunchOptions(selectedGame.appid, launchOptions);
+    setResult(`No RenoDX addon was imported. Installed ${response.method === "specialk" ? "Special K HDR" : "ReShade HDR shader"} fallback for ${selectedGame.name}. Existing launch wrappers such as decky-lsfg-vk were preserved.`);
     return true;
   };
 
@@ -517,9 +559,9 @@ const SteamGamesSection = () => {
       const response = await importRenoDxForGame(selectedGame.appid, "", selectedExecutablePath);
       if (response.status === "success") {
         if (response.launch_options) {
-          await SteamClient.Apps.SetAppLaunchOptions(parseInt(selectedGame.appid), response.launch_options);
+          await setMergedHdrLaunchOptions(selectedGame.appid, response.launch_options);
         }
-        setResult(`${response.output || 'RenoDX imported.'}\nHDR launch options applied.`);
+        setResult(`${response.output || 'RenoDX imported.'}\nHDR launch options applied. Existing launch wrappers such as decky-lsfg-vk were preserved.`);
       } else {
         toaster.toast({ title: "RenoDX not found", body: "Installing automatic HDR fallback instead." });
         await installAutomaticHdrFallback();
