@@ -390,6 +390,47 @@ class BackendMockTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["injection_dll"], "dxgi")
         self.assertEqual(result["engine"], "unreal")
 
+    async def test_unreal_engine_detects_from_binaries_win64_directory(self):
+        plugin = self.module.Plugin()
+        game_dir = self.home / "SandLike"
+        exe_dir = game_dir / "SandLike" / "Binaries" / "Win64"
+        exe = exe_dir / "SandLike-Win64-Shipping.exe"
+        exe.parent.mkdir(parents=True)
+        exe.write_bytes(b"unreal shipping")
+        plugin._detect_api_with_letmereshade_script = lambda _path: {
+            "status": "success",
+            "api": "dxgi",
+            "architecture": "64",
+            "injection_dll": "dxgi",
+            "detector": "letmereshade",
+        }
+
+        result = await plugin._detect_api_for_path(str(exe_dir))
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["api"], "dx11_dx12")
+        self.assertEqual(result["engine"], "unreal")
+
+    async def test_unity_engine_detects_from_parent_directory(self):
+        plugin = self.module.Plugin()
+        game_dir = self.home / "UnityLike"
+        nested = game_dir / "Bin" / "Win64"
+        nested.mkdir(parents=True)
+        (game_dir / "UnityPlayer.dll").write_bytes(b"unity")
+        plugin._detect_api_with_letmereshade_script = lambda _path: {
+            "status": "success",
+            "api": "dxgi",
+            "architecture": "64",
+            "injection_dll": "dxgi",
+            "detector": "letmereshade",
+        }
+
+        result = await plugin._detect_api_for_path(str(nested))
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["api"], "dx11_dx12")
+        self.assertEqual(result["engine"], "unity")
+
     async def test_unknown_api_is_not_cached(self):
         cache = self.module.PersistentCache(str(self.home / "cache.json"))
         game_dir = self.home / "game"
