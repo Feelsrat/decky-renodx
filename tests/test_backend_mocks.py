@@ -143,7 +143,7 @@ class BackendMockTest(unittest.IsolatedAsyncioTestCase):
         result = await plugin.list_installed_games()
 
         self.assertEqual(result["status"], "success")
-        self.assertEqual(result["games"], [{"appid": "123", "name": "Example Game"}])
+        self.assertEqual(result["games"], [{"appid": "123", "name": "Example Game", "source": "steam"}])
 
     async def test_find_game_path_uses_deck_user_home_when_decky_home_is_root(self):
         self.module.decky.HOME = "/root"

@@ -9,8 +9,6 @@ import {
 } from "@decky/ui";
 import { callable, definePlugin, toaster } from "@decky/api";
 import { IoMdColorPalette } from "react-icons/io";
-import HeroicGamesSection from "./HeroicGamesSection";
-import SteamGamesSection from "./SteamGamesSection";
 import HdrManagementSection from "./HdrManagementSection";
 
 interface InstallResult {

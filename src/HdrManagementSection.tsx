@@ -5,8 +5,6 @@ import {
   ButtonItem,
   DropdownItem,
   Field,
-  showModal,
-  ConfirmModal,
   ModalRoot,
 } from "@decky/ui";
 import { callable, toaster } from "@decky/api";
@@ -25,6 +23,7 @@ interface Recommendation {
   reason: string;
   confidence: string;
   blocked?: string[];
+  notes?: string[];
 }
 
 interface GameContext {
@@ -175,6 +174,22 @@ const HdrManagementSection = () => {
     setLoading(false);
   };
 
+  const handleUninstall = async () => {
+    if (!selectedGame) return;
+    const response = await runSurgicalUninstall(selectedGame.appid);
+    toaster.toast({ title: "HDR Removal", body: response.message });
+    refreshState();
+  };
+
+  const viewLog = async () => {
+    if (!selectedGame) return;
+    const response = await getPerGameLog(selectedGame.appid);
+    if (response.status === "success") {
+      setLogContent(response.log);
+      setShowLog(true);
+    }
+  };
+
   return (
     <PanelSection title="Per-Game HDR Management">
       <PanelSectionRow>
@@ -209,7 +224,7 @@ const HdrManagementSection = () => {
                     <div style={{ fontSize: "0.9em", marginTop: "4px", color: "#eee" }}>
                       {recommendation.reason}
                     </div>
-                    {recommendation.notes?.map((note, i) => (
+                    {recommendation.notes?.map((note: string, i: number) => (
                       <div key={i} style={{ fontSize: "0.8em", opacity: 0.6, marginTop: "2px", fontStyle: "italic" }}>
                         • {note}
                       </div>
@@ -241,18 +256,24 @@ const HdrManagementSection = () => {
               </PanelSectionRow>
 
               <div style={{ display: "flex", gap: "8px", padding: "0 8px" }}>
-                <ButtonItem layout="below" onClick={handleVerify} style={{ flex: 1 }}>
-                  Verify
-                </ButtonItem>
-                <ButtonItem layout="below" onClick={handleTryNext} style={{ flex: 1 }} disabled={!!context?.anti_cheat.length}>
-                  Try Next
-                </ButtonItem>
+                <div style={{ flex: 1 }}>
+                  <ButtonItem layout="below" onClick={handleVerify}>
+                    Verify
+                  </ButtonItem>
+                </div>
+                <div style={{ flex: 1 }}>
+                  <ButtonItem layout="below" onClick={handleTryNext} disabled={!!context?.anti_cheat.length}>
+                    Try Next
+                  </ButtonItem>
+                </div>
               </div>
 
               <PanelSectionRow>
-                <ButtonItem layout="below" onClick={handleUninstall} style={{ color: "#e74c3c" }}>
-                  Surgical Removal
-                </ButtonItem>
+                <div style={{ color: "#e74c3c" }}>
+                  <ButtonItem layout="below" onClick={handleUninstall}>
+                    Surgical Removal
+                  </ButtonItem>
+                </div>
               </PanelSectionRow>
 
               {recommendation?.method === "special_k" && (
