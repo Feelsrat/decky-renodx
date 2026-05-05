@@ -333,13 +333,13 @@ class BackendMockTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["injection_dll"], "dxgi")
         self.assertEqual(result["engine"], "unity")
 
-    async def test_api_detection_prefers_letmereshade_detector(self):
+    async def test_api_detection_uses_specific_letmereshade_detector_result(self):
         plugin = self.module.Plugin()
         game_dir = self.home / "game"
         game_dir.mkdir()
         plugin._detect_api_with_letmereshade_script = lambda _path: {
             "status": "success",
-            "api": "dxgi",
+            "api": "d3d9",
             "architecture": "64",
             "detector": "letmereshade",
         }
@@ -347,8 +347,27 @@ class BackendMockTest(unittest.IsolatedAsyncioTestCase):
         result = await plugin._detect_api_for_path(str(game_dir))
 
         self.assertEqual(result["status"], "success")
-        self.assertEqual(result["api"], "dxgi")
+        self.assertEqual(result["api"], "d3d9")
         self.assertEqual(result["detector"], "letmereshade")
+
+    async def test_api_detection_refines_generic_dxgi_script_hint(self):
+        plugin = self.module.Plugin()
+        game_dir = self.home / "game"
+        game_dir.mkdir()
+        (game_dir / "Game.exe").write_bytes(b"launcher imports D3D11.dll")
+        plugin._detect_api_with_letmereshade_script = lambda _path: {
+            "status": "success",
+            "api": "dxgi",
+            "architecture": "64",
+            "injection_dll": "dxgi",
+            "detector": "letmereshade",
+        }
+
+        result = await plugin._detect_api_for_path(str(game_dir))
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["api"], "d3d11")
+        self.assertEqual(result["script_api_hint"], "dxgi")
 
     async def test_unreal_dxgi_detection_becomes_dx11_dx12_family(self):
         plugin = self.module.Plugin()

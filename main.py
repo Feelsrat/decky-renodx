@@ -2522,11 +2522,11 @@ class Plugin:
         try:
             game_path = Path(path)
             script_result = self._detect_api_with_letmereshade_script(game_path)
-            if script_result.get("status") == "success":
+            if script_result.get("status") == "success" and script_result.get("api") != "dxgi":
                 return self._apply_engine_api_hints(game_path, script_result)
 
             detected_api = "unknown"
-            arch = "64"
+            arch = str(script_result.get("architecture", "64")) if script_result.get("status") == "success" else "64"
             exe_files = []
             search_root = game_path if game_path.is_dir() else game_path.parent
             for exe in search_root.rglob("*.exe"):
@@ -2551,7 +2551,11 @@ class Plugin:
 
                 detected_api = self._detect_api_from_binary_imports(exe)
                 if detected_api != "unknown":
-                    return self._apply_engine_api_hints(game_path, {"status": "success", "api": detected_api, "architecture": arch, "injection_dll": self._api_to_injection_dll(detected_api)})
+                    result = {"status": "success", "api": detected_api, "architecture": arch, "injection_dll": self._api_to_injection_dll(detected_api)}
+                    if script_result.get("status") == "success":
+                        result["detector"] = "python-with-letmereshade-arch"
+                        result["script_api_hint"] = script_result.get("api")
+                    return self._apply_engine_api_hints(game_path, result)
 
             dll_candidates = []
             for pattern in ["*.dll", "*.DLL"]:
@@ -2561,14 +2565,22 @@ class Plugin:
             for dll in dll_candidates[:12]:
                 detected_api = self._detect_api_from_binary_imports(dll)
                 if detected_api != "unknown":
-                    return self._apply_engine_api_hints(game_path, {"status": "success", "api": detected_api, "architecture": arch, "injection_dll": self._api_to_injection_dll(detected_api)})
+                    result = {"status": "success", "api": detected_api, "architecture": arch, "injection_dll": self._api_to_injection_dll(detected_api)}
+                    if script_result.get("status") == "success":
+                        result["detector"] = "python-with-letmereshade-arch"
+                        result["script_api_hint"] = script_result.get("api")
+                    return self._apply_engine_api_hints(game_path, result)
 
             if any((search_root / name).exists() for name in ["UnityPlayer.dll", "GameAssembly.dll"]):
                 return {"status": "success", "api": "dx11_dx12", "architecture": arch, "injection_dll": "dxgi", "engine": "unity", "confidence": "heuristic", "notes": "Unity runtime detected; treating API as DX11/DX12 family."}
 
             if arch == "32" and detected_api == "unknown":
                 detected_api = "d3d9"
-            return self._apply_engine_api_hints(game_path, {"status": "success", "api": detected_api, "architecture": arch, "injection_dll": self._api_to_injection_dll(detected_api)})
+            result = {"status": "success", "api": detected_api, "architecture": arch, "injection_dll": self._api_to_injection_dll(detected_api)}
+            if script_result.get("status") == "success":
+                result["detector"] = "python-with-letmereshade-arch"
+                result["script_api_hint"] = script_result.get("api")
+            return self._apply_engine_api_hints(game_path, result)
         except Exception as e:
             return {"status": "error", "message": str(e)}
 
