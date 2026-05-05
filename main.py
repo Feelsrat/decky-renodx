@@ -18,6 +18,27 @@ import zipfile
 import tarfile
 import platform
 from datetime import datetime, timezone
+
+# Import new backend modules
+try:
+    from .backend.logger import setup_per_game_logger, get_game_log_path
+    from .backend.manifest import ManifestManager
+    from .backend.scraper import PCGamingWikiScraper, AntiCheatDetector
+    from .backend.decision import DecisionTree
+    from .backend.installer import HDRInstaller
+    from .backend.cache import PersistentCache
+except ImportError:
+    # Fallback for different import environments
+    try:
+        from backend.logger import setup_per_game_logger, get_game_log_path
+        from backend.manifest import ManifestManager
+        from backend.scraper import PCGamingWikiScraper, AntiCheatDetector
+        from backend.decision import DecisionTree
+        from backend.installer import HDRInstaller
+        from backend.cache import PersistentCache
+    except ImportError:
+        decky.logger.error("Failed to import backend modules")
+
 try:
     import pwd
 except ImportError:
@@ -67,6 +88,16 @@ class Plugin:
         self.main_path = runtime_path
         self.renodx_import_path = os.path.join(self.environment['XDG_DATA_HOME'], 'decky-renodx', 'imports')
         self.bin_cache_path = os.path.join(self.environment['XDG_DATA_HOME'], 'decky-renodx', 'bin')
+        self.manifest_path = os.path.join(self.environment['XDG_DATA_HOME'], 'decky-renodx', 'manifests')
+        self.persistent_cache_path = os.path.join(self.environment['XDG_DATA_HOME'], 'decky-renodx', 'cache.json')
+        
+        # Initialize backend managers
+        self.persistent_cache = PersistentCache(self.persistent_cache_path)
+        self.manifest_manager = ManifestManager(self.manifest_path)
+        self.wiki_scraper = PCGamingWikiScraper()
+        self.ac_detector = AntiCheatDetector()
+        self.decision_tree = DecisionTree() # Will populate mods later
+        self.installer = HDRInstaller(self.manifest_manager)
         
         # Cache for executable paths
         self.executable_cache = {}
@@ -80,6 +111,7 @@ class Plugin:
         os.makedirs(self.main_path, exist_ok=True)
         os.makedirs(self.renodx_import_path, exist_ok=True)
         os.makedirs(self.bin_cache_path, exist_ok=True)
+        os.makedirs(self.manifest_path, exist_ok=True)
         self._migrate_existing_runtime_files()
         self._fix_deck_user_ownership(Path(xdg_data_home) / PLUGIN_PACKAGE)
 
@@ -2057,6 +2089,250 @@ class Plugin:
             decky.logger.exception("HDR fallback install failed")
             return {"status": "error", "message": str(e)}
 
+    async def get_hdr_recommendation(self, appid: str, title: str, game_path: str = "") -> dict:
+        """Fetch recommendations for a game based on the decision tree, with caching."""
+        try:
+            # 1. Setup per-game logger
+            logger = setup_per_game_logger(appid)
+            logger.info(f"Fetching recommendation for {title} (AppID: {appid})")
+
+            # 2. Get game context
+            context = {
+                "appid": appid,
+                "title": title,
+                "graphics_api": "unknown",
+                "anti_cheat": [],
+                "is_multiplayer": False,
+                "native_hdr": "unknown",
+                "special_k_wiki": False
+            }
+
+            # Try to load metadata from cache
+            cached_metadata = self.persistent_cache.get_game_metadata(appid)
+            if cached_metadata:
+                logger.info(f"Using cached metadata for {appid}")
+                context.update(cached_metadata)
+            else:
+                # Fetch PCGamingWiki data
+                wiki_data = self.wiki_scraper.get_game_data(appid)
+                if "status" not in wiki_data:
+                    context["native_hdr"] = wiki_data.get("native_hdr", "unknown")
+                    context["special_k_wiki"] = wiki_data.get("special_k_compatible", False)
+                    logger.info(f"Wiki data fetched: Native HDR={context['native_hdr']}, SK Compatible={context['special_k_wiki']}")
+                
+                # Detect API and Anti-cheat (if path exists)
+                if game_path and os.path.exists(game_path):
+                    # Check API cache
+                    cached_api = self.persistent_cache.get_api_info(game_path)
+                    if cached_api:
+                        context["graphics_api"] = cached_api.get("api", "unknown")
+                        logger.info(f"Using cached API info: {context['graphics_api']}")
+                    else:
+                        api_info = await self._detect_api_for_path(game_path)
+                        context["graphics_api"] = api_info.get("api", "unknown")
+                        self.persistent_cache.set_api_info(game_path, api_info)
+                        logger.info(f"Detected and cached API: {context['graphics_api']}")
+                    
+                    context["anti_cheat"] = self.ac_detector.detect(game_path)
+                
+                # Save to cache
+                self.persistent_cache.set_game_metadata(appid, {
+                    "native_hdr": context["native_hdr"],
+                    "special_k_wiki": context["special_k_wiki"],
+                    "graphics_api": context["graphics_api"],
+                    "anti_cheat": context["anti_cheat"]
+                })
+
+            # 3. Evaluate recommendations
+            recommendations = self.decision_tree.evaluate(context)
+            
+            return {
+                "status": "success",
+                "recommendations": recommendations,
+                "context": context
+            }
+        except Exception as e:
+            decky.logger.error(f"Error in get_hdr_recommendation: {str(e)}")
+            return {"status": "error", "message": str(e)}
+
+    async def get_per_game_log(self, appid: str) -> dict:
+        """Read and return the content of the per-game log."""
+        try:
+            log_path = get_game_log_path(appid)
+            if os.path.exists(log_path):
+                with open(log_path, "r") as f:
+                    # Return last 200 lines
+                    lines = f.readlines()
+                    return {"status": "success", "log": "".join(lines[-200:])}
+            return {"status": "error", "message": "Log file not found."}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+
+    async def execute_setup_flow(self, appid: str, title: str, exe_path: str = "", skip_current: bool = False) -> dict:
+        """Execute the automated setup flow based on the decision tree."""
+        async with self._install_lock:
+            try:
+                logger = setup_per_game_logger(appid)
+                logger.info(f"Starting automated setup for {title} (skip_current={skip_current})")
+
+                # 1. Get Recommendations
+                rec_result = await self.get_hdr_recommendation(appid, title, exe_path)
+                if rec_result["status"] != "success":
+                    return rec_result
+
+                recommendations = rec_result["recommendations"]
+                
+                # If skip_current, remove the top recommendation if it's already installed
+                if skip_current and len(recommendations) > 1:
+                    logger.info(f"Skipping top recommendation: {recommendations[0]['method']}")
+                    recommendations = recommendations[1:]
+
+                # 2. Iterate through recommendations until one works
+                for rec in recommendations:
+                    method = rec["method"]
+                    if method == "sdr":
+                        logger.info("Falling back to SDR (no safe HDR method found).")
+                        return {"status": "success", "method": "sdr", "message": "No safe HDR method found. Using SDR."}
+
+                    logger.info(f"Attempting to install: {method}")
+                    
+                    if method == "native_hdr":
+                        return {"status": "success", "method": "native_hdr", "message": "Game has native HDR support. No injection needed."}
+
+                    if method == "renodx":
+                        mod_result = await self.check_renodx_support(title)
+                        if mod_result.get("supported") and mod_result.get("match"):
+                            logger.info(f"RenoDX mod found. Applying launch options.")
+                            launch_opts = self._hdr_launch_options("dxgi")
+                            return {
+                                "status": "success", 
+                                "method": "renodx", 
+                                "message": "RenoDX launch options ready. Ensure mod files are imported.",
+                                "launch_options": launch_opts
+                            }
+                        continue
+
+                    if method == "special_k":
+                        sk_source = os.path.join(self.bin_cache_path, "SpecialK", "SpecialK64.dll")
+                        if not os.path.exists(sk_source):
+                            await self._ensure_special_k_bin()
+                        
+                        success, message = self.installer.install_special_k(appid, exe_path, sk_source)
+                        if success:
+                            # Verification check would usually happen AFTER launch, 
+                            # but we return the success state for now.
+                            launch_opts = self._hdr_launch_options("dxgi")
+                            return {
+                                "status": "success", 
+                                "method": "special_k", 
+                                "message": message,
+                                "launch_options": launch_opts
+                            }
+                        else:
+                            logger.error(f"Special K install failed: {message}")
+                            continue
+
+                    if method == "reshade":
+                        reshade_result = await self.manage_game_reshade(appid, "install", "dxgi", "", exe_path)
+                        if reshade_result["status"] == "success":
+                            self.manifest_manager.write_manifest(appid, {
+                                "appid": appid,
+                                "method": "reshade",
+                                "installed_files": [os.path.join(os.path.dirname(exe_path), "dxgi.dll")],
+                                "backups": {},
+                                "verified": True
+                            })
+                            launch_opts = self._hdr_launch_options("dxgi")
+                            return {
+                                "status": "success", 
+                                "method": "reshade", 
+                                "message": "ReShade AutoHDR installed.",
+                                "launch_options": launch_opts
+                            }
+                        else:
+                            logger.error(f"ReShade install failed: {reshade_result['message']}")
+                            continue
+                    
+                return {"status": "error", "message": "All HDR methods failed."}
+            except Exception as e:
+                decky.logger.error(f"Error in execute_setup_flow: {str(e)}")
+                return {"status": "error", "message": str(e)}
+
+    async def _ensure_special_k_bin(self):
+        """Ensure Special K binaries are present in the cache."""
+        try:
+            bin_dir = Path(self.bin_cache_path)
+            specialk_archive = bin_dir / "SpecialK.7z"
+            if not specialk_archive.exists() or specialk_archive.stat().st_size < 1024 * 1024:
+                self._download_latest_github_asset(SPECIALK_RELEASES_URL, specialk_archive, [".7z", ".zip"])
+            
+            specialk_dir = Path(self.main_path) / "SpecialK"
+            if not specialk_dir.exists():
+                self._install_specialk_runtime(Path(self.main_path), bin_dir)
+        except Exception as e:
+            decky.logger.error(f"Failed to ensure Special K binaries: {str(e)}")
+
+    async def _set_steam_launch_options(self, appid: str, options: str):
+        """Placeholder for setting launch options - usually handled in frontend."""
+        pass
+
+    def _hdr_launch_options(self, dll: str) -> str:
+        return f'PROTON_ENABLE_HDR=1 DXVK_HDR=1 ENABLE_HDR_WSI=1 WINEDLLOVERRIDES="d3dcompiler_47=n;{dll}=n,b" %command%'
+
+    async def update_sk_config_value(self, appid: str, exe_path: str, section: str, key: str, value: str) -> dict:
+        """Update a specific value in SpecialK.ini."""
+        try:
+            game_dir = os.path.dirname(exe_path)
+            ini_path = os.path.join(game_dir, "SpecialK.ini")
+            if not os.path.exists(ini_path):
+                return {"status": "error", "message": "SpecialK.ini not found."}
+
+            text = Path(ini_path).read_text(encoding="utf-8", errors="ignore")
+            updated_text = self._upsert_ini_section_values(text, section, {key: value})
+            Path(ini_path).write_text(updated_text, encoding="utf-8")
+            return {"status": "success", "message": f"Updated {key} to {value}"}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+
+    async def run_surgical_uninstall(self, appid: str) -> dict:
+        """Remove HDR using the manifest system."""
+        try:
+            logger = setup_per_game_logger(appid)
+            success, message = self.manifest_manager.remove_hdr(appid, logger)
+            if success:
+                return {"status": "success", "message": message}
+            else:
+                return {"status": "error", "message": message}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+
+    async def verify_hdr_installation(self, appid: str, exe_path: str) -> dict:
+        """Manually verify if the installed HDR method is actually working."""
+        try:
+            game_dir = os.path.dirname(exe_path)
+            manifest = self.manifest_manager.read_manifest(appid)
+            
+            if not manifest:
+                return {"status": "error", "message": "No installation manifest found for this game."}
+            
+            method = manifest.get("method")
+            if method == "special_k":
+                success, message = self.installer.verify_special_k(game_dir)
+            elif method == "reshade":
+                success, message = self.installer.verify_reshade(game_dir)
+            else:
+                return {"status": "success", "message": f"Verification not implemented for {method}."}
+                
+            if success:
+                # Update manifest verified status
+                manifest["verified"] = True
+                self.manifest_manager.write_manifest(appid, manifest)
+                return {"status": "success", "message": message}
+            else:
+                return {"status": "error", "message": message}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+
     async def get_game_hdr_status(self, appid: str, selected_executable_path: str = "") -> dict:
         try:
             exe_dir = self._resolve_game_exe_dir(appid, selected_executable_path)
@@ -2347,42 +2623,46 @@ class Plugin:
 
     async def list_installed_games(self) -> dict:
         try:
-            library_file = self._find_libraryfolders_file()
-            if library_file is None:
-                checked = [str(path / "steamapps" / "libraryfolders.vdf") for path in self._steam_root_candidates()]
-                return {"status": "error", "games": [], "message": f"libraryfolders.vdf not found. Checked: {', '.join(checked)}"}
-
-            library_paths = self._steam_library_paths(library_file)
             games = []
             seen_appids = set()
-            for library_path in library_paths:
-                steamapps_path = Path(library_path) / "steamapps"
-                if not steamapps_path.exists():
-                    continue
+            seen_paths = set()
 
-                for appmanifest in steamapps_path.glob("appmanifest_*.acf"):
-                    game_info = self._read_appmanifest(appmanifest)
-                    appid = game_info.get("appid")
-                    name = game_info.get("name")
-                    if appid and name and appid not in seen_appids:
-                        seen_appids.add(appid)
-                        games.append({"appid": appid, "name": name})
+            # 1. Fetch Steam Games
+            library_file = self._find_libraryfolders_file()
+            if library_file:
+                library_paths = self._steam_library_paths(library_file)
+                for library_path in library_paths:
+                    steamapps_path = Path(library_path) / "steamapps"
+                    if not steamapps_path.exists():
+                        continue
+                    for appmanifest in steamapps_path.glob("appmanifest_*.acf"):
+                        game_info = self._read_appmanifest(appmanifest)
+                        appid = game_info.get("appid")
+                        name = game_info.get("name")
+                        if appid and name and appid not in seen_appids:
+                            # Filter system components
+                            if not any(exclude in name for exclude in ["Proton", "Steam Linux Runtime", "Steamworks Common Redistributables"]):
+                                seen_appids.add(appid)
+                                games.append({"appid": appid, "name": name, "source": "steam"})
 
-            # Filter out system components and redistributables that shouldn't be modded with ReShade
-            filtered_games = [g for g in games if not any(exclude in g["name"] for exclude in [
-                "Proton", 
-                "Steam Linux Runtime", 
-                "Steamworks Common Redistributables",
-                "DirectX",
-                "Visual C++",
-                "Microsoft Visual C++",
-                ".NET Framework",
-                "OpenXR"
-            ])]
-            
-            filtered_games.sort(key=lambda game: game["name"].lower())
-            return {"status": "success", "games": filtered_games}
+            # 2. Fetch Heroic Games
+            try:
+                heroic_res = await self.find_heroic_games()
+                if heroic_res["status"] == "success":
+                    for hg in heroic_res["games"]:
+                        if hg["path"] not in seen_paths:
+                            seen_paths.add(hg["path"])
+                            games.append({
+                                "appid": hg.get("app_id", hg["name"]), 
+                                "name": hg["name"], 
+                                "source": "heroic",
+                                "path": hg["path"]
+                            })
+            except Exception as e:
+                decky.logger.warning(f"Failed to fetch Heroic games: {e}")
 
+            games.sort(key=lambda game: game["name"].lower())
+            return {"status": "success", "games": games}
         except Exception as e:
             decky.logger.error(str(e))
             return {"status": "error", "games": [], "message": str(e)}
@@ -3147,7 +3427,7 @@ KeyPreviousPreset=0
             with open(readme_path, 'w', encoding='utf-8') as f:
                 f.write(f"""ReShade for {os.path.basename(game_path)}
 ------------------------------------
-Installed with LetMeReShade plugin for Heroic Games Launcher
+Installed with Decky RenoDX plugin for Heroic Games Launcher
 
 DLL Override: {dll_override}
 Architecture: {arch}-bit

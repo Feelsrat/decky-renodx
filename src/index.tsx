@@ -11,6 +11,7 @@ import { callable, definePlugin, toaster } from "@decky/api";
 import { IoMdColorPalette } from "react-icons/io";
 import HeroicGamesSection from "./HeroicGamesSection";
 import SteamGamesSection from "./SteamGamesSection";
+import HdrManagementSection from "./HdrManagementSection";
 
 interface InstallResult {
   status: string;
@@ -185,15 +186,16 @@ function HdrRuntimeSection() {
     : `Install ${selectedVersion.label} with HDR only`;
 
   return (
-    <PanelSection title="HDR Runtime">
+    <PanelSection title="HDR Runtime Setup">
       {pathExists !== null && (
         <PanelSectionRow>
-          <div style={{ color: pathExists ? "green" : "red" }}>
-            {pathExists ? "HDR runtime is installed" : "HDR runtime is not installed"}
+          <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+            <div style={{ fontSize: "1.1em", fontWeight: "bold", color: pathExists ? "#2ecc71" : "#e74c3c" }}>
+              {pathExists ? "Runtime Installed" : "Runtime Not Installed"}
+            </div>
             {currentVersionInfo && (
-              <div style={{ fontSize: "0.9em", opacity: 0.8, marginTop: "4px" }}>
-                Version: {currentVersionInfo.version}
-                {currentVersionInfo.addon ? " with addon support" : ""}
+              <div style={{ fontSize: "0.8em", opacity: 0.6 }}>
+                v{currentVersionInfo.version} {currentVersionInfo.addon ? "(Addon Support)" : ""}
               </div>
             )}
           </div>
@@ -202,15 +204,15 @@ function HdrRuntimeSection() {
 
       {!modelLoading && deckModel?.status === "success" && (
         <PanelSectionRow>
-          <div style={{ fontSize: "0.9em", color: deckModel.is_oled ? "green" : "orange" }}>
-            {deckModel.model === "Not Steam Deck" ? "Non Steam Deck device detected" : `Steam Deck ${deckModel.model} detected`}
+          <div style={{ fontSize: "0.9em", color: deckModel.is_oled ? "#2ecc71" : "#f39c12" }}>
+            {deckModel.model === "Not Steam Deck" ? "⚠️ Non-Steam Deck device" : `Steam Deck ${deckModel.model} detected`}
           </div>
         </PanelSectionRow>
       )}
 
       <PanelSectionRow>
         <div style={{ fontSize: "0.9em", opacity: 0.8 }}>
-          HDR runtime setup is automatic. The plugin includes Special K plus HDR-only ReShade packs: AutoHDR, Pumbo AdvancedAutoHDR, and Lilium HDR shaders.
+          HDR runtime setup is automatic and isolated. Includes Special K, RenoDX, and HDR shader packs (Lilium, Pumbo).
         </div>
       </PanelSectionRow>
 
@@ -379,8 +381,7 @@ export default definePlugin(() => ({
   content: (
     <>
       <HdrRuntimeSection />
-      <SteamGamesSection />
-      <HeroicGamesSection />
+      <HdrManagementSection />
       <UpdatesSection />
     </>
   ),

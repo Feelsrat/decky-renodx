@@ -495,7 +495,7 @@ EOF
     cat > "$readme_file" << EOF
 ReShade for $game_name
 ------------------------------------
-Installed with LetMeReShade plugin for Steam
+Installed with Decky RenoDX plugin for Steam
 
 DLL Override: $dll_override
 Architecture: $arch-bit
