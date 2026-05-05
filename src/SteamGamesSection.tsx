@@ -14,7 +14,6 @@ import { Navigation } from "@decky/ui";
 // Import the callable functions
 const manageGameReShade = callable<[string, string, string, string, string], ReShadeResponse>("manage_game_reshade");
 const installHdrFallback = callable<[string, string, string], ReShadeResponse & { launch_options?: string; method?: string }>("install_hdr_fallback");
-const repairSpecialKHdrWidget = callable<[string, string, string], ReShadeResponse & { method?: string }>("repair_specialk_hdr_widget");
 const getGameHdrStatus = callable<[string, string], GameHdrStatusResponse>("get_game_hdr_status");
 const checkReShadePath = callable<[], PathCheckResponse>("check_reshade_path");
 const listInstalledGames = callable<[], GameListResponse>("list_installed_games");
