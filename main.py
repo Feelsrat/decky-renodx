@@ -64,6 +64,11 @@ RUNTIME_RELATIVE_PATH = "decky-renodx/reshade"
 
 class Plugin:
     def __init__(self):
+        # Some installation/update paths can leave files owned by root.
+        # Only attempt ownership repair when running with sufficient privileges
+        # (otherwise this can generate confusing permission errors).
+        self._fix_deck_user_ownership(Path(getattr(decky, "DECKY_PLUGIN_DIR", ".")))
+
         deck_user_home = self._deck_user_home()
         deck_user = self._deck_user(deck_user_home)
         xdg_data_home = str(deck_user_home / ".local" / "share")
@@ -152,6 +157,9 @@ class Plugin:
         return os.path.expanduser(path)
 
     def _fix_deck_user_ownership(self, path: Path | str) -> None:
+        # Only root can chown; avoid noisy permission errors when running unprivileged.
+        if hasattr(os, "geteuid") and os.geteuid() != 0:
+            return
         deck_user = self._deck_user()
         if not deck_user or deck_user == "root":
             return
@@ -4342,6 +4350,10 @@ Note: If ReShadePreset.ini already existed, your previous settings were preserve
                 if staging_dir.exists():
                     shutil.rmtree(staging_dir)
                 raise
+
+            # Ensure the resulting installed plugin directory is usable by the
+            # Deck user (some update flows can preserve root ownership).
+            self._fix_deck_user_ownership(plugin_dir)
 
             return {
                 "installedVersion": self._package_version(plugin_dir / "package.json"),
