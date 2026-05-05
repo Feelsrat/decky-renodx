@@ -6,17 +6,17 @@ It aims to automate as much Steam Deck OLED HDR setup as Decky can reasonably ha
 
 - Detect installed Steam and Heroic games.
 - Detect the likely game executable and DirectX DLL target.
-- Install ReShade with addon support and AutoHDR components.
+- Install an HDR-only runtime with RenoDX import support, Special K, AutoHDR, Pumbo AdvancedAutoHDR, and Lilium HDR shaders.
 - Patch games with the correct ReShade DLL override.
 - Apply Steam launch options through `SteamClient.Apps.SetAppLaunchOptions`.
 - Open a browser search for game-specific RenoDX files.
 - Detect a downloaded RenoDX `.addon64`, `.addon32`, or `.zip` in `~/Downloads`.
 - Copy RenoDX addon files into the selected game executable folder and apply HDR launch options.
-- Fall back to AutoHDR setup when no downloaded RenoDX addon is found.
+- Fall back through Special K first, then ReShade HDR shader/add-on setup when no downloaded RenoDX addon is found.
 
 ## Reality Check
 
-This cannot make perfect native HDR universal. AutoHDR is a fallback for DX10/11/12 games. RenoDX is usually better, but it depends on game-specific addon/profile files, many of which are hosted on Nexus Mods or other sites that require user interaction.
+This cannot make perfect native HDR universal. RenoDX is the preferred path when a game-specific mod exists. If RenoDX is unavailable, the plugin tries Special K next, then HDR-only ReShade fallbacks. ReShade shader-only fallbacks can improve or inverse-tone-map output, but they do not always make SteamOS/gamescope treat the game as native HDR.
 
 The intended flow for Nexus-hosted RenoDX files is:
 
@@ -26,11 +26,11 @@ The intended flow for Nexus-hosted RenoDX files is:
 4. Return to Decky RenoDX.
 5. Use `Import downloaded RenoDX addon`.
 
-Addon support and AutoHDR runtime components are automatic. The UI intentionally does not expose toggles for them because RenoDX and AutoHDR need those choices to be consistent.
+Addon support and HDR runtime components are automatic. The UI intentionally does not expose toggles for them because the plugin chooses the fallback chain per game.
 
 Decky RenoDX keeps its HDR runtime isolated at `~/.local/share/decky-renodx/reshade`. It does not use LetMeReShade's `~/.local/share/reshade` runtime, so both plugins can coexist without one reporting the other's runtime as installed.
 
-On first HDR runtime install, the plugin downloads the ReShade add-on setup tool and a private 7-Zip extractor into `~/.local/share/decky-renodx/bin`, then fetches AutoHDR payloads from GitHub. Release zips do not need to bundle LetMeReShade's `bin` payloads or depend on a system `7z` command.
+On first HDR runtime install, the plugin downloads the ReShade add-on setup tool and a private 7-Zip extractor into `~/.local/share/decky-renodx/bin`, then fetches Special K, AutoHDR, Pumbo AdvancedAutoHDR, and Lilium HDR shader payloads from GitHub. Release zips do not need to bundle LetMeReShade's `bin` payloads or depend on a system `7z` command.
 
 ## Current Limitations
 

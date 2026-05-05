@@ -217,6 +217,20 @@ class BackendMockTest(unittest.IsolatedAsyncioTestCase):
             self.assertTrue((main_path / "AutoHDR_addons" / name).exists())
         self.assertTrue((main_path / "ReShade_shaders" / "Merged" / "Shaders" / "ReShade.fxh").exists())
 
+    async def test_specialk_install_copies_hook_and_ini(self):
+        plugin = self.module.Plugin()
+        game_dir = self.home / "game"
+        runtime = Path(plugin.main_path) / "SpecialK" / "x64"
+        game_dir.mkdir()
+        runtime.mkdir(parents=True)
+        (runtime / "SpecialK64.dll").write_text("dll", encoding="utf-8")
+
+        result = plugin._install_specialk_for_game(game_dir, "dxgi", "64")
+
+        self.assertEqual(result["status"], "success")
+        self.assertTrue((game_dir / "dxgi.dll").exists())
+        self.assertIn("UsingWINE=true", (game_dir / "SpecialK.ini").read_text(encoding="utf-8"))
+
     async def test_restart_uses_helper_when_systemd_run_fails(self):
         plugin = self.module.Plugin()
         calls = []

@@ -33,6 +33,9 @@ PLUGIN_PACKAGE = "decky-renodx"
 GITHUB_RELEASES_URL = "https://api.github.com/repos/Feelsrat/decky-renodx/releases"
 RENODX_MODS_URL = "https://raw.githubusercontent.com/wiki/clshortfuse/renodx/Mods.md"
 RESHADE_FXH_URL = "https://raw.githubusercontent.com/crosire/reshade-shaders/slim/Shaders/ReShade.fxh"
+SPECIALK_RELEASES_URL = "https://api.github.com/repos/SpecialKO/SpecialK/releases/latest"
+LILIUM_HDR_RELEASES_URL = "https://api.github.com/repos/EndlesslyFlowering/ReShade_HDR_shaders/releases/latest"
+PUMBO_AUTOHDR_ZIP_URL = "https://github.com/Filoppi/PumboAutoHDR/archive/refs/heads/master.zip"
 AUTO_CHECK_INTERVAL = 86400
 AUTO_UPDATE_CHECK_ON_STARTUP = False
 RUNTIME_RELATIVE_PATH = "decky-renodx/reshade"
@@ -1475,6 +1478,15 @@ class Plugin:
             reshade_fxh = bin_dir / "ReShade.fxh"
             if not reshade_fxh.exists() or reshade_fxh.stat().st_size < 1024:
                 self._download_url(RESHADE_FXH_URL, reshade_fxh)
+            specialk_archive = bin_dir / "SpecialK.7z"
+            if not specialk_archive.exists() or specialk_archive.stat().st_size < 1024 * 1024:
+                self._download_latest_github_asset(SPECIALK_RELEASES_URL, specialk_archive, [".7z", ".zip"])
+            lilium_archive = bin_dir / "lilium_hdr_shaders.7z"
+            if not lilium_archive.exists() or lilium_archive.stat().st_size < 1024:
+                self._download_latest_github_asset(LILIUM_HDR_RELEASES_URL, lilium_archive, [".7z", ".zip"])
+            pumbo_archive = bin_dir / "PumboAutoHDR-master.zip"
+            if not pumbo_archive.exists() or pumbo_archive.stat().st_size < 1024:
+                self._download_url(PUMBO_AUTOHDR_ZIP_URL, pumbo_archive)
 
             return {"ok": True, "message": "Runtime assets are ready."}
         except Exception as error:
@@ -1529,6 +1541,8 @@ class Plugin:
 
         self._install_optional_d3dcompiler(bin_dir, reshade_path)
         self._install_autohdr_payloads(main_path, bin_dir)
+        self._install_hdr_shader_packs(main_path, bin_dir)
+        self._install_specialk_runtime(main_path, bin_dir)
         self._write_default_reshade_ini(main_path)
 
     def _install_optional_d3dcompiler(self, bin_dir: Path, reshade_path: Path) -> None:
@@ -1574,6 +1588,63 @@ class Plugin:
         reshade_fxh = bin_dir / "ReShade.fxh"
         if reshade_fxh.exists():
             shutil.copy2(reshade_fxh, shader_dir / "ReShade.fxh")
+
+    def _install_hdr_shader_packs(self, main_path: Path, bin_dir: Path) -> None:
+        shader_dir = main_path / "ReShade_shaders" / "Merged" / "Shaders"
+        texture_dir = main_path / "ReShade_shaders" / "Merged" / "Textures"
+        shader_dir.mkdir(parents=True, exist_ok=True)
+        texture_dir.mkdir(parents=True, exist_ok=True)
+
+        lilium_archive = bin_dir / "lilium_hdr_shaders.7z"
+        if lilium_archive.exists():
+            self._extract_shader_archive(lilium_archive, shader_dir, texture_dir)
+
+        pumbo_archive = bin_dir / "PumboAutoHDR-master.zip"
+        if pumbo_archive.exists():
+            self._extract_shader_archive(pumbo_archive, shader_dir, texture_dir)
+
+    def _extract_shader_archive(self, archive_path: Path, shader_dir: Path, texture_dir: Path) -> None:
+        with tempfile.TemporaryDirectory(prefix=f"{PLUGIN_PACKAGE}-shader-pack-") as temp_root:
+            temp_path = Path(temp_root)
+            if archive_path.suffix.lower() == ".zip":
+                with zipfile.ZipFile(archive_path) as archive:
+                    self._safe_extract(archive, temp_path)
+            else:
+                self._extract_with_7zip(archive_path, temp_path)
+
+            for path in temp_path.rglob("*"):
+                if not path.is_file():
+                    continue
+                lower_parent = str(path.parent).lower()
+                suffix = path.suffix.lower()
+                if suffix in [".fx", ".fxh"]:
+                    shutil.copy2(path, shader_dir / path.name)
+                elif suffix in [".png", ".jpg", ".jpeg", ".dds"] or "texture" in lower_parent:
+                    shutil.copy2(path, texture_dir / path.name)
+
+    def _install_specialk_runtime(self, main_path: Path, bin_dir: Path) -> None:
+        archive = bin_dir / "SpecialK.7z"
+        specialk_dir = main_path / "SpecialK"
+        if not archive.exists():
+            return
+        if specialk_dir.exists():
+            shutil.rmtree(specialk_dir)
+        specialk_dir.mkdir(parents=True, exist_ok=True)
+        self._extract_with_7zip(archive, specialk_dir)
+
+    def _extract_with_7zip(self, archive_path: Path, target_dir: Path) -> None:
+        sevenzip = Path(self.bin_cache_path) / "7zz"
+        if not sevenzip.exists():
+            raise FileNotFoundError(f"Missing private 7-Zip extractor: {sevenzip}")
+        result = subprocess.run(
+            [str(sevenzip), "x", "-y", f"-o{target_dir}", str(archive_path)],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"Could not extract {archive_path.name}: {result.stderr.strip() or result.stdout.strip()}")
 
     def _copy_if_different(self, source: Path, target: Path) -> None:
         try:
@@ -1649,6 +1720,22 @@ class Plugin:
 
         # Stable fallback if the homepage changes format.
         return "https://reshade.me/downloads/ReShade_Setup_6.5.1_Addon.exe"
+
+    def _download_latest_github_asset(self, api_url: str, target: Path, extensions: list[str]) -> None:
+        release = self._fetch_json(api_url)
+        if not isinstance(release, dict):
+            raise ValueError(f"GitHub release lookup failed for {api_url}")
+        assets = release.get("assets", [])
+        if not isinstance(assets, list):
+            raise ValueError(f"GitHub release did not include assets for {api_url}")
+        lowered_extensions = tuple(ext.lower() for ext in extensions)
+        for asset in assets:
+            name = str(asset.get("name", "")).lower()
+            url = asset.get("browser_download_url")
+            if url and name.endswith(lowered_extensions):
+                self._download_url(str(url), target)
+                return
+        raise FileNotFoundError(f"No matching release asset found for {api_url}")
 
     def _download_autohdr_payloads(self, bin_dir: Path, autohdr_archive: Path, advanced_archive: Path) -> None:
         source_zip = bin_dir / "AutoHDR-ReShade-main.zip"
@@ -1913,6 +2000,141 @@ class Plugin:
         except Exception as e:
             decky.logger.error(str(e))
             return {"status": "error", "message": str(e)}
+
+    async def install_hdr_fallback(self, appid: str, dll_override: str = "auto", selected_executable_path: str = "") -> dict:
+        """Install the best automatic non-RenoDX HDR fallback for a Steam game."""
+        try:
+            reshade_check = await self.check_reshade_path()
+            if not reshade_check.get("exists"):
+                return {"status": "error", "message": "Install the HDR runtime first."}
+
+            exe_dir = self._resolve_game_exe_dir(appid, selected_executable_path)
+            api = dll_override
+            arch = "64"
+            if dll_override == "auto":
+                detected = await self._detect_api_for_path(str(exe_dir))
+                if detected.get("status") == "success":
+                    api = str(detected.get("api") or "dxgi")
+                    arch = str(detected.get("architecture") or "64")
+                else:
+                    api = "dxgi"
+            else:
+                detected = await self._detect_api_for_path(str(exe_dir))
+                if detected.get("status") == "success":
+                    arch = str(detected.get("architecture") or "64")
+
+            specialk_result = self._install_specialk_for_game(exe_dir, api, arch)
+            if specialk_result.get("status") == "success":
+                launch_options = self._hdr_launch_options(str(specialk_result["dll"]))
+                self._fix_deck_user_ownership(exe_dir)
+                return {
+                    "status": "success",
+                    "method": "specialk",
+                    "launch_options": launch_options,
+                    "output": (
+                        f"Installed Special K HDR fallback for {api.upper()} ({arch}-bit).\n"
+                        "Use Special K's in-game overlay to enable or tune HDR if it does not engage automatically.\n"
+                        f"Use this launch option: {launch_options}"
+                    ),
+                }
+
+            decky.logger.warning("Special K fallback was not applied: %s", specialk_result.get("message"))
+            reshade_result = await self.manage_game_reshade(appid, "install", api, "", selected_executable_path)
+            if reshade_result.get("status") == "success":
+                reshade_result["method"] = "reshade-hdr"
+                reshade_result["output"] = (
+                    f"Special K was not available for this game, so ReShade HDR shaders were installed instead.\n"
+                    f"Included HDR shaders: AutoHDR, Pumbo AdvancedAutoHDR, and Lilium HDR shaders.\n"
+                    f"{reshade_result.get('output', '')}"
+                )
+            return reshade_result
+        except Exception as e:
+            decky.logger.exception("HDR fallback install failed")
+            return {"status": "error", "message": str(e)}
+
+    def _resolve_game_exe_dir(self, appid: str, selected_executable_path: str = "") -> Path:
+        if selected_executable_path and os.path.exists(selected_executable_path):
+            return Path(selected_executable_path).parent
+        return Path(self._find_game_path(appid))
+
+    async def _detect_api_for_path(self, path: str) -> dict:
+        try:
+            game_path = Path(path)
+            detected_api = "dxgi"
+            arch = "64"
+            exe_files = []
+            search_root = game_path if game_path.is_dir() else game_path.parent
+            for exe in search_root.rglob("*.exe"):
+                name = exe.name.lower()
+                if any(skip in name for skip in ["unins", "launcher", "crash", "setup", "config", "redist"]):
+                    continue
+                try:
+                    exe_files.append((exe, exe.stat().st_size))
+                except OSError:
+                    continue
+            exe_files.sort(key=lambda item: item[1], reverse=True)
+
+            for exe, _size in exe_files[:3]:
+                try:
+                    result = subprocess.run(["file", str(exe)], capture_output=True, text=True, env=self._clean_subprocess_env(), timeout=10)
+                    if "PE32 executable" in result.stdout and "PE32+" not in result.stdout:
+                        arch = "32"
+                    elif "PE32+ executable" in result.stdout or "x86-64" in result.stdout:
+                        arch = "64"
+                except Exception:
+                    pass
+
+                try:
+                    result = subprocess.run(["objdump", "-p", str(exe)], capture_output=True, text=True, env=self._clean_subprocess_env(), timeout=15)
+                    imports = result.stdout.lower()
+                    for api in ["d3d12", "d3d11", "dxgi", "d3d9", "d3d8", "opengl32", "ddraw", "dinput8"]:
+                        if f"{api}.dll" in imports:
+                            detected_api = api
+                            return {"status": "success", "api": detected_api, "architecture": arch}
+                except Exception:
+                    pass
+
+            if arch == "32" and detected_api == "dxgi":
+                detected_api = "d3d9"
+            return {"status": "success", "api": detected_api, "architecture": arch}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+
+    def _install_specialk_for_game(self, exe_dir: Path, dll_override: str, arch: str) -> dict:
+        specialk_dir = Path(self.main_path) / "SpecialK"
+        if not specialk_dir.exists():
+            return {"status": "error", "message": "Special K runtime is not installed."}
+        source_name = "SpecialK32.dll" if arch == "32" else "SpecialK64.dll"
+        candidates = list(specialk_dir.rglob(source_name))
+        if not candidates:
+            return {"status": "error", "message": f"{source_name} was not found in the Special K runtime."}
+        dll = self._specialk_hook_dll(dll_override)
+        target = exe_dir / f"{dll}.dll"
+        shutil.copy2(candidates[0], target)
+        target.chmod(0o666)
+        ini = exe_dir / "SpecialK.ini"
+        if not ini.exists():
+            ini.write_text(
+                "[SpecialK.System]\n"
+                "UsingWINE=true\n"
+                "\n"
+                "[Render.Output]\n"
+                "HDR=true\n",
+                encoding="utf-8",
+            )
+            ini.chmod(0o666)
+        return {"status": "success", "dll": dll}
+
+    def _specialk_hook_dll(self, dll_override: str) -> str:
+        dll = (dll_override or "dxgi").lower()
+        if dll == "auto":
+            return "dxgi"
+        if dll in {"dxgi", "d3d11", "d3d9", "d3d8", "opengl32", "dinput8", "ddraw"}:
+            return dll
+        return "dxgi"
+
+    def _hdr_launch_options(self, dll: str) -> str:
+        return f'PROTON_ENABLE_HDR=1 DXVK_HDR=1 ENABLE_HDR_WSI=1 WINEDLLOVERRIDES="d3dcompiler_47=n;{dll}=n,b" %command%'
 
     async def list_installed_games(self) -> dict:
         try:
@@ -3159,7 +3381,8 @@ Note: If ReShadePreset.ini already existed, your previous settings were preserve
                 "d3d8.dll", "d3d9.dll", "d3d10.dll", "d3d11.dll", "d3d12.dll", 
                 "dxgi.dll", "opengl32.dll", "dinput8.dll", "ddraw.dll",
                 "d3dcompiler_47.dll", "ReShade.ini", "ReShade_README.txt",
-                "AutoHDR.addon32", "AutoHDR.addon64"
+                "AutoHDR.addon32", "AutoHDR.addon64", "AutoHDR32.addon", "AutoHDR64.addon",
+                "SpecialK.ini"
                 # Note: ReShadePreset.ini is intentionally excluded to preserve user settings
             ]
             

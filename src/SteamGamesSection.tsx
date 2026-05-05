@@ -13,6 +13,7 @@ import { Navigation } from "@decky/ui";
 
 // Import the callable functions
 const manageGameReShade = callable<[string, string, string, string, string], ReShadeResponse>("manage_game_reshade");
+const installHdrFallback = callable<[string, string, string], ReShadeResponse & { launch_options?: string; method?: string }>("install_hdr_fallback");
 const checkReShadePath = callable<[], PathCheckResponse>("check_reshade_path");
 const listInstalledGames = callable<[], GameListResponse>("list_installed_games");
 const findGameExecutablePath = callable<[string], ExecutableDetectionResponse>("find_game_executable_path");
@@ -406,6 +407,8 @@ const SteamGamesSection = () => {
     }
   };
 
+  void handlePatch;
+
   const handleUnpatch = async () => {
     if (!selectedGame) {
       setResult('Please select a game to unpatch.');
@@ -476,7 +479,7 @@ const SteamGamesSection = () => {
     setResult(directUrl ? "Opened the matched RenoDX mod link. Download it, then use Import downloaded RenoDX addon." : "Opened RenoDX search. Download the addon/archive, then use Import downloaded RenoDX addon.");
   };
 
-  const installAutoHdrFallback = async () => {
+  const installAutomaticHdrFallback = async () => {
     if (!selectedGame) return false;
 
     const reshadeCheck = await checkReShadePath();
@@ -485,24 +488,22 @@ const SteamGamesSection = () => {
       return false;
     }
 
-    const response = await manageGameReShade(
+    const response = await installHdrFallback(
       selectedGame.appid,
-      "install",
       selectedDll?.value || "auto",
-      "",
       selectedExecutablePath
     );
 
     if (response.status !== "success") {
-      setResult(`AutoHDR fallback failed: ${response.message || 'Unknown error'}`);
+      setResult(`HDR fallback failed: ${response.message || 'Unknown error'}`);
       return false;
     }
 
     const launchOptionsMatch = response.output?.match(/Use this launch option: (.+)/);
-    const fallbackDll = selectedDll?.value || "dxgi";
-    const launchOptions = launchOptionsMatch?.[1] || `WINEDLLOVERRIDES="d3dcompiler_47=n;${fallbackDll}=n,b" %command%`;
+    const fallbackDll = selectedDll?.value && selectedDll.value !== "auto" ? selectedDll.value : "dxgi";
+    const launchOptions = response.launch_options || launchOptionsMatch?.[1] || `PROTON_ENABLE_HDR=1 DXVK_HDR=1 ENABLE_HDR_WSI=1 WINEDLLOVERRIDES="d3dcompiler_47=n;${fallbackDll}=n,b" %command%`;
     await SteamClient.Apps.SetAppLaunchOptions(parseInt(selectedGame.appid), launchOptions);
-    setResult(`No RenoDX addon was imported. AutoHDR fallback was installed for ${selectedGame.name}.`);
+    setResult(`No RenoDX addon was imported. Installed ${response.method === "specialk" ? "Special K HDR" : "ReShade HDR shader"} fallback for ${selectedGame.name}.`);
     return true;
   };
 
@@ -520,8 +521,8 @@ const SteamGamesSection = () => {
         }
         setResult(`${response.output || 'RenoDX imported.'}\nHDR launch options applied.`);
       } else {
-        toaster.toast({ title: "RenoDX not found", body: "Installing AutoHDR fallback instead." });
-        await installAutoHdrFallback();
+        toaster.toast({ title: "RenoDX not found", body: "Installing automatic HDR fallback instead." });
+        await installAutomaticHdrFallback();
       }
     } catch (error) {
       setResult(`RenoDX import error: ${error instanceof Error ? error.message : String(error)}`);
@@ -634,7 +635,7 @@ const SteamGamesSection = () => {
               <div style={{ opacity: 0.75 }}>{linkCount} link{linkCount === 1 ? "" : "s"} available from the RenoDX wiki.</div>
             </>
           ) : (
-            <div style={{ opacity: 0.75 }}>The plugin will fall back to AutoHDR/ReShade unless you import a compatible addon manually.</div>
+            <div style={{ opacity: 0.75 }}>The plugin falls back through Special K, then ReShade HDR shaders, unless you import a compatible addon manually.</div>
           )}
         </div>
       </PanelSectionRow>
@@ -897,10 +898,10 @@ const SteamGamesSection = () => {
               <PanelSectionRow>
                 <ButtonItem
                   layout="below"
-                  onClick={handlePatch}
+                  onClick={installAutomaticHdrFallback}
                   disabled={!selectedDll}
                 >
-                  Install AutoHDR fallback
+                  Install automatic HDR fallback
                 </ButtonItem>
               </PanelSectionRow>
               <PanelSectionRow>

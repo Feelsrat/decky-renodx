@@ -210,7 +210,7 @@ function HdrRuntimeSection() {
 
       <PanelSectionRow>
         <div style={{ fontSize: "0.9em", opacity: 0.8 }}>
-          HDR runtime setup is automatic. The plugin always uses ReShade addon support plus AutoHDR components, and excludes extra visual shader packs.
+          HDR runtime setup is automatic. The plugin includes Special K plus HDR-only ReShade packs: AutoHDR, Pumbo AdvancedAutoHDR, and Lilium HDR shaders.
         </div>
       </PanelSectionRow>
 
@@ -226,7 +226,7 @@ function HdrRuntimeSection() {
       </PanelSectionRow>
 
       <PanelSectionRow>
-        <Field focusable label="HDR Components" description="Addon support and AutoHDR are enabled automatically.">
+        <Field focusable label="HDR Components" description="RenoDX is first priority; fallback components are selected automatically per game.">
           <div style={{ color: "#2ecc71", fontWeight: 700 }}>Automatic</div>
         </Field>
       </PanelSectionRow>
