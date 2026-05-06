@@ -614,7 +614,7 @@ class BackendMockTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["method"], "helper")
         self.assertTrue(any("restart" in str(call) for call in calls))
 
-    async def test_install_update_replaces_and_schedules_restart(self):
+    async def test_install_update_stages_and_schedules_apply_helper(self):
         plugin = self.module.Plugin()
         async def fake_check_update(force=False):
             return {
@@ -630,17 +630,24 @@ class BackendMockTest(unittest.IsolatedAsyncioTestCase):
             "tag_name": "v9.9.9",
             "assets": [{"name": "decky-renodx.zip", "browser_download_url": "https://example.invalid/decky-renodx.zip"}],
         }
-        plugin._install_release_zip = lambda _url: {"installedVersion": "9.9.9"}
+        plugin._stage_release_zip = lambda _url: {
+            "installedVersion": "9.9.9",
+            "pluginPath": str(self.home / "plugin"),
+            "stagingPath": str(self.home / "staging"),
+            "backupPath": str(self.home / "backup"),
+        }
         scheduled = []
-        plugin._schedule_loader_restart = lambda reason: scheduled.append(reason) or {"scheduled": True, "message": "bad"}
+        plugin._schedule_update_apply = lambda plugin_dir, staging_dir, backup_dir: (
+            scheduled.append((plugin_dir, staging_dir, backup_dir)) or {"scheduled": True, "method": "helper"}
+        )
 
         result = await plugin.install_update()
 
         self.assertTrue(result["ok"])
         self.assertTrue(result["requiresRestart"])
         self.assertTrue(result["restarted"])
-        self.assertEqual(scheduled, ["plugin updated"])
-        self.assertIn("installed", result["message"])
+        self.assertEqual(len(scheduled), 1)
+        self.assertIn("staged", result["message"])
 
     async def test_install_release_zip_replaces_plugin_with_backup(self):
         plugin = self.module.Plugin()
@@ -672,6 +679,34 @@ class BackendMockTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(plugin_dir.exists())
         self.assertTrue((plugin_dir / "package.json").exists())
         self.assertTrue((plugin_dir.with_name("decky-renodx.previous") / "old.txt").exists())
+
+    async def test_update_apply_helper_stops_swaps_and_starts_loader(self):
+        plugin = self.module.Plugin()
+        plugin_dir = self.home / "plugins" / "decky-renodx"
+        staging_dir = self.home / "plugins" / ".decky-renodx.update-test"
+        backup_dir = self.home / "plugins" / "decky-renodx.previous"
+        plugin_dir.mkdir(parents=True)
+        staging_dir.mkdir(parents=True)
+        commands = []
+
+        original_run = self.module.subprocess.run
+
+        def fake_run(argv, **kwargs):
+            commands.append(argv)
+            return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        self.module.subprocess.run = fake_run
+        try:
+            result = plugin._schedule_update_apply(plugin_dir, staging_dir, backup_dir)
+        finally:
+            self.module.subprocess.run = original_run
+
+        self.assertTrue(result["scheduled"])
+        helper_path = Path(str(commands[0][2]).split("nohup ", 1)[1].split(" >/dev/null", 1)[0].strip("'\""))
+        text = helper_path.read_text(encoding="utf-8")
+        self.assertIn("stop plugin_loader", text)
+        self.assertIn("mv \"$staging_dir\" \"$plugin_dir\"", text)
+        self.assertIn("start plugin_loader", text)
 
 
 if __name__ == "__main__":
