@@ -690,6 +690,27 @@ class BackendMockTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse((game_dir / "SpecialK.ini").exists())
         self.assertFalse((game_dir / ".decky-renodx-hdr.json").exists())
 
+    async def test_clear_steam_compatdata_removes_only_appid_prefix(self):
+        plugin = self.module.Plugin()
+        compat = self.home / ".local" / "share" / "Steam" / "steamapps" / "compatdata" / "123"
+        other = self.home / ".local" / "share" / "Steam" / "steamapps" / "compatdata" / "456"
+        (compat / "pfx").mkdir(parents=True)
+        (other / "pfx").mkdir(parents=True)
+
+        result = plugin._clear_steam_compatdata("123")
+
+        self.assertEqual(result["status"], "success")
+        self.assertFalse(compat.exists())
+        self.assertTrue(other.exists())
+
+    async def test_clear_steam_compatdata_rejects_invalid_appid(self):
+        plugin = self.module.Plugin()
+
+        result = plugin._clear_steam_compatdata("../123")
+
+        self.assertEqual(result["status"], "error")
+        self.assertIn("invalid appid", result["message"])
+
     async def test_restart_uses_helper_when_systemd_run_fails(self):
         plugin = self.module.Plugin()
         calls = []

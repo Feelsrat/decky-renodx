@@ -1995,6 +1995,11 @@ class Plugin:
 
     async def manage_game_reshade(self, appid: str, action: str, dll_override: str = "dxgi", vulkan_mode: str = "", selected_executable_path: str = "") -> dict:
         try:
+            logger = setup_per_game_logger(appid)
+            if action in {"install", "uninstall", "remove"}:
+                compat_result = self._clear_steam_compatdata(appid, logger)
+                if compat_result["status"] == "error":
+                    return {"status": "error", "message": compat_result["message"], "compatdata": compat_result}
             assets_dir = self._get_assets_dir()
             script_path = assets_dir / "reshade-game-manager.sh"
             
@@ -2080,6 +2085,10 @@ class Plugin:
     async def install_hdr_fallback(self, appid: str, dll_override: str = "auto", selected_executable_path: str = "") -> dict:
         """Install the best automatic non-RenoDX HDR fallback for a Steam game."""
         try:
+            logger = setup_per_game_logger(appid)
+            compat_result = self._clear_steam_compatdata(appid, logger)
+            if compat_result["status"] == "error":
+                return {"status": "error", "message": compat_result["message"], "compatdata": compat_result}
             reshade_check = await self.check_reshade_path()
             if not reshade_check.get("exists"):
                 return {"status": "error", "message": "Install the HDR runtime first."}
@@ -2460,6 +2469,9 @@ class Plugin:
             try:
                 logger = setup_per_game_logger(appid)
                 logger.info(f"Starting automated setup for {title} (skip_current={skip_current})")
+                compat_result = self._clear_steam_compatdata(appid, logger)
+                if compat_result["status"] == "error":
+                    return {"status": "error", "message": compat_result["message"], "compatdata": compat_result}
 
                 # 1. Get Recommendations
                 rec_result = await self.get_hdr_recommendation(appid, title, exe_path)
@@ -2561,6 +2573,9 @@ class Plugin:
             try:
                 logger = setup_per_game_logger(appid)
                 logger.info(f"User requested Special K override for {title}")
+                compat_result = self._clear_steam_compatdata(appid, logger)
+                if compat_result["status"] == "error":
+                    return {"status": "error", "message": compat_result["message"], "compatdata": compat_result}
                 if not exe_path or not os.path.exists(exe_path):
                     return {"status": "error", "message": "Game executable path was not resolved. Refresh the game state and try again."}
 
@@ -2644,13 +2659,65 @@ class Plugin:
             logger = setup_per_game_logger(appid)
             success, message = self.manifest_manager.remove_hdr(appid, logger)
             fallback = self._cleanup_hdr_files_without_manifest(appid, exe_path, logger)
+            compat_result = self._clear_steam_compatdata(appid, logger)
+            compat_message = compat_result.get("message", "")
             if success and fallback["status"] != "error":
-                return {"status": "success", "message": f"{message} {fallback.get('message', '')}".strip(), **fallback}
+                return {"status": "success", "message": f"{message} {fallback.get('message', '')} {compat_message}".strip(), **fallback, "compatdata": compat_result}
             if not success and fallback["status"] == "success":
-                return fallback
-            return {"status": "error", "message": f"{message} {fallback.get('message', '')}".strip(), **fallback}
+                return {**fallback, "message": f"{fallback.get('message', '')} {compat_message}".strip(), "compatdata": compat_result}
+            return {"status": "error", "message": f"{message} {fallback.get('message', '')} {compat_message}".strip(), **fallback, "compatdata": compat_result}
         except Exception as e:
             return {"status": "error", "message": str(e)}
+
+    def _clear_steam_compatdata(self, appid: str, logger=None) -> dict:
+        if not re.fullmatch(r"\d+", str(appid or "")):
+            return {"status": "error", "message": f"Refusing to clear compatdata for invalid appid: {appid}", "removed": [], "errors": []}
+        removed = []
+        errors = []
+        candidates = self._steam_compatdata_paths(appid)
+        for path in candidates:
+            try:
+                resolved = path.resolve()
+            except OSError:
+                resolved = path
+            if not path.exists():
+                if logger:
+                    logger.info(f"Compatdata path not present: {path}")
+                continue
+            if path.name != str(appid) or path.parent.name != "compatdata":
+                errors.append(f"Refused unsafe compatdata path: {path}")
+                continue
+            try:
+                shutil.rmtree(path)
+                removed.append(str(path))
+                if logger:
+                    logger.info(f"Cleared Steam compatdata prefix: {path}")
+            except OSError as error:
+                errors.append(f"{path}: {error}")
+                if logger:
+                    logger.error(f"Could not clear compatdata {path}: {error}")
+        if errors:
+            return {"status": "error", "message": "Could not clear one or more Steam compatdata prefixes.", "removed": removed, "errors": errors}
+        if removed:
+            return {"status": "success", "message": f"Cleared {len(removed)} Steam compatdata prefix(es).", "removed": removed, "errors": []}
+        return {"status": "noop", "message": "No Steam compatdata prefix was present to clear.", "removed": [], "errors": []}
+
+    def _steam_compatdata_paths(self, appid: str) -> list[Path]:
+        paths: list[Path] = []
+        for steam_root in self._steam_root_candidates():
+            path = steam_root / "steamapps" / "compatdata" / str(appid)
+            if path not in paths:
+                paths.append(path)
+        library_file = self._find_libraryfolders_file()
+        if library_file and library_file.exists():
+            try:
+                for library_path in self._steam_library_paths(library_file):
+                    path = Path(library_path) / "steamapps" / "compatdata" / str(appid)
+                    if path not in paths:
+                        paths.append(path)
+            except Exception as error:
+                decky.logger.warning("Could not enumerate library compatdata paths: %s", error)
+        return paths
 
     def _cleanup_hdr_files_without_manifest(self, appid: str, exe_path: str = "", logger=None) -> dict:
         try:
