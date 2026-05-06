@@ -2143,6 +2143,8 @@ class Plugin:
                         context["graphics_api"] = api_info.get("api", "unknown")
                         context["injection_dll"] = api_info.get("injection_dll", context.get("injection_dll", "auto"))
                         context["engine"] = api_info.get("engine", context.get("engine", "unknown"))
+                if context["graphics_api"] == "unknown":
+                    await self._apply_steam_metadata_api_fallback(context, appid, logger)
             else:
                 # Fetch PCGamingWiki data
                 wiki_data = self.wiki_scraper.get_game_data(appid)
@@ -2161,6 +2163,8 @@ class Plugin:
                     context["engine"] = api_info.get("engine", "unknown")
                     
                     context["anti_cheat"] = self.ac_detector.detect(game_path)
+                if context["graphics_api"] == "unknown":
+                    await self._apply_steam_metadata_api_fallback(context, appid, logger)
                 
                 # Save to cache
                 self.persistent_cache.set_game_metadata(appid, {
@@ -2199,6 +2203,67 @@ class Plugin:
         except Exception as error:
             if logger:
                 logger.warning(f"RenoDX support lookup failed: {error}")
+
+    async def _apply_steam_metadata_api_fallback(self, context: dict[str, Any], appid: str, logger=None) -> None:
+        metadata_api = await self._detect_api_from_steam_metadata(appid, logger)
+        if metadata_api.get("status") != "success":
+            return
+        context["graphics_api"] = metadata_api.get("api", "unknown")
+        context["injection_dll"] = metadata_api.get("injection_dll", "dxgi")
+        context["engine"] = metadata_api.get("engine", context.get("engine", "unknown"))
+        context["api_confidence"] = metadata_api.get("confidence", "metadata")
+        context["api_source"] = metadata_api.get("source", "steam_appdetails")
+
+    async def _detect_api_from_steam_metadata(self, appid: str, logger=None) -> dict[str, Any]:
+        result = await asyncio.to_thread(self._detect_api_from_steam_metadata_sync, appid)
+        if logger and result.get("status") == "success":
+            logger.info(f"Steam metadata API fallback detected {result.get('api')} for AppID {appid}")
+        elif logger:
+            logger.info(f"Steam metadata API fallback unavailable for AppID {appid}: {result.get('message')}")
+        return result
+
+    def _detect_api_from_steam_metadata_sync(self, appid: str) -> dict[str, Any]:
+        try:
+            url = f"https://store.steampowered.com/api/appdetails?appids={appid}&filters=pc_requirements"
+            request = urllib.request.Request(url, headers={"User-Agent": PLUGIN_PACKAGE})
+            with urllib.request.urlopen(request, timeout=10) as response:
+                payload = json.loads(response.read().decode("utf-8", "ignore"))
+            app_data = payload.get(str(appid), {}) if isinstance(payload, dict) else {}
+            data = app_data.get("data", {}) if isinstance(app_data, dict) and app_data.get("success") else {}
+            requirements = data.get("pc_requirements", {}) if isinstance(data, dict) else {}
+            text = " ".join(str(requirements.get(key, "")) for key in ["minimum", "recommended"])
+            api = self._api_from_requirement_text(text)
+            if api == "unknown":
+                return {"status": "error", "message": "Steam metadata did not include a DirectX requirement."}
+            return {
+                "status": "success",
+                "api": api,
+                "architecture": "64",
+                "injection_dll": self._api_to_injection_dll(api),
+                "engine": "unknown",
+                "confidence": "metadata",
+                "source": "steam_appdetails",
+            }
+        except Exception as error:
+            return {"status": "error", "message": str(error)}
+
+    def _api_from_requirement_text(self, text: str) -> str:
+        clean = re.sub(r"<[^>]+>", " ", text).lower()
+        directx_versions = [int(match) for match in re.findall(r"directx\s*:?\s*(?:version\s*)?([0-9]{1,2})", clean)]
+        if not directx_versions:
+            directx_versions = [int(match) for match in re.findall(r"\bdx\s*([0-9]{1,2})\b", clean)]
+        if not directx_versions:
+            return "unknown"
+        version = max(directx_versions)
+        if version >= 12:
+            return "d3d12"
+        if version == 11:
+            return "d3d11"
+        if version == 10:
+            return "dx10"
+        if version == 9:
+            return "d3d9"
+        return "unknown"
 
     async def _detect_api_with_cache(self, game_path: str, logger=None) -> dict[str, Any]:
         cached_api = self.persistent_cache.get_api_info(game_path)
@@ -2333,6 +2398,37 @@ class Plugin:
                 return {"status": "error", "message": "All HDR methods failed."}
             except Exception as e:
                 decky.logger.error(f"Error in execute_setup_flow: {str(e)}")
+                return {"status": "error", "message": str(e)}
+
+    async def force_special_k_setup(self, appid: str, title: str, exe_path: str = "") -> dict:
+        """Install Special K even when a higher-priority RenoDX/Luma recommendation exists."""
+        async with self._install_lock:
+            try:
+                logger = setup_per_game_logger(appid)
+                logger.info(f"User requested Special K override for {title}")
+                if not exe_path or not os.path.exists(exe_path):
+                    return {"status": "error", "message": "Game executable path was not resolved. Refresh the game state and try again."}
+
+                await self._ensure_special_k_bin()
+                sk_source = self._specialk_runtime_source("64")
+                if not sk_source:
+                    return {"status": "error", "message": "SpecialK64.dll was not found after runtime setup."}
+
+                success, message = self.installer.install_special_k(appid, exe_path, str(sk_source))
+                if not success:
+                    logger.error(f"Forced Special K install failed: {message}")
+                    return {"status": "error", "message": message}
+
+                launch_opts = self._hdr_launch_options("dxgi")
+                logger.info("Forced Special K install completed; HDR still requires in-game verification.")
+                return {
+                    "status": "success",
+                    "method": "special_k",
+                    "message": f"{message} HDR still needs in-game verification.",
+                    "launch_options": launch_opts,
+                }
+            except Exception as e:
+                decky.logger.error(f"Error in force_special_k_setup: {str(e)}")
                 return {"status": "error", "message": str(e)}
 
     async def _ensure_special_k_bin(self):

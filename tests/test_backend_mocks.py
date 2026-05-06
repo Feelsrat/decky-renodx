@@ -421,6 +421,40 @@ class BackendMockTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["api"], "d3d11")
         self.assertEqual(result["script_api_hint"], "dxgi")
 
+    async def test_api_requirement_text_detects_directx_11(self):
+        plugin = self.module.Plugin()
+
+        self.assertEqual(plugin._api_from_requirement_text("DirectX: Version 11"), "d3d11")
+        self.assertEqual(plugin._api_from_requirement_text("<strong>DirectX:</strong> Version 12"), "d3d12")
+
+    async def test_recommendation_uses_steam_metadata_api_fallback(self):
+        plugin = self.module.Plugin()
+        async def fake_detect_api(_path, _logger=None):
+            return {"status": "success", "api": "unknown"}
+        async def fake_metadata_api(_appid, _logger=None):
+            return {
+                "status": "success",
+                "api": "d3d11",
+                "injection_dll": "dxgi",
+                "engine": "unknown",
+                "confidence": "metadata",
+                "source": "steam_appdetails",
+            }
+        async def fake_renodx(_title):
+            return {"status": "success", "supported": False}
+        plugin._detect_api_with_cache = fake_detect_api
+        plugin._detect_api_from_steam_metadata = fake_metadata_api
+        plugin.wiki_scraper.get_game_data = lambda _appid: {"status": "error"}
+        plugin.check_renodx_support = fake_renodx
+        game_dir = self.home / "Ni no Kuni"
+        game_dir.mkdir()
+
+        result = await plugin.get_hdr_recommendation("798460", "Ni no Kuni Wrath of the White Witch Remastered", str(game_dir))
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["context"]["graphics_api"], "d3d11")
+        self.assertEqual(result["recommendations"][0]["method"], "special_k")
+
     async def test_unreal_dxgi_detection_becomes_dx11_dx12_family(self):
         plugin = self.module.Plugin()
         game_dir = self.home / "unreal-game"

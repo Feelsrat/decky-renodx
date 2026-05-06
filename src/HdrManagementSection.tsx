@@ -17,6 +17,7 @@ const updateSkConfigValue = callable<[string, string, string, string, string], a
 const setSpecialKVerified = callable<[string, boolean], any>("set_special_k_verified");
 const listInstalledGames = callable<[], any>("list_installed_games");
 const findGameExecutablePath = callable<[string], any>("find_game_executable_path");
+const forceSpecialKSetup = callable<[string, string, string], any>("force_special_k_setup");
 
 interface Recommendation {
   method: string;
@@ -199,6 +200,15 @@ const HdrManagementSection = () => {
     setLoading(false);
   };
 
+  const handleForceSpecialK = async () => {
+    if (!selectedGame) return;
+    setLoading(true);
+    const response = await forceSpecialKSetup(selectedGame.appid, selectedGame.name, exePath);
+    toaster.toast({ title: "Special K Override", body: response.message });
+    await refreshState();
+    setLoading(false);
+  };
+
   const viewLog = async () => {
     if (!selectedGame) return;
     const response = await getPerGameLog(selectedGame.appid);
@@ -289,6 +299,17 @@ const HdrManagementSection = () => {
                   <ButtonItem layout="below" onClick={() => handleSpecialKOverride(true)}>
                     Mark Special K Verified
                   </ButtonItem>
+                </PanelSectionRow>
+              )}
+
+              {context && !context.anti_cheat.length && ["renodx", "luma", "native_hdr"].includes(recommendation?.method || "") && (
+                <PanelSectionRow>
+                  <ButtonItem layout="below" onClick={handleForceSpecialK}>
+                    Use Special K Instead
+                  </ButtonItem>
+                  <div style={{ fontSize: "0.78em", opacity: 0.62, padding: "4px 8px 0", lineHeight: 1.25, overflowWrap: "anywhere" }}>
+                    Installs Special K even though a higher-priority HDR method was recommended. HDR still needs in-game verification.
+                  </div>
                 </PanelSectionRow>
               )}
 
