@@ -474,6 +474,22 @@ class BackendMockTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["context"]["graphics_api"], "d3d11")
         self.assertEqual(result["recommendations"][0]["method"], "special_k")
 
+    async def test_steam_metadata_uses_relaxed_json_fetch(self):
+        plugin = self.module.Plugin()
+        seen = []
+        plugin._fetch_json = lambda url: seen.append(url) or {
+            "798460": {
+                "success": True,
+                "data": {"pc_requirements": {"minimum": "DirectX: Version 11"}},
+            }
+        }
+
+        result = plugin._detect_api_from_steam_metadata_sync("798460")
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["api"], "d3d11")
+        self.assertIn("store.steampowered.com", seen[0])
+
     async def test_unreal_dxgi_detection_becomes_dx11_dx12_family(self):
         plugin = self.module.Plugin()
         game_dir = self.home / "unreal-game"
@@ -579,6 +595,20 @@ class BackendMockTest(unittest.IsolatedAsyncioTestCase):
         cache.set("metadata_123", {"graphics_api": "unknown", "renodx_supported": False})
 
         self.assertIsNone(cache.get_game_metadata("123"))
+
+    async def test_reset_plugin_caches_clears_detection_and_metadata(self):
+        plugin = self.module.Plugin()
+        plugin.executable_cache["x"] = {"status": "success"}
+        plugin.persistent_cache.set("foo", "bar")
+        renodx_cache = Path(plugin.main_path) / "renodx_mods_cache.json"
+        renodx_cache.write_text("{}", encoding="utf-8")
+
+        result = await plugin.reset_plugin_caches()
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(plugin.executable_cache, {})
+        self.assertEqual(plugin.persistent_cache.data, {})
+        self.assertFalse(renodx_cache.exists())
 
     async def test_special_k_verified_override_promotes_special_k(self):
         plugin = self.module.Plugin()

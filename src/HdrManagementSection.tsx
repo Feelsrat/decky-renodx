@@ -18,6 +18,7 @@ const setSpecialKVerified = callable<[string, boolean], any>("set_special_k_veri
 const listInstalledGames = callable<[], any>("list_installed_games");
 const findGameExecutablePath = callable<[string], any>("find_game_executable_path");
 const forceSpecialKSetup = callable<[string, string, string], any>("force_special_k_setup");
+const resetPluginCaches = callable<[], any>("reset_plugin_caches");
 
 interface Recommendation {
   method: string;
@@ -218,6 +219,16 @@ const HdrManagementSection = () => {
     }
   };
 
+  const handleResetCaches = async () => {
+    setLoading(true);
+    const response = await resetPluginCaches();
+    toaster.toast({ title: "Caches Reset", body: response.message });
+    if (selectedGame) {
+      await refreshState();
+    }
+    setLoading(false);
+  };
+
   return (
     <PanelSection title="Per-Game HDR Management">
       <PanelSectionRow>
@@ -358,6 +369,15 @@ const HdrManagementSection = () => {
                 <ButtonItem layout="below" onClick={viewLog}>
                   View Logs
                 </ButtonItem>
+              </PanelSectionRow>
+
+              <PanelSectionRow>
+                <ButtonItem layout="below" onClick={handleResetCaches}>
+                  Reset Detection Caches
+                </ButtonItem>
+                <div style={{ fontSize: "0.78em", opacity: 0.62, padding: "4px 8px 0", lineHeight: 1.25, overflowWrap: "anywhere" }}>
+                  Clears cached game paths, API detection, RenoDX support data, and update status, then re-runs detection for the selected game.
+                </div>
               </PanelSectionRow>
             </>
           )}

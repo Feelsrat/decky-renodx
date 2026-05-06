@@ -2248,9 +2248,9 @@ class Plugin:
     def _detect_api_from_steam_metadata_sync(self, appid: str) -> dict[str, Any]:
         try:
             url = f"https://store.steampowered.com/api/appdetails?appids={appid}&filters=pc_requirements"
-            request = urllib.request.Request(url, headers={"User-Agent": PLUGIN_PACKAGE})
-            with urllib.request.urlopen(request, timeout=10) as response:
-                payload = json.loads(response.read().decode("utf-8", "ignore"))
+            payload = self._fetch_json(url)
+            if not isinstance(payload, dict):
+                return {"status": "error", "message": "Steam metadata fetch failed."}
             app_data = payload.get(str(appid), {}) if isinstance(payload, dict) else {}
             data = app_data.get("data", {}) if isinstance(app_data, dict) and app_data.get("success") else {}
             requirements = data.get("pc_requirements", {}) if isinstance(data, dict) else {}
@@ -2316,6 +2316,33 @@ class Plugin:
             }
         except Exception as e:
             decky.logger.error(f"Failed to update Special K verification override: {str(e)}")
+            return {"status": "error", "message": str(e)}
+
+    async def reset_plugin_caches(self) -> dict:
+        try:
+            removed = []
+            self.executable_cache.clear()
+            self._cached_update_status = None
+            self._last_check_time = 0.0
+            self.persistent_cache.clear()
+            for path in [
+                Path(self.main_path) / "renodx_mods_cache.json",
+                Path(decky.DECKY_PLUGIN_DIR) / ".last_update_check",
+            ]:
+                try:
+                    if path.exists():
+                        path.unlink()
+                        removed.append(str(path))
+                except OSError as error:
+                    decky.logger.warning("Could not remove cache file %s: %s", path, error)
+            decky.logger.info("Decky RenoDX caches reset")
+            return {
+                "status": "success",
+                "message": "Detection and update caches reset. Refresh the selected game to re-detect.",
+                "removed": removed,
+            }
+        except Exception as e:
+            decky.logger.error(f"Failed to reset caches: {str(e)}")
             return {"status": "error", "message": str(e)}
 
     async def get_per_game_log(self, appid: str) -> dict:

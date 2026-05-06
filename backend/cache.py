@@ -79,3 +79,7 @@ class PersistentCache:
         mtime = os.path.getmtime(exe_path)
         key = f"api_{exe_path}_{mtime}"
         self.set(key, info)
+
+    def clear(self):
+        self.data = {}
+        self._save()
