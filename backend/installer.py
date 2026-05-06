@@ -1,6 +1,7 @@
 import os
 import shutil
 import configparser
+import time
 from pathlib import Path
 
 class HDRInstaller:

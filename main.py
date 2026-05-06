@@ -2200,6 +2200,19 @@ class Plugin:
             logger.info("API detection returned unknown; not caching transient result.")
         return api_info
 
+    async def set_special_k_verified(self, appid: str, verified: bool = True) -> dict:
+        try:
+            self.persistent_cache.set_game_metadata_value(appid, "special_k_verified", bool(verified))
+            logger = setup_per_game_logger(appid)
+            logger.info(f"User override: special_k_verified={bool(verified)}")
+            return {
+                "status": "success",
+                "message": "Special K HDR marked as verified for this game." if verified else "Special K HDR verification cleared for this game.",
+            }
+        except Exception as e:
+            decky.logger.error(f"Failed to update Special K verification override: {str(e)}")
+            return {"status": "error", "message": str(e)}
+
     async def get_per_game_log(self, appid: str) -> dict:
         """Read and return the content of the per-game log."""
         try:
@@ -2258,11 +2271,13 @@ class Plugin:
                         continue
 
                     if method == "special_k":
-                        sk_source = os.path.join(self.bin_cache_path, "SpecialK", "SpecialK64.dll")
-                        if not os.path.exists(sk_source):
-                            await self._ensure_special_k_bin()
+                        await self._ensure_special_k_bin()
+                        sk_source = self._specialk_runtime_source("64")
+                        if not sk_source:
+                            logger.error("Special K install failed: SpecialK64.dll was not found after runtime setup.")
+                            continue
                         
-                        success, message = self.installer.install_special_k(appid, exe_path, sk_source)
+                        success, message = self.installer.install_special_k(appid, exe_path, str(sk_source))
                         if success:
                             # Verification check would usually happen AFTER launch, 
                             # but we return the success state for now.
@@ -2316,6 +2331,14 @@ class Plugin:
                 self._install_specialk_runtime(Path(self.main_path), bin_dir)
         except Exception as e:
             decky.logger.error(f"Failed to ensure Special K binaries: {str(e)}")
+
+    def _specialk_runtime_source(self, arch: str = "64") -> Path | None:
+        specialk_dir = Path(self.main_path) / "SpecialK"
+        source_name = "SpecialK32.dll" if str(arch) == "32" else "SpecialK64.dll"
+        if not specialk_dir.exists():
+            return None
+        candidates = sorted(specialk_dir.rglob(source_name))
+        return candidates[0] if candidates else None
 
     async def _set_steam_launch_options(self, appid: str, options: str):
         """Placeholder for setting launch options - usually handled in frontend."""

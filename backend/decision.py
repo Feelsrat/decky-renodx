@@ -63,6 +63,8 @@ class DecisionTree:
         # 4. Special K (Score 75)
         sk_notes = []
         sk_eligible = False
+        sk_requires_verification = False
+        sk_attemptable_apis = {"dx10", "dx11", "dx12", "d3d10", "d3d11", "d3d12", "dx11_dx12"}
         
         if special_k_wiki or special_k_verified or special_k_wrapper:
             if special_k_wiki:
@@ -72,6 +74,11 @@ class DecisionTree:
             if special_k_wrapper:
                 sk_notes.append("Known wrapper path exists for Special K HDR.")
             sk_eligible = True
+        elif graphics_api in sk_attemptable_apis:
+            sk_notes.append(f"{graphics_api} is a Special K-compatible API family.")
+            sk_notes.append("Special K HDR still must be verified in-game before it is treated as working.")
+            sk_eligible = True
+            sk_requires_verification = True
         elif graphics_api == "dx9":
             sk_notes.append("DX9 detected. Special K HDR requires exact-game support or a known wrapper path.")
             sk_eligible = False
@@ -80,8 +87,14 @@ class DecisionTree:
             recommendations.append({
                 "method": "special_k",
                 "score": 75,
-                "reason": "Special K provides advanced HDR retrofitting.",
-                "confidence": "medium",
+                "reason": (
+                    "Special K can be attempted for this API family, but HDR support must be verified."
+                    if sk_requires_verification
+                    else "Special K provides advanced HDR retrofitting."
+                ),
+                "confidence": "medium" if not sk_requires_verification else "low",
+                "state": "available",
+                "requires_verification": sk_requires_verification,
                 "notes": sk_notes
             })
 

@@ -52,6 +52,11 @@ class PersistentCache:
             metadata.pop("graphics_api", None)
         self.set(f"metadata_{appid}", metadata)
 
+    def set_game_metadata_value(self, appid: str, key: str, value):
+        metadata = self.get_game_metadata(appid) or {}
+        metadata[key] = value
+        self.set_game_metadata(appid, metadata)
+
     def get_api_info(self, exe_path: str):
         # Cache API info per file path + mtime to handle updates
         if not os.path.exists(exe_path):

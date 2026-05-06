@@ -14,6 +14,7 @@ const getHdrRecommendation = callable<[string, string, string], any>("get_hdr_re
 const runSurgicalUninstall = callable<[string], any>("run_surgical_uninstall");
 const getPerGameLog = callable<[string], any>("get_per_game_log");
 const updateSkConfigValue = callable<[string, string, string, string, string], any>("update_sk_config_value");
+const setSpecialKVerified = callable<[string, boolean], any>("set_special_k_verified");
 const listInstalledGames = callable<[], any>("list_installed_games");
 const findGameExecutablePath = callable<[string], any>("find_game_executable_path");
 
@@ -24,6 +25,7 @@ interface Recommendation {
   confidence: string;
   blocked?: string[];
   notes?: string[];
+  requires_verification?: boolean;
 }
 
 interface GameContext {
@@ -188,6 +190,15 @@ const HdrManagementSection = () => {
     refreshState();
   };
 
+  const handleSpecialKOverride = async (verified: boolean) => {
+    if (!selectedGame) return;
+    setLoading(true);
+    const response = await setSpecialKVerified(selectedGame.appid, verified);
+    toaster.toast({ title: "Special K", body: response.message });
+    await refreshState();
+    setLoading(false);
+  };
+
   const viewLog = async () => {
     if (!selectedGame) return;
     const response = await getPerGameLog(selectedGame.appid);
@@ -244,7 +255,7 @@ const HdrManagementSection = () => {
                     </div>
                     {recommendation.notes?.map((note: string, i: number) => (
                       <div key={i} style={{ fontSize: "0.8em", opacity: 0.6, marginTop: "2px", fontStyle: "italic" }}>
-                        • {note}
+                        - {note}
                       </div>
                     ))}
                   </div>
@@ -262,8 +273,7 @@ const HdrManagementSection = () => {
                     color: "#ff6b6b",
                     overflowWrap: "anywhere"
                   }}>
-                    ⚠️ Anti-cheat: {context.anti_cheat.join(", ")}. 
-                    Injection tools are blocked for your safety.
+                    Warning: Anti-cheat: {context.anti_cheat.join(", ")}. Injection tools are blocked for your safety.
                   </div>
                 </PanelSectionRow>
               ) : null}
@@ -274,33 +284,53 @@ const HdrManagementSection = () => {
                 </ButtonItem>
               </PanelSectionRow>
 
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px", padding: "0 8px" }}>
-                <div style={{ minWidth: 0 }}>
-                  <ButtonItem layout="below" onClick={handleVerify}>
-                    Verify
+              {context && !context.anti_cheat.length && recommendation?.method !== "special_k" && (
+                <PanelSectionRow>
+                  <ButtonItem layout="below" onClick={() => handleSpecialKOverride(true)}>
+                    Mark Special K Verified
                   </ButtonItem>
+                </PanelSectionRow>
+              )}
+
+              <PanelSectionRow>
+                <ButtonItem layout="below" onClick={handleVerify}>
+                  Check Installed HDR
+                </ButtonItem>
+                <div style={{ fontSize: "0.78em", opacity: 0.62, padding: "4px 8px 0", lineHeight: 1.25, overflowWrap: "anywhere" }}>
+                  Verifies the current install from its manifest and game files. For Special K, this does not prove HDR is working until the in-game HDR menu/setup is available.
                 </div>
-                <div style={{ minWidth: 0 }}>
-                  <ButtonItem layout="below" onClick={handleTryNext} disabled={!!context?.anti_cheat.length}>
-                    Try Next
-                  </ButtonItem>
+              </PanelSectionRow>
+
+              <PanelSectionRow>
+                <ButtonItem layout="below" onClick={handleTryNext} disabled={!!context?.anti_cheat.length}>
+                  Remove and Try Next Method
+                </ButtonItem>
+                <div style={{ fontSize: "0.78em", opacity: 0.62, padding: "4px 8px 0", lineHeight: 1.25, overflowWrap: "anywhere" }}>
+                  Removes the current HDR method, skips this recommendation, then attempts the next fallback in the priority list.
                 </div>
-              </div>
+              </PanelSectionRow>
 
               <PanelSectionRow>
                 <div style={{ color: "#e74c3c" }}>
                   <ButtonItem layout="below" onClick={handleUninstall}>
-                    Surgical Removal
+                    Remove HDR
                   </ButtonItem>
                 </div>
               </PanelSectionRow>
 
               {recommendation?.method === "special_k" && (
-                <PanelSectionRow>
-                  <ButtonItem layout="below" onClick={() => setShowSkEditor(true)}>
-                    Special K Settings
-                  </ButtonItem>
-                </PanelSectionRow>
+                <>
+                  <PanelSectionRow>
+                    <ButtonItem layout="below" onClick={() => setShowSkEditor(true)}>
+                      Special K Settings
+                    </ButtonItem>
+                  </PanelSectionRow>
+                  <PanelSectionRow>
+                    <ButtonItem layout="below" onClick={() => handleSpecialKOverride(false)}>
+                      Clear Special K Verification
+                    </ButtonItem>
+                  </PanelSectionRow>
+                </>
               )}
 
               <PanelSectionRow>
@@ -366,3 +396,4 @@ const HdrManagementSection = () => {
 };
 
 export default HdrManagementSection;
+

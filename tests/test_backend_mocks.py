@@ -318,6 +318,21 @@ class BackendMockTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("special_k", [item["method"] for item in recommendations])
         self.assertEqual(recommendations[0]["method"], "reshade")
 
+    async def test_decision_tree_allows_special_k_attempt_for_dx11_family(self):
+        recommendations = DecisionTree().evaluate({
+            "appid": "999",
+            "title": "Known API Game",
+            "graphics_api": "dx11_dx12",
+            "anti_cheat": [],
+            "is_multiplayer": False,
+            "native_hdr": "unknown",
+            "special_k_wiki": False,
+        })
+
+        self.assertEqual(recommendations[0]["method"], "special_k")
+        self.assertTrue(recommendations[0]["requires_verification"])
+        self.assertEqual(recommendations[1]["method"], "reshade")
+
     async def test_api_detection_scans_unity_player_imports(self):
         plugin = self.module.Plugin()
         game_dir = self.home / "unity-game"
@@ -446,6 +461,16 @@ class BackendMockTest(unittest.IsolatedAsyncioTestCase):
         cache.set_game_metadata("123", {"graphics_api": "unknown", "native_hdr": "unknown"})
 
         self.assertNotIn("graphics_api", cache.get_game_metadata("123"))
+
+    async def test_special_k_verified_override_promotes_special_k(self):
+        plugin = self.module.Plugin()
+        await plugin.set_special_k_verified("123", True)
+        plugin.persistent_cache.set_game_metadata_value("123", "graphics_api", "dx11_dx12")
+
+        result = await plugin.get_hdr_recommendation("123", "Known Working SK Game", "")
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["recommendations"][0]["method"], "special_k")
 
     async def test_restart_uses_helper_when_systemd_run_fails(self):
         plugin = self.module.Plugin()
