@@ -5133,16 +5133,33 @@ deck_user={shlex.quote(deck_user)}
   sleep 1
   rm -rf "$backup_dir"
   if [ -e "$plugin_dir" ]; then
-    mv "$plugin_dir" "$backup_dir"
-  fi
-  if mv "$staging_dir" "$plugin_dir"; then
-    chown -R "$deck_user:$deck_user" "$plugin_dir" 2>/dev/null || true
-    echo "Update swap complete"
+    mkdir -p "$backup_dir"
+    (cd "$plugin_dir" && tar cf - .) | (cd "$backup_dir" && tar xf -) || true
   else
-    echo "Update swap failed, attempting rollback"
-    rm -rf "$plugin_dir"
+    mkdir -p "$plugin_dir"
+  fi
+  if [ -d "$staging_dir/dist" ]; then
+    mkdir -p "$plugin_dir/dist"
+    cp -af "$staging_dir/dist/." "$plugin_dir/dist/"
+  fi
+  if [ -d "$staging_dir/backend" ]; then
+    rm -rf "$plugin_dir/backend"
+    cp -af "$staging_dir/backend" "$plugin_dir/backend"
+  fi
+  if [ -d "$staging_dir/defaults" ]; then
+    rm -rf "$plugin_dir/defaults"
+    cp -af "$staging_dir/defaults" "$plugin_dir/defaults"
+  fi
+  if cp -af "$staging_dir"/plugin.json "$staging_dir"/main.py "$staging_dir"/package.json "$staging_dir"/README.md "$plugin_dir"/ 2>/dev/null; then
+    [ -f "$staging_dir/LICENSE" ] && cp -af "$staging_dir/LICENSE" "$plugin_dir/LICENSE"
+    rm -rf "$staging_dir"
+    chown -R "$deck_user:$deck_user" "$plugin_dir" 2>/dev/null || true
+    echo "Update copy complete"
+  else
+    echo "Update copy failed, attempting rollback"
+    rm -rf "$plugin_dir/backend" "$plugin_dir/defaults"
     if [ -e "$backup_dir" ]; then
-      mv "$backup_dir" "$plugin_dir"
+      cp -af "$backup_dir/." "$plugin_dir/"
     fi
   fi
   systemctl --user start plugin_loader.service || systemctl --user start plugin_loader || systemctl start plugin_loader.service || systemctl start plugin_loader || true

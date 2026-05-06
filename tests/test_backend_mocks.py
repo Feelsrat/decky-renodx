@@ -819,7 +819,7 @@ class BackendMockTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue((plugin_dir / "package.json").exists())
         self.assertTrue((plugin_dir.with_name("decky-renodx.previous") / "old.txt").exists())
 
-    async def test_update_apply_helper_stops_swaps_and_starts_loader(self):
+    async def test_update_apply_helper_stops_copies_in_place_and_starts_loader(self):
         plugin = self.module.Plugin()
         plugin_dir = self.home / "plugins" / "decky-renodx"
         staging_dir = self.home / "plugins" / ".decky-renodx.update-test"
@@ -844,7 +844,10 @@ class BackendMockTest(unittest.IsolatedAsyncioTestCase):
         helper_path = Path(str(commands[0][2]).split("nohup ", 1)[1].split(" >/dev/null", 1)[0].strip("'\""))
         text = helper_path.read_text(encoding="utf-8")
         self.assertIn("stop plugin_loader", text)
-        self.assertIn("mv \"$staging_dir\" \"$plugin_dir\"", text)
+        self.assertIn("mkdir -p \"$plugin_dir/dist\"", text)
+        self.assertIn("cp -af \"$staging_dir/dist/.\" \"$plugin_dir/dist/\"", text)
+        self.assertNotIn("mv \"$plugin_dir\" \"$backup_dir\"", text)
+        self.assertNotIn("mv \"$staging_dir\" \"$plugin_dir\"", text)
         self.assertIn("start plugin_loader", text)
 
 
