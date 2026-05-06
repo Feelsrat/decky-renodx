@@ -2516,9 +2516,11 @@ class Plugin:
 
                     if method == "special_k":
                         await self._ensure_special_k_bin()
-                        sk_source = self._specialk_runtime_source("64")
+                        api_info = await self._detect_api_with_cache(exe_path, logger) if exe_path and os.path.exists(exe_path) else {}
+                        arch = str(api_info.get("architecture", "64") or "64")
+                        sk_source = self._specialk_runtime_source(arch)
                         if not sk_source:
-                            logger.error("Special K install failed: SpecialK64.dll was not found after runtime setup.")
+                            logger.error(f"Special K install failed: SpecialK{arch}.dll was not found after runtime setup.")
                             continue
                         
                         context = rec_result.get("context", {})
@@ -2589,9 +2591,11 @@ class Plugin:
                     return {"status": "error", "message": "Game executable path was not resolved. Refresh the game state and try again."}
 
                 await self._ensure_special_k_bin()
-                sk_source = self._specialk_runtime_source("64")
+                api_info = await self._detect_api_with_cache(exe_path, logger)
+                arch = str(api_info.get("architecture", "64") or "64")
+                sk_source = self._specialk_runtime_source(arch)
                 if not sk_source:
-                    return {"status": "error", "message": "SpecialK64.dll was not found after runtime setup."}
+                    return {"status": "error", "message": f"SpecialK{arch}.dll was not found after runtime setup."}
 
                 rec_result = await self.get_hdr_recommendation(appid, title, exe_path)
                 context = rec_result.get("context", {}) if rec_result.get("status") == "success" else {}
@@ -2641,10 +2645,10 @@ class Plugin:
 
                 await self._ensure_special_k_bin()
                 self._ensure_dgvoodoo2_bin()
-                sk_source = self._specialk_runtime_source("64")
+                sk_source = self._specialk_runtime_source(arch)
                 dgvoodoo_source = self._dgvoodoo2_d3d9_source(arch)
                 if not sk_source:
-                    return {"status": "error", "message": "SpecialK64.dll was not found after runtime setup."}
+                    return {"status": "error", "message": f"SpecialK{arch}.dll was not found after runtime setup."}
                 if not dgvoodoo_source:
                     return {"status": "error", "message": "dgVoodoo2 D3D9.dll was not found after runtime setup."}
 

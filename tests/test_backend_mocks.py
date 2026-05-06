@@ -750,6 +750,36 @@ class BackendMockTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("dgvoodoo2_special_k", [item["method"] for item in disabled])
         self.assertIn("dgvoodoo2_special_k", [item["method"] for item in enabled])
 
+    async def test_dgvoodoo2_specialk_uses_32bit_specialk_for_32bit_dx9_game(self):
+        plugin = self.module.Plugin()
+        game_dir = self.home / "Bayonetta"
+        exe = game_dir / "Bayonetta.exe"
+        game_dir.mkdir()
+        exe.write_text("exe", encoding="utf-8")
+        sk32 = self.home / "SpecialK32.dll"
+        sk64 = self.home / "SpecialK64.dll"
+        d3d9 = self.home / "D3D9.dll"
+        sk32.write_text("sk32", encoding="utf-8")
+        sk64.write_text("sk64", encoding="utf-8")
+        d3d9.write_text("dgvoodoo", encoding="utf-8")
+
+        async def fake_detect(_path, _logger=None):
+            return {"status": "success", "api": "d3d9", "architecture": "32"}
+
+        plugin._detect_api_with_cache = fake_detect
+        plugin._clear_steam_compatdata = lambda _appid, _logger=None: {"status": "noop", "message": "", "removed": [], "errors": []}
+        async def fake_ensure_special_k():
+            return None
+        plugin._ensure_special_k_bin = fake_ensure_special_k
+        plugin._ensure_dgvoodoo2_bin = lambda: None
+        plugin._specialk_runtime_source = lambda arch="64": sk32 if arch == "32" else sk64
+        plugin._dgvoodoo2_d3d9_source = lambda arch="64": d3d9
+
+        result = await plugin.install_dgvoodoo2_specialk("460790", "Bayonetta", str(exe))
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual((game_dir / "dxgi.dll").read_text(encoding="utf-8"), "sk32")
+
     async def test_restart_uses_helper_when_systemd_run_fails(self):
         plugin = self.module.Plugin()
         calls = []
