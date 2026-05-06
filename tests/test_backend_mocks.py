@@ -493,6 +493,7 @@ class BackendMockTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["status"], "success")
         self.assertEqual(result["context"]["graphics_api"], "d3d11")
+        self.assertEqual(result["context"]["architecture"], "unknown")
         self.assertEqual(result["recommendations"][0]["method"], "special_k")
 
     async def test_recommendation_resolves_executable_when_frontend_path_is_empty(self):
@@ -518,6 +519,7 @@ class BackendMockTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["status"], "success")
         self.assertEqual(result["context"]["graphics_api"], "d3d11")
+        self.assertEqual(result["context"]["architecture"], "64")
         self.assertEqual(result["recommendations"][0]["method"], "special_k")
 
     async def test_steam_metadata_uses_relaxed_json_fetch(self):
@@ -779,6 +781,8 @@ class BackendMockTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["status"], "success")
         self.assertEqual((game_dir / "dxgi.dll").read_text(encoding="utf-8"), "sk32")
+        self.assertIn("dgVoodoo2 x86", result["message"])
+        self.assertEqual(result["architecture"], "32")
 
     async def test_restart_uses_helper_when_systemd_run_fails(self):
         plugin = self.module.Plugin()

@@ -37,6 +37,7 @@ interface GameContext {
   appid: string;
   title: string;
   graphics_api: string;
+  architecture?: string;
   injection_dll?: string;
   engine?: string;
   anti_cheat: string[];
@@ -259,6 +260,9 @@ const HdrManagementSection = () => {
   const methodLabel = recommendation?.method === "renodx_disabled" ? "RENODX DISABLED" : recommendation?.method.toUpperCase();
   const setupDisabled = !!context?.anti_cheat.length || recommendation?.method === "renodx_disabled" || recommendation?.score === 0;
   const isDx9 = ["dx9", "d3d9"].includes((context?.graphics_api || "").toLowerCase());
+  const architecture = context?.architecture === "32" ? "32-bit" : context?.architecture === "64" ? "64-bit" : "unknown bitness";
+  const dgVoodooArch = context?.architecture === "32" ? "dgVoodoo2 x86" : context?.architecture === "64" ? "dgVoodoo2 x64" : "dgVoodoo2 auto";
+  const specialKArch = context?.architecture === "32" ? "SpecialK32" : context?.architecture === "64" ? "SpecialK64" : "Special K auto";
 
   return (
     <PanelSection title="Per-Game HDR Management">
@@ -299,7 +303,7 @@ const HdrManagementSection = () => {
                         <div>API: {context.graphics_api || "unknown"}</div>
                         <div>Hook: {context.injection_dll || "auto"}</div>
                         <div>Engine: {context.engine || "unknown"}</div>
-                        <div>Confidence: {recommendation.confidence}</div>
+                        <div>Arch: {context.architecture || "unknown"}</div>
                       </div>
                     )}
                     <div style={{ fontSize: "0.9em", marginTop: "4px", color: "#eee" }}>
@@ -381,6 +385,9 @@ const HdrManagementSection = () => {
                     </ButtonItem>
                     <div style={{ opacity: 0.68, marginTop: "4px" }}>
                       Experimental: wraps DX9 to DX11 with dgVoodoo2, then installs Special K through DXGI. Use only if the normal DX9 fallback is not enough.
+                    </div>
+                    <div style={{ marginTop: "6px", fontWeight: 700 }}>
+                      Detected: {context.graphics_api.toUpperCase()}, {architecture}. Installing {dgVoodooArch} + {specialKArch}.
                     </div>
                     {dgVoodoo2Enabled && (
                       <ButtonItem layout="below" onClick={handleDgVoodoo2SpecialK}>

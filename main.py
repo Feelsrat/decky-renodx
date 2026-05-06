@@ -2152,6 +2152,7 @@ class Plugin:
                 "appid": appid,
                 "title": title,
                 "graphics_api": "unknown",
+                "architecture": "unknown",
                 "anti_cheat": [],
                 "is_multiplayer": False,
                 "native_hdr": "unknown",
@@ -2181,6 +2182,7 @@ class Plugin:
                     api_info = await self._detect_api_with_cache(resolved_game_path, logger)
                     if api_info.get("status") == "success":
                         context["graphics_api"] = api_info.get("api", "unknown")
+                        context["architecture"] = api_info.get("architecture", context.get("architecture", "unknown"))
                         context["injection_dll"] = api_info.get("injection_dll", context.get("injection_dll", "auto"))
                         context["engine"] = api_info.get("engine", context.get("engine", "unknown"))
                 if context["graphics_api"] == "unknown":
@@ -2201,6 +2203,7 @@ class Plugin:
                 if resolved_game_path and os.path.exists(resolved_game_path):
                     api_info = await self._detect_api_with_cache(resolved_game_path, logger)
                     context["graphics_api"] = api_info.get("api", "unknown")
+                    context["architecture"] = api_info.get("architecture", "unknown")
                     context["injection_dll"] = api_info.get("injection_dll", "auto")
                     context["engine"] = api_info.get("engine", "unknown")
                     
@@ -2213,6 +2216,7 @@ class Plugin:
                     "native_hdr": context["native_hdr"],
                     "special_k_wiki": context["special_k_wiki"],
                     "graphics_api": context["graphics_api"],
+                    "architecture": context["architecture"],
                     "anti_cheat": context["anti_cheat"],
                     "renodx_supported": context["renodx_supported"],
                     "luma_supported": context["luma_supported"],
@@ -2692,8 +2696,11 @@ class Plugin:
                 return {
                     "status": "success",
                     "method": "dgvoodoo2_special_k",
-                    "message": "Installed experimental dgVoodoo2 + Special K wrapper. Launch and verify the Special K HDR menu appears.",
+                    "message": f"Installed experimental dgVoodoo2 {('x86' if arch == '32' else 'x64')} D3D9 wrapper + SpecialK{arch}. Launch and verify the Special K HDR menu appears.",
                     "launch_options": launch_options,
+                    "architecture": arch,
+                    "wrapper": "dgVoodoo2 x86" if arch == "32" else "dgVoodoo2 x64",
+                    "special_k": f"SpecialK{arch}",
                     "compatdata": compat_result,
                 }
             except Exception as e:
