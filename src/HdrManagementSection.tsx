@@ -18,6 +18,7 @@ const setSpecialKVerified = callable<[string, boolean], any>("set_special_k_veri
 const listInstalledGames = callable<[], any>("list_installed_games");
 const findGameExecutablePath = callable<[string], any>("find_game_executable_path");
 const forceSpecialKSetup = callable<[string, string, string], any>("force_special_k_setup");
+const installDgVoodoo2SpecialK = callable<[string, string, string], any>("install_dgvoodoo2_specialk");
 const resetPluginCaches = callable<[], any>("reset_plugin_caches");
 const getPluginProcessHealth = callable<[], any>("get_plugin_process_health");
 const fixPluginProcesses = callable<[], any>("fix_plugin_processes");
@@ -58,6 +59,7 @@ const HdrManagementSection = () => {
   const [showSkEditor, setShowSkEditor] = useState(false);
   const [exePath, setExePath] = useState("");
   const [processHealth, setProcessHealth] = useState<any>(null);
+  const [dgVoodoo2Enabled, setDgVoodoo2Enabled] = useState(false);
 
   useEffect(() => {
     // Intentionally no Steam focus tracking:
@@ -83,6 +85,7 @@ const HdrManagementSection = () => {
       setExePath("");
       setLogContent("");
       setShowLog(false);
+      setDgVoodoo2Enabled(false);
       refreshState();
     } else {
       setRecommendation(null);
@@ -217,6 +220,15 @@ const HdrManagementSection = () => {
     setLoading(false);
   };
 
+  const handleDgVoodoo2SpecialK = async () => {
+    if (!selectedGame) return;
+    setLoading(true);
+    const response = await installDgVoodoo2SpecialK(selectedGame.appid, selectedGame.name, exePath);
+    toaster.toast({ title: "dgVoodoo2 + Special K", body: response.message, duration: 6000 });
+    await refreshState();
+    setLoading(false);
+  };
+
   const viewLog = async () => {
     if (!selectedGame) return;
     const response = await getPerGameLog(selectedGame.appid);
@@ -246,6 +258,7 @@ const HdrManagementSection = () => {
 
   const methodLabel = recommendation?.method === "renodx_disabled" ? "RENODX DISABLED" : recommendation?.method.toUpperCase();
   const setupDisabled = !!context?.anti_cheat.length || recommendation?.method === "renodx_disabled" || recommendation?.score === 0;
+  const isDx9 = ["dx9", "d3d9"].includes((context?.graphics_api || "").toLowerCase());
 
   return (
     <PanelSection title="Per-Game HDR Management">
@@ -357,6 +370,24 @@ const HdrManagementSection = () => {
                   <ButtonItem layout="below" onClick={() => handleSpecialKOverride(true)}>
                     Mark Special K Verified
                   </ButtonItem>
+                </PanelSectionRow>
+              )}
+
+              {context && !context.anti_cheat.length && isDx9 && (
+                <PanelSectionRow>
+                  <div style={{ padding: "10px", borderRadius: "4px", border: "1px solid rgba(255,255,255,0.16)", fontSize: "0.82em", lineHeight: 1.25, overflowWrap: "anywhere" }}>
+                    <ButtonItem layout="below" onClick={() => setDgVoodoo2Enabled(!dgVoodoo2Enabled)}>
+                      {dgVoodoo2Enabled ? "Disable dgVoodoo2 DX9 Wrapper" : "Enable dgVoodoo2 DX9 Wrapper"}
+                    </ButtonItem>
+                    <div style={{ opacity: 0.68, marginTop: "4px" }}>
+                      Experimental: wraps DX9 to DX11 with dgVoodoo2, then installs Special K through DXGI. Use only if the normal DX9 fallback is not enough.
+                    </div>
+                    {dgVoodoo2Enabled && (
+                      <ButtonItem layout="below" onClick={handleDgVoodoo2SpecialK}>
+                        Install dgVoodoo2 + Special K
+                      </ButtonItem>
+                    )}
+                  </div>
                 </PanelSectionRow>
               )}
 

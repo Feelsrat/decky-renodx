@@ -711,6 +711,24 @@ class BackendMockTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["status"], "error")
         self.assertIn("invalid appid", result["message"])
 
+    async def test_hdr_launch_options_support_multiple_native_overrides(self):
+        plugin = self.module.Plugin()
+
+        result = plugin._hdr_launch_options("d3d9;dxgi")
+
+        self.assertIn("d3d9=n,b", result)
+        self.assertIn("dxgi=n,b", result)
+        self.assertIn("d3dcompiler_47=n", result)
+
+    async def test_dgvoodoo2_decision_is_dx9_opt_in(self):
+        tree = self.module.DecisionTree()
+
+        disabled = tree.evaluate({"appid": "123", "graphics_api": "d3d9", "anti_cheat": []})
+        enabled = tree.evaluate({"appid": "123", "graphics_api": "d3d9", "anti_cheat": [], "dgvoodoo2_enabled": True})
+
+        self.assertNotIn("dgvoodoo2_special_k", [item["method"] for item in disabled])
+        self.assertIn("dgvoodoo2_special_k", [item["method"] for item in enabled])
+
     async def test_restart_uses_helper_when_systemd_run_fails(self):
         plugin = self.module.Plugin()
         calls = []

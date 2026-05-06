@@ -56,6 +56,7 @@ GITHUB_RELEASES_URL = "https://api.github.com/repos/Feelsrat/decky-renodx/releas
 RENODX_MODS_URL = "https://raw.githubusercontent.com/wiki/clshortfuse/renodx/Mods.md"
 RESHADE_FXH_URL = "https://raw.githubusercontent.com/crosire/reshade-shaders/slim/Shaders/ReShade.fxh"
 SPECIALK_RELEASES_URL = "https://api.github.com/repos/SpecialKO/SpecialK/releases/latest"
+DGVOODOO2_RELEASES_URL = "https://api.github.com/repos/dege-diosg/dgVoodoo2/releases/latest"
 LILIUM_HDR_RELEASES_URL = "https://api.github.com/repos/EndlesslyFlowering/ReShade_HDR_shaders/releases/latest"
 PUMBO_AUTOHDR_ZIP_URL = "https://github.com/Filoppi/PumboAutoHDR/archive/refs/heads/master.zip"
 AUTO_CHECK_INTERVAL = 86400
@@ -2164,6 +2165,7 @@ class Plugin:
                 "renodx_flow_enabled": False,
                 "special_k_notes": [],
                 "special_k_delay_seconds": "0",
+                "dgvoodoo2_enabled": False,
             }
 
             # Try to load metadata from cache
@@ -2541,6 +2543,13 @@ class Plugin:
                             logger.error(f"Special K install failed: {message}")
                             continue
 
+                    if method == "dgvoodoo2_special_k":
+                        result = await self.install_dgvoodoo2_specialk(appid, title, exe_path)
+                        if result.get("status") == "success":
+                            return result
+                        logger.error(f"dgVoodoo2 + Special K install failed: {result.get('message')}")
+                        continue
+
                     if method == "reshade":
                         reshade_result = await self.manage_game_reshade(appid, "install", "dxgi", "", exe_path)
                         if reshade_result["status"] == "success":
@@ -2609,6 +2618,84 @@ class Plugin:
                 decky.logger.error(f"Error in force_special_k_setup: {str(e)}")
                 return {"status": "error", "message": str(e)}
 
+    async def install_dgvoodoo2_specialk(self, appid: str, title: str, exe_path: str = "") -> dict:
+        """Experimental DX9 wrapper path: dgVoodoo2 D3D9 -> DX11, then Special K DXGI."""
+        async with self._install_lock:
+            try:
+                logger = setup_per_game_logger(appid)
+                logger.info(f"User requested experimental dgVoodoo2 + Special K setup for {title}")
+                if not exe_path or not os.path.exists(exe_path):
+                    exe_path = await self._resolve_game_executable_for_recommendation(appid, logger)
+                if not exe_path or not os.path.exists(exe_path):
+                    return {"status": "error", "message": "Game executable path was not resolved. Refresh the game state and try again."}
+
+                api_info = await self._detect_api_with_cache(exe_path, logger)
+                api = str(api_info.get("api", "unknown")).lower()
+                arch = str(api_info.get("architecture", "64") or "64")
+                if api not in {"dx9", "d3d9"}:
+                    return {"status": "error", "message": f"dgVoodoo2 wrapper mode is only offered for DX9/D3D9 games. Detected: {api}."}
+
+                compat_result = self._clear_steam_compatdata(appid, logger)
+                if compat_result["status"] == "error":
+                    return {"status": "error", "message": compat_result["message"], "compatdata": compat_result}
+
+                await self._ensure_special_k_bin()
+                self._ensure_dgvoodoo2_bin()
+                sk_source = self._specialk_runtime_source("64")
+                dgvoodoo_source = self._dgvoodoo2_d3d9_source(arch)
+                if not sk_source:
+                    return {"status": "error", "message": "SpecialK64.dll was not found after runtime setup."}
+                if not dgvoodoo_source:
+                    return {"status": "error", "message": "dgVoodoo2 D3D9.dll was not found after runtime setup."}
+
+                exe_dir = Path(exe_path).parent
+                installed_files: list[str] = []
+                backups: dict[str, str] = {}
+                for source, target_name in [(dgvoodoo_source, "D3D9.dll"), (sk_source, "dxgi.dll")]:
+                    target = exe_dir / target_name
+                    if target.exists():
+                        backup = target.with_name(f"{target.name}.decky-renodx-bak")
+                        shutil.move(str(target), str(backup))
+                        backups[str(target)] = str(backup)
+                    shutil.copy2(source, target)
+                    target.chmod(0o666)
+                    installed_files.append(str(target))
+
+                config = exe_dir / "dgVoodoo.conf"
+                self._write_dgvoodoo2_config(config)
+                installed_files.append(str(config))
+                self._write_specialk_hdr_ini(exe_dir / "SpecialK.ini")
+                self._write_specialk_hdr_ini(exe_dir / "dxgi.ini")
+                installed_files.extend([str(exe_dir / "SpecialK.ini"), str(exe_dir / "dxgi.ini")])
+                self._write_game_hdr_marker(exe_dir, appid, "dgvoodoo2-specialk", "dxgi", arch)
+                installed_files.append(str(exe_dir / ".decky-renodx-hdr.json"))
+
+                self.manifest_manager.write_manifest(appid, {
+                    "appid": appid,
+                    "title": title,
+                    "method": "dgvoodoo2_special_k",
+                    "installed_files": installed_files,
+                    "modified_files": [],
+                    "backups": backups,
+                    "verified": False,
+                    "verification_notes": "Experimental DX9 wrapper path. Launch the game and verify Special K HDR menu/setup is available.",
+                    "plugin_version": self._current_version(),
+                    "compatdata_cleared": compat_result.get("removed", []),
+                })
+                self._fix_deck_user_ownership(exe_dir)
+                launch_options = self._hdr_launch_options("d3d9;dxgi")
+                logger.info("Installed experimental dgVoodoo2 + Special K wrapper path.")
+                return {
+                    "status": "success",
+                    "method": "dgvoodoo2_special_k",
+                    "message": "Installed experimental dgVoodoo2 + Special K wrapper. Launch and verify the Special K HDR menu appears.",
+                    "launch_options": launch_options,
+                    "compatdata": compat_result,
+                }
+            except Exception as e:
+                decky.logger.exception("dgVoodoo2 + Special K setup failed")
+                return {"status": "error", "message": str(e)}
+
     async def _ensure_special_k_bin(self):
         """Ensure Special K binaries are present in the cache."""
         try:
@@ -2623,6 +2710,59 @@ class Plugin:
         except Exception as e:
             decky.logger.error(f"Failed to ensure Special K binaries: {str(e)}")
 
+    def _ensure_dgvoodoo2_bin(self) -> None:
+        bin_dir = Path(self.bin_cache_path)
+        bin_dir.mkdir(parents=True, exist_ok=True)
+        archive = bin_dir / "dgVoodoo2.zip"
+        target_dir = Path(self.main_path) / "dgVoodoo2"
+        if not archive.exists() or archive.stat().st_size < 256 * 1024:
+            self._download_latest_github_asset(DGVOODOO2_RELEASES_URL, archive, [".zip"])
+        if target_dir.exists() and any(target_dir.rglob("D3D9.dll")):
+            return
+        if target_dir.exists():
+            shutil.rmtree(target_dir)
+        target_dir.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(archive) as zip_archive:
+            self._safe_extract(zip_archive, target_dir)
+
+    def _dgvoodoo2_d3d9_source(self, arch: str = "64") -> Path | None:
+        dgvoodoo_dir = Path(self.main_path) / "dgVoodoo2"
+        if not dgvoodoo_dir.exists():
+            return None
+        candidates = [path for path in dgvoodoo_dir.rglob("D3D9.dll") if path.is_file()]
+        if not candidates:
+            return None
+        preferred_arch = "x64" if str(arch) == "64" else "x86"
+        for path in candidates:
+            parts = [part.lower() for part in path.parts]
+            if "ms" in parts and preferred_arch in parts:
+                return path
+        for path in candidates:
+            parts = [part.lower() for part in path.parts]
+            if "ms" in parts:
+                return path
+        return candidates[0]
+
+    def _write_dgvoodoo2_config(self, config_path: Path) -> None:
+        text = """\
+[General]
+OutputAPI=bestavailable
+AdapterIDType=default
+FullScreenMode=false
+ScalingMode=unspecified
+ProgressiveScanlineOrder=false
+
+[DirectX]
+DisableAndPassThru=false
+VRAM=1024
+dgVoodooWatermark=false
+FastVideoMemoryAccess=true
+AppControlledScreenMode=true
+DisableAltEnterToToggleScreenMode=false
+"""
+        config_path.write_text(text, encoding="utf-8")
+        config_path.chmod(0o666)
+
     def _specialk_runtime_source(self, arch: str = "64") -> Path | None:
         specialk_dir = Path(self.main_path) / "SpecialK"
         source_name = "SpecialK32.dll" if str(arch) == "32" else "SpecialK64.dll"
@@ -2636,7 +2776,12 @@ class Plugin:
         pass
 
     def _hdr_launch_options(self, dll: str) -> str:
-        return f'PROTON_ENABLE_HDR=1 DXVK_HDR=1 ENABLE_HDR_WSI=1 WINEDLLOVERRIDES="d3dcompiler_47=n;{dll}=n,b" %command%'
+        overrides = ["d3dcompiler_47=n"]
+        for item in str(dll or "dxgi").split(";"):
+            item = item.strip()
+            if item:
+                overrides.append(f"{item}=n,b")
+        return f'PROTON_ENABLE_HDR=1 DXVK_HDR=1 ENABLE_HDR_WSI=1 WINEDLLOVERRIDES="{";".join(overrides)}" %command%'
 
     async def update_sk_config_value(self, appid: str, exe_path: str, section: str, key: str, value: str) -> dict:
         """Update a specific value in SpecialK.ini."""
@@ -3231,7 +3376,12 @@ class Plugin:
         return "dxgi"
 
     def _hdr_launch_options(self, dll: str) -> str:
-        return f'PROTON_ENABLE_HDR=1 DXVK_HDR=1 ENABLE_HDR_WSI=1 WINEDLLOVERRIDES="d3dcompiler_47=n;{dll}=n,b" %command%'
+        overrides = ["d3dcompiler_47=n"]
+        for item in str(dll or "dxgi").split(";"):
+            item = item.strip()
+            if item:
+                overrides.append(f"{item}=n,b")
+        return f'PROTON_ENABLE_HDR=1 DXVK_HDR=1 ENABLE_HDR_WSI=1 WINEDLLOVERRIDES="{";".join(overrides)}" %command%'
 
     async def list_installed_games(self) -> dict:
         try:

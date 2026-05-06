@@ -25,6 +25,7 @@ class DecisionTree:
         luma_supported = context.get("luma_supported", False)
         special_k_verified = context.get("special_k_verified", False)
         special_k_wrapper = context.get("special_k_wrapper", False)
+        dgvoodoo2_enabled = context.get("dgvoodoo2_enabled", False)
         injection_dll = context.get("injection_dll", "auto")
         engine = context.get("engine", "unknown")
         
@@ -76,6 +77,20 @@ class DecisionTree:
         sk_requires_verification = False
         sk_attemptable_apis = {"dx10", "dx11", "dx12", "d3d10", "d3d11", "d3d12", "dx11_dx12", "dxgi"}
         
+        if dgvoodoo2_enabled and graphics_api in {"dx9", "d3d9"}:
+            recommendations.append({
+                "method": "dgvoodoo2_special_k",
+                "score": 65,
+                "reason": "Experimental DX9 path: dgVoodoo2 wraps D3D9 to DX11 so Special K can hook DXGI.",
+                "confidence": "low",
+                "state": "available",
+                "requires_verification": True,
+                "notes": [
+                    "Only use this when plain Special K does not expose HDR for a DX9 game.",
+                    "Compatibility is game-specific under Proton/Wine.",
+                ],
+            })
+
         if special_k_wiki or special_k_verified or special_k_wrapper:
             if special_k_wiki:
                 sk_notes.append("PCGamingWiki confirms exact-game Special K HDR compatibility.")
