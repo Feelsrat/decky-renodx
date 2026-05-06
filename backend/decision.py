@@ -64,7 +64,7 @@ class DecisionTree:
         sk_notes = []
         sk_eligible = False
         sk_requires_verification = False
-        sk_attemptable_apis = {"dx10", "dx11", "dx12", "d3d10", "d3d11", "d3d12", "dx11_dx12"}
+        sk_attemptable_apis = {"dx10", "dx11", "dx12", "d3d10", "d3d11", "d3d12", "dx11_dx12", "dxgi"}
         
         if special_k_wiki or special_k_verified or special_k_wrapper:
             if special_k_wiki:
@@ -79,7 +79,7 @@ class DecisionTree:
             sk_notes.append("Special K HDR still must be verified in-game before it is treated as working.")
             sk_eligible = True
             sk_requires_verification = True
-        elif graphics_api == "dx9":
+        elif graphics_api in {"dx9", "d3d9"}:
             sk_notes.append("DX9 detected. Special K HDR requires exact-game support or a known wrapper path.")
             sk_eligible = False
             

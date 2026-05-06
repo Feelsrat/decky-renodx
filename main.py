@@ -1892,9 +1892,15 @@ class Plugin:
 
     def _parse_renodx_mods(self, markdown: str) -> list[dict[str, Any]]:
         mods = []
-        cells = [cell.strip() for cell in markdown.split("|") if cell.strip()]
-        rows = [cells[index:index + 4] for index in range(0, len(cells) - 3, 4)]
-        for name_cell, maintainer, links_cell, status_cell in rows:
+        row_pattern = re.compile(
+            r"\|\s*(?P<name>[^|\n]+?)\s*\|\s*(?P<maintainer>[^|\n]*?)\s*\|\s*(?P<links>.*?)\s*\|\s*(?P<status>(?:\[:(?:white_check_mark|construction):\]\(#\s*\"[^\"]*\"\)|:white_check_mark:|:construction:|[^|\n]*?))\s*\|",
+            re.I | re.S,
+        )
+        for match in row_pattern.finditer(markdown):
+            name_cell = match.group("name")
+            maintainer = match.group("maintainer")
+            links_cell = match.group("links")
+            status_cell = match.group("status")
             name = self._strip_markdown(name_cell)
             if not name or name.lower() == "name" or set(name) <= {":", "-"}:
                 continue
@@ -2126,6 +2132,7 @@ class Plugin:
             if cached_metadata:
                 logger.info(f"Using cached metadata for {appid}")
                 context.update(cached_metadata)
+                await self._refresh_renodx_recommendation_context(context, title, logger)
                 if game_path and os.path.exists(game_path):
                     api_info = await self._detect_api_with_cache(game_path, logger)
                     if api_info.get("status") == "success":
@@ -2140,13 +2147,7 @@ class Plugin:
                     context["special_k_wiki"] = wiki_data.get("special_k_compatible", False)
                     logger.info(f"Wiki data fetched: Native HDR={context['native_hdr']}, SK Compatible={context['special_k_wiki']}")
 
-                try:
-                    renodx_result = await self.check_renodx_support(title)
-                    context["renodx_supported"] = bool(renodx_result.get("supported"))
-                    if context["renodx_supported"]:
-                        logger.info(f"RenoDX exact match found: {renodx_result.get('match', {}).get('name', title)}")
-                except Exception as error:
-                    logger.warning(f"RenoDX support lookup failed: {error}")
+                await self._refresh_renodx_recommendation_context(context, title, logger)
                 
                 # Detect API and Anti-cheat (if path exists)
                 if game_path and os.path.exists(game_path):
@@ -2182,6 +2183,18 @@ class Plugin:
         except Exception as e:
             decky.logger.error(f"Error in get_hdr_recommendation: {str(e)}")
             return {"status": "error", "message": str(e)}
+
+    async def _refresh_renodx_recommendation_context(self, context: dict[str, Any], title: str, logger=None) -> None:
+        try:
+            renodx_result = await self.check_renodx_support(title)
+            context["renodx_supported"] = bool(renodx_result.get("supported"))
+            if context["renodx_supported"]:
+                context["renodx_match"] = renodx_result.get("match", {})
+                if logger:
+                    logger.info(f"RenoDX exact match found: {renodx_result.get('match', {}).get('name', title)}")
+        except Exception as error:
+            if logger:
+                logger.warning(f"RenoDX support lookup failed: {error}")
 
     async def _detect_api_with_cache(self, game_path: str, logger=None) -> dict[str, Any]:
         cached_api = self.persistent_cache.get_api_info(game_path)
@@ -2646,6 +2659,8 @@ class Plugin:
                 (root / "UnityPlayer.dll").exists()
                 or (root / "GameAssembly.dll").exists()
                 or any(path.is_file() and path.name.lower() == "globalgamemanagers" for path in root.glob("*_Data/globalgamemanagers"))
+                or any(path.is_file() and path.name.lower() in {"unityplayer.dll", "gameassembly.dll"} for path in root.glob("*/*.dll"))
+                or any(path.is_file() and path.name.lower() == "globalgamemanagers" for path in root.glob("*/*_Data/globalgamemanagers"))
             ):
                 return "unity"
         return "unknown"

@@ -132,6 +132,23 @@ class BackendMockTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(match["status"], "working")
         self.assertEqual(match["snapshotLinks"], ["https://example.com/renodx-bayonetta.addon32"])
 
+    async def test_renodx_parser_matches_alien_isolation_from_wiki_row(self):
+        plugin = self.module.Plugin()
+        markdown = (
+            '| Name | Maintainer | Links | Status | '
+            '| Alien: Isolation | Musa | [![Nexus Mods](badge)](https://www.nexusmods.com/alienisolation/mods/78) '
+            '· [![Snapshot](badge)](https://github.com/mqhaji/renodx/releases/download/snapshot/renodx-alienisolation.addon32) '
+            '| :construction: |'
+        )
+
+        mods = plugin._parse_renodx_mods(markdown)
+        match = plugin._match_renodx_mod("Alien Isolation", mods)
+
+        self.assertIsNotNone(match)
+        self.assertEqual(match["name"], "Alien: Isolation")
+        self.assertEqual(match["status"], "in_progress")
+        self.assertIn("https://github.com/mqhaji/renodx/releases/download/snapshot/renodx-alienisolation.addon32", match["snapshotLinks"])
+
     async def test_list_installed_games_parses_steam_libraries(self):
         plugin = self.module.Plugin()
         steamapps = self.home / ".local" / "share" / "Steam" / "steamapps"
@@ -333,6 +350,20 @@ class BackendMockTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(recommendations[0]["requires_verification"])
         self.assertEqual(recommendations[1]["method"], "reshade")
 
+    async def test_decision_tree_allows_special_k_attempt_for_dxgi_hook(self):
+        recommendations = DecisionTree().evaluate({
+            "appid": "999",
+            "title": "DXGI Hook Game",
+            "graphics_api": "dxgi",
+            "anti_cheat": [],
+            "is_multiplayer": False,
+            "native_hdr": "unknown",
+            "special_k_wiki": False,
+        })
+
+        self.assertEqual(recommendations[0]["method"], "special_k")
+        self.assertTrue(recommendations[0]["requires_verification"])
+
     async def test_api_detection_scans_unity_player_imports(self):
         plugin = self.module.Plugin()
         game_dir = self.home / "unity-game"
@@ -446,6 +477,28 @@ class BackendMockTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["api"], "dx11_dx12")
         self.assertEqual(result["engine"], "unity")
 
+    async def test_unity_engine_detects_from_child_directory(self):
+        plugin = self.module.Plugin()
+        game_dir = self.home / "UnityLike"
+        nested = game_dir / "Bin" / "Win64"
+        nested.mkdir(parents=True)
+        (nested / "Game.exe").write_bytes(b"launcher")
+        (nested / "Runtime" / "UnityPlayer.dll").parent.mkdir()
+        (nested / "Runtime" / "UnityPlayer.dll").write_bytes(b"unity")
+        plugin._detect_api_with_letmereshade_script = lambda _path: {
+            "status": "success",
+            "api": "dxgi",
+            "architecture": "64",
+            "injection_dll": "dxgi",
+            "detector": "letmereshade",
+        }
+
+        result = await plugin._detect_api_for_path(str(nested))
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["api"], "dx11_dx12")
+        self.assertEqual(result["engine"], "unity")
+
     async def test_unknown_api_is_not_cached(self):
         cache = self.module.PersistentCache(str(self.home / "cache.json"))
         game_dir = self.home / "game"
@@ -461,6 +514,12 @@ class BackendMockTest(unittest.IsolatedAsyncioTestCase):
         cache.set_game_metadata("123", {"graphics_api": "unknown", "native_hdr": "unknown"})
 
         self.assertNotIn("graphics_api", cache.get_game_metadata("123"))
+
+    async def test_old_metadata_schema_is_ignored(self):
+        cache = self.module.PersistentCache(str(self.home / "cache.json"))
+        cache.set("metadata_123", {"graphics_api": "unknown", "renodx_supported": False})
+
+        self.assertIsNone(cache.get_game_metadata("123"))
 
     async def test_special_k_verified_override_promotes_special_k(self):
         plugin = self.module.Plugin()

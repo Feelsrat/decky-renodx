@@ -3,6 +3,8 @@ import json
 import time
 from datetime import datetime, timedelta
 
+METADATA_SCHEMA_VERSION = 2
+
 class PersistentCache:
     def __init__(self, cache_file: str):
         self.cache_file = os.path.expanduser(cache_file)
@@ -44,11 +46,17 @@ class PersistentCache:
         self._save()
 
     def get_game_metadata(self, appid: str):
-        return self.get(f"metadata_{appid}", expiry_days=14)
+        metadata = self.get(f"metadata_{appid}", expiry_days=14)
+        if not isinstance(metadata, dict):
+            return None
+        if metadata.get("schema_version") != METADATA_SCHEMA_VERSION:
+            return None
+        return metadata
 
     def set_game_metadata(self, appid: str, metadata: dict):
+        metadata = dict(metadata)
+        metadata["schema_version"] = METADATA_SCHEMA_VERSION
         if metadata.get("graphics_api") == "unknown":
-            metadata = dict(metadata)
             metadata.pop("graphics_api", None)
         self.set(f"metadata_{appid}", metadata)
 
