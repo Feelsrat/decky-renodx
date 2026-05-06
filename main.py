@@ -1834,16 +1834,39 @@ class Plugin:
         target.chmod(0o755)
 
     def _fetch_text(self, url: str) -> str:
+        request = urllib.request.Request(url, headers={
+            "User-Agent": "Mozilla/5.0 DeckyRenoDX/1.0",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        })
         try:
-            request = urllib.request.Request(url, headers={"User-Agent": PLUGIN_PACKAGE})
-            with urllib.request.urlopen(request, timeout=15) as response:
+            kwargs = {"timeout": 15}
+            if SSL_AVAILABLE:
+                ssl_context = ssl.create_default_context()
+                ssl_context.check_hostname = False
+                ssl_context.verify_mode = ssl.CERT_NONE
+                kwargs["context"] = ssl_context
+            with urllib.request.urlopen(request, **kwargs) as response:
                 return response.read().decode("utf-8", "ignore")
         except Exception as error:
-            decky.logger.warning("Fetch text failed for %s: %s", url, error)
+            decky.logger.warning("Python text fetch failed for %s, trying curl: %s", url, error)
+        try:
+            result = subprocess.run(
+                ["curl", "-fsSL", "-k", "-A", "Mozilla/5.0 DeckyRenoDX/1.0", url],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=20,
+                env=self._clean_subprocess_env(),
+            )
+            if result.returncode == 0:
+                return result.stdout
+            decky.logger.warning("curl text fetch failed for %s: %s", url, result.stderr.strip()[-160:])
+        except (OSError, subprocess.TimeoutExpired) as error:
+            decky.logger.warning("curl text fetch errored for %s: %s", url, error)
             return ""
 
     def _download_url(self, url: str, target: Path) -> None:
-        request = urllib.request.Request(url, headers={"User-Agent": PLUGIN_PACKAGE})
+        request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 DeckyRenoDX/1.0"})
         self._download_file(request, target)
 
     async def check_renodx_support(self, game_name: str) -> dict[str, Any]:
@@ -4467,7 +4490,13 @@ Note: If ReShadePreset.ini already existed, your previous settings were preserve
 
             latest = str((release or {}).get("tag_name", "")).removeprefix("v")
             try:
-                install_info = self._install_release_zip(str(asset["browser_download_url"]))
+                install_info = await asyncio.wait_for(
+                    asyncio.to_thread(self._install_release_zip, str(asset["browser_download_url"])),
+                    timeout=150,
+                )
+            except asyncio.TimeoutError:
+                decky.logger.exception("Update failed - timed out")
+                return {**status, "ok": False, "message": "Update failed: install timed out after 150 seconds."}
             except urllib.error.URLError:
                 decky.logger.exception("Update failed - download error")
                 return {**status, "ok": False, "message": "Update failed: Could not download release."}
@@ -4479,7 +4508,8 @@ Note: If ReShadePreset.ini already existed, your previous settings were preserve
                 return {**status, "ok": False, "message": f"Update failed: {error}"}
 
             current = self._current_version()
-            decky.logger.info(f"Successfully staged v{latest}. Replacement and loader restart helper scheduled.")
+            restart = self._schedule_loader_restart("plugin updated")
+            decky.logger.info(f"Successfully installed v{latest}; restart scheduled={restart.get('scheduled')}.")
             
             result = {
                 "ok": True,
@@ -4490,10 +4520,12 @@ Note: If ReShadePreset.ini already existed, your previous settings were preserve
                 "canInstall": False,
                 "elevated": self._has_elevated_permissions(),
                 "requiresRestart": True,
-                "restarted": False,
-                "replacementScheduled": install_info.get("replacementScheduled", False),
+                "restarted": restart.get("scheduled", False),
+                "restart": restart,
                 "message": (
-                    f"Update v{latest} staged. Decky Loader will reload the plugin after the files are swapped."
+                    f"Update v{latest} installed. Decky Loader restart scheduled."
+                    if restart.get("scheduled")
+                    else f"Update v{latest} installed. Restart Decky or Steam manually to load it."
                 ),
             }
             self._cached_update_status = result
@@ -4645,71 +4677,31 @@ Note: If ReShadePreset.ini already existed, your previous settings were preserve
             )
             self._validate_extracted_plugin(staging_dir)
             backup_dir = plugin_dir.with_name(f"{plugin_dir.name}.previous")
-            replacement = self._schedule_update_replacement(plugin_dir, staging_dir, backup_dir)
-            if not replacement.get("scheduled"):
+            if backup_dir.exists():
+                shutil.rmtree(backup_dir)
+
+            moved_existing = False
+            try:
+                if plugin_dir.exists():
+                    plugin_dir.rename(backup_dir)
+                    moved_existing = True
+                staging_dir.rename(plugin_dir)
+            except OSError:
+                decky.logger.exception("Update replacement failed, attempting rollback")
+                if moved_existing and plugin_dir.exists():
+                    shutil.rmtree(plugin_dir)
+                if moved_existing and backup_dir.exists() and not plugin_dir.exists():
+                    backup_dir.rename(plugin_dir)
                 if staging_dir.exists():
                     shutil.rmtree(staging_dir)
-                raise OSError(replacement.get("message", "Could not schedule update replacement."))
+                raise
+
+            self._fix_deck_user_ownership(plugin_dir)
 
             return {
-                "installedVersion": self._package_version(staging_dir / "package.json"),
+                "installedVersion": self._package_version(plugin_dir / "package.json"),
                 "backupPath": str(backup_dir),
-                "stagingPath": str(staging_dir),
-                "replacementScheduled": True,
             }
-
-    def _schedule_update_replacement(self, plugin_dir: Path, staging_dir: Path, backup_dir: Path) -> dict[str, Any]:
-        helper_path = Path(tempfile.gettempdir()) / f"{PLUGIN_PACKAGE}-apply-update-{os.getpid()}-{int(time.time())}.sh"
-        log_path = Path(decky.DECKY_PLUGIN_DIR).parent / f".{PLUGIN_PACKAGE}-update.log"
-        deck_user = self.environment.get("USER") or getattr(decky, "DECKY_USER", "")
-        chown_line = ""
-        if deck_user and deck_user != "root":
-            chown_line = f"chown -R {shlex.quote(deck_user)}:{shlex.quote(deck_user)} \"$plugin_dir\" || true"
-
-        helper = f"""#!/usr/bin/env bash
-set -u
-sleep 4
-plugin_dir={shlex.quote(str(plugin_dir))}
-staging_dir={shlex.quote(str(staging_dir))}
-backup_dir={shlex.quote(str(backup_dir))}
-log_path={shlex.quote(str(log_path))}
-{{
-  echo "[$(date -Is)] Applying {PLUGIN_PACKAGE} staged update"
-  if [ ! -d "$staging_dir" ]; then
-    echo "Missing staging directory: $staging_dir"
-    exit 1
-  fi
-  rm -rf "$backup_dir"
-  if [ -e "$plugin_dir" ]; then
-    mv "$plugin_dir" "$backup_dir"
-  fi
-  if mv "$staging_dir" "$plugin_dir"; then
-    {chown_line}
-    echo "Update replacement complete"
-    sleep 1
-    systemctl --user restart plugin_loader.service \
-      || systemctl --user restart plugin_loader \
-      || systemctl restart plugin_loader.service \
-      || systemctl restart plugin_loader \
-      || echo "Decky Loader restart failed; manual restart required"
-    exit 0
-  fi
-  echo "Update replacement failed, attempting rollback"
-  rm -rf "$plugin_dir"
-  if [ -e "$backup_dir" ]; then
-    mv "$backup_dir" "$plugin_dir"
-  fi
-  exit 1
-}} >> "$log_path" 2>&1
-"""
-        try:
-            helper_path.write_text(helper, encoding="utf-8")
-            helper_path.chmod(0o755)
-            subprocess.Popen(["bash", str(helper_path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
-            return {"scheduled": True, "method": "helper", "message": "Update replacement helper started."}
-        except Exception as error:
-            decky.logger.warning("Update replacement helper failed: %s", error)
-            return {"scheduled": False, "method": "helper", "message": str(error)}
 
     def _find_extracted_plugin(self, root: Path) -> Path | None:
         for candidate in [root, *root.iterdir()]:
@@ -4769,7 +4761,7 @@ log_path={shlex.quote(str(log_path))}
                 decky.logger.warning("Python download failed, trying curl: %s", error)
 
         result = subprocess.run(
-            ["curl", "-fL", "-k", "-A", PLUGIN_PACKAGE, "-o", str(target), request.full_url],
+            ["curl", "-fL", "-k", "--retry", "2", "--connect-timeout", "20", "-A", "Mozilla/5.0 DeckyRenoDX/1.0", "-o", str(target), request.full_url],
             check=False,
             capture_output=True,
             text=True,
