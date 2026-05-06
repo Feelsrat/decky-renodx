@@ -2152,6 +2152,9 @@ class Plugin:
                 "special_k_wrapper": False,
                 "injection_dll": "auto",
                 "engine": "unknown",
+                "renodx_flow_enabled": False,
+                "special_k_notes": [],
+                "special_k_delay_seconds": "0",
             }
 
             # Try to load metadata from cache
@@ -2177,6 +2180,8 @@ class Plugin:
                 if "status" not in wiki_data:
                     context["native_hdr"] = wiki_data.get("native_hdr", "unknown")
                     context["special_k_wiki"] = wiki_data.get("special_k_compatible", False)
+                    context["special_k_notes"] = wiki_data.get("special_k_notes", [])
+                    context["special_k_delay_seconds"] = wiki_data.get("special_k_delay_seconds", "0")
                     logger.info(f"Wiki data fetched: Native HDR={context['native_hdr']}, SK Compatible={context['special_k_wiki']}")
 
                 await self._refresh_renodx_recommendation_context(context, title, logger)
@@ -2204,6 +2209,8 @@ class Plugin:
                     "special_k_wrapper": context["special_k_wrapper"],
                     "injection_dll": context["injection_dll"],
                     "engine": context["engine"],
+                    "special_k_notes": context["special_k_notes"],
+                    "special_k_delay_seconds": context["special_k_delay_seconds"],
                 })
 
             # 3. Evaluate recommendations
@@ -2365,6 +2372,75 @@ class Plugin:
             decky.logger.error(f"Failed to reset caches: {str(e)}")
             return {"status": "error", "message": str(e)}
 
+    async def get_plugin_process_health(self) -> dict:
+        try:
+            processes = self._plugin_processes()
+            active = [p for p in processes if p.get("state") != "Z"]
+            duplicate = len(active) > 1
+            return {
+                "status": "success",
+                "duplicate": duplicate,
+                "count": len(active),
+                "processes": processes,
+                "message": "Multiple Decky RenoDX backend processes are running." if duplicate else "Decky RenoDX process health looks normal.",
+            }
+        except Exception as error:
+            return {"status": "error", "duplicate": False, "count": 0, "processes": [], "message": str(error)}
+
+    async def fix_plugin_processes(self) -> dict:
+        try:
+            processes = self._plugin_processes()
+            active = [p for p in processes if p.get("state") != "Z"]
+            if len(active) <= 1:
+                return {"status": "success", "message": "No duplicate Decky RenoDX processes were found.", "killed": []}
+            active.sort(key=lambda p: int(p.get("etimes", 0)))
+            keep = active[0]
+            killed = []
+            for process in active[1:]:
+                pid = int(process["pid"])
+                try:
+                    os.kill(pid, signal.SIGTERM)
+                    killed.append(pid)
+                except OSError as error:
+                    decky.logger.warning("Could not terminate duplicate plugin process %s: %s", pid, error)
+            return {"status": "success", "message": f"Kept PID {keep['pid']} and asked {len(killed)} duplicate process(es) to stop.", "killed": killed}
+        except Exception as error:
+            return {"status": "error", "message": str(error), "killed": []}
+
+    def _plugin_processes(self) -> list[dict[str, Any]]:
+        try:
+            result = subprocess.run(
+                ["ps", "-eo", "pid=,ppid=,stat=,etimes=,pcpu=,pmem=,args="],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        except Exception:
+            return []
+        processes = []
+        for line in result.stdout.splitlines():
+            if "decky-renodx/main.py" not in line and "Decky RenoDX" not in line:
+                continue
+            parts = line.strip().split(None, 6)
+            if len(parts) < 7:
+                continue
+            pid, ppid, stat, etimes, pcpu, pmem, args = parts
+            try:
+                if int(pid) == os.getpid():
+                    pass
+            except ValueError:
+                continue
+            processes.append({
+                "pid": pid,
+                "ppid": ppid,
+                "state": stat[:1],
+                "etimes": etimes,
+                "cpu": pcpu,
+                "mem": pmem,
+                "args": args,
+            })
+        return processes
+
     async def get_per_game_log(self, appid: str) -> dict:
         """Read and return the content of the per-game log."""
         try:
@@ -2373,7 +2449,7 @@ class Plugin:
                 with open(log_path, "r") as f:
                     # Return last 200 lines
                     lines = f.readlines()
-                    return {"status": "success", "log": "".join(lines[-200:])}
+                    return {"status": "success", "log": "".join(lines[-300:]), "path": log_path}
             return {"status": "error", "message": "Log file not found."}
         except Exception as e:
             return {"status": "error", "message": str(e)}
@@ -2410,6 +2486,8 @@ class Plugin:
                         return {"status": "success", "method": "native_hdr", "message": "Game has native HDR support. No injection needed."}
 
                     if method == "renodx":
+                        logger.info("Skipping RenoDX because the RenoDX install flow is temporarily disabled.")
+                        continue
                         mod_result = await self.check_renodx_support(title)
                         if mod_result.get("supported") and mod_result.get("match"):
                             logger.info(f"RenoDX mod found. Applying launch options.")
@@ -2429,7 +2507,14 @@ class Plugin:
                             logger.error("Special K install failed: SpecialK64.dll was not found after runtime setup.")
                             continue
                         
-                        success, message = self.installer.install_special_k(appid, exe_path, str(sk_source))
+                        context = rec_result.get("context", {})
+                        success, message = self.installer.install_special_k(
+                            appid,
+                            exe_path,
+                            str(sk_source),
+                            delay_seconds=context.get("special_k_delay_seconds", "0"),
+                            notes=context.get("special_k_notes", []),
+                        )
                         if success:
                             # Verification check would usually happen AFTER launch, 
                             # but we return the success state for now.
@@ -2484,7 +2569,15 @@ class Plugin:
                 if not sk_source:
                     return {"status": "error", "message": "SpecialK64.dll was not found after runtime setup."}
 
-                success, message = self.installer.install_special_k(appid, exe_path, str(sk_source))
+                rec_result = await self.get_hdr_recommendation(appid, title, exe_path)
+                context = rec_result.get("context", {}) if rec_result.get("status") == "success" else {}
+                success, message = self.installer.install_special_k(
+                    appid,
+                    exe_path,
+                    str(sk_source),
+                    delay_seconds=context.get("special_k_delay_seconds", "0"),
+                    notes=context.get("special_k_notes", []),
+                )
                 if not success:
                     logger.error(f"Forced Special K install failed: {message}")
                     return {"status": "error", "message": message}
@@ -2545,17 +2638,71 @@ class Plugin:
         except Exception as e:
             return {"status": "error", "message": str(e)}
 
-    async def run_surgical_uninstall(self, appid: str) -> dict:
+    async def run_surgical_uninstall(self, appid: str, exe_path: str = "") -> dict:
         """Remove HDR using the manifest system."""
         try:
             logger = setup_per_game_logger(appid)
             success, message = self.manifest_manager.remove_hdr(appid, logger)
-            if success:
-                return {"status": "success", "message": message}
-            else:
-                return {"status": "error", "message": message}
+            fallback = self._cleanup_hdr_files_without_manifest(appid, exe_path, logger)
+            if success and fallback["status"] != "error":
+                return {"status": "success", "message": f"{message} {fallback.get('message', '')}".strip(), **fallback}
+            if not success and fallback["status"] == "success":
+                return fallback
+            return {"status": "error", "message": f"{message} {fallback.get('message', '')}".strip(), **fallback}
         except Exception as e:
             return {"status": "error", "message": str(e)}
+
+    def _cleanup_hdr_files_without_manifest(self, appid: str, exe_path: str = "", logger=None) -> dict:
+        try:
+            exe_dir = Path(exe_path).parent if exe_path and os.path.exists(exe_path) else self._resolve_game_exe_dir(appid, "")
+            if not exe_dir or not Path(exe_dir).exists():
+                return {"status": "noop", "message": "No game directory resolved for fallback cleanup."}
+            exe_dir = Path(exe_dir)
+            candidates: list[Path] = []
+            marker = self._read_game_hdr_marker(exe_dir)
+            marker_dll = str(marker.get("dll", "")).strip()
+            if marker_dll:
+                candidates.append(exe_dir / (marker_dll if marker_dll.endswith(".dll") else f"{marker_dll}.dll"))
+                candidates.append(exe_dir / f"{Path(marker_dll).stem}.ini")
+            for name in [
+                "SpecialK.ini", "dxgi.ini", "d3d11.ini", "d3d9.ini", "dinput8.ini", "ddraw.ini",
+                "ReShade.ini", "ReShadePreset.ini", "ReShade.log", "dxgi.log", ".decky-renodx-hdr.json",
+            ]:
+                candidates.append(exe_dir / name)
+            for dll in ["dxgi.dll", "d3d11.dll", "d3d9.dll", "dinput8.dll", "ddraw.dll"]:
+                ini = exe_dir / f"{Path(dll).stem}.ini"
+                path = exe_dir / dll
+                if ini.exists() or marker:
+                    candidates.append(path)
+            for pattern in ["reshade-shaders", "reshade-presets", "Shaders", "Textures"]:
+                path = exe_dir / pattern
+                if path.exists():
+                    candidates.append(path)
+
+            removed = []
+            errors = []
+            for path in sorted(set(candidates), key=lambda p: str(p)):
+                if not path.exists():
+                    continue
+                try:
+                    if path.is_dir():
+                        shutil.rmtree(path)
+                    else:
+                        path.unlink()
+                    removed.append(str(path))
+                    if logger:
+                        logger.info(f"Fallback removal deleted {path}")
+                except OSError as error:
+                    errors.append(f"{path}: {error}")
+                    if logger:
+                        logger.error(f"Fallback removal failed for {path}: {error}")
+            if errors:
+                return {"status": "error", "message": "Some HDR files could not be removed.", "removed": removed, "errors": errors}
+            if removed:
+                return {"status": "success", "message": f"Removed {len(removed)} HDR component(s).", "removed": removed}
+            return {"status": "noop", "message": "No HDR component files were found to remove.", "removed": []}
+        except Exception as error:
+            return {"status": "error", "message": f"Fallback cleanup failed: {error}"}
 
     async def verify_hdr_installation(self, appid: str, exe_path: str) -> dict:
         """Manually verify if the installed HDR method is actually working."""

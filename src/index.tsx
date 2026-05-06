@@ -224,7 +224,7 @@ function HdrRuntimeSection() {
 
       <PanelSectionRow>
         <div style={{ fontSize: "0.9em", opacity: 0.8 }}>
-          HDR runtime setup is automatic and isolated. Includes Special K, RenoDX, and HDR shader packs (Lilium, Pumbo).
+          HDR runtime setup is automatic and isolated. RenoDX install/import is temporarily disabled; fallback setup uses Special K and HDR shader packs.
         </div>
       </PanelSectionRow>
 
@@ -240,7 +240,7 @@ function HdrRuntimeSection() {
       </PanelSectionRow>
 
       <PanelSectionRow>
-        <Field focusable label="HDR Components" description="RenoDX is first priority; fallback components are selected automatically per game.">
+        <Field focusable label="HDR Components" description="Fallback components are selected automatically per game. RenoDX is disabled until its flow is rebuilt.">
           <div style={{ color: "#2ecc71", fontWeight: 700 }}>Automatic</div>
         </Field>
       </PanelSectionRow>

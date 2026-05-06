@@ -41,6 +41,8 @@ class PCGamingWikiScraper:
                 "appid": appid,
                 "native_hdr": "unknown",
                 "special_k_compatible": False,
+                "special_k_notes": [],
+                "special_k_delay_seconds": "0",
                 "notes": []
             }
             
@@ -50,6 +52,18 @@ class PCGamingWikiScraper:
                 
             if sk_data and "cargoquery" in sk_data and sk_data["cargoquery"]:
                 result["special_k_compatible"] = True
+
+            page_name = ""
+            if hdr_data and "cargoquery" in hdr_data and hdr_data["cargoquery"]:
+                page_name = hdr_data["cargoquery"][0]["title"].get("Page", "")
+            elif sk_data and "cargoquery" in sk_data and sk_data["cargoquery"]:
+                page_name = sk_data["cargoquery"][0]["title"].get("Page", "")
+            if page_name:
+                notes = self._fetch_page_notes(page_name)
+                result["special_k_notes"] = notes[:8]
+                delay = self._extract_special_k_delay(notes)
+                if delay:
+                    result["special_k_delay_seconds"] = delay
                 
             return result
         except Exception as e:
@@ -62,6 +76,43 @@ class PCGamingWikiScraper:
                 return json.loads(response.read().decode())
         except Exception:
             return None
+
+    def _fetch_page_notes(self, page_name):
+        params = {
+            "action": "query",
+            "format": "json",
+            "prop": "revisions",
+            "rvprop": "content",
+            "rvslots": "main",
+            "titles": page_name,
+        }
+        data = self._fetch(params)
+        try:
+            pages = data.get("query", {}).get("pages", {})
+            page = next(iter(pages.values()))
+            text = page.get("revisions", [{}])[0].get("slots", {}).get("main", {}).get("*", "")
+        except Exception:
+            return []
+        lines = []
+        for line in text.splitlines():
+            clean = re.sub(r"<[^>]+>", "", line).strip()
+            if re.search(r"special\s*k|skif|injection|delay|steamapi|dgvoodoo|hdr", clean, re.I):
+                clean = re.sub(r"\{\{|\}\}|\[\[|\]\]", "", clean)
+                clean = re.sub(r"\s+", " ", clean)
+                if clean and clean not in lines:
+                    lines.append(clean[:260])
+        return lines
+
+    def _extract_special_k_delay(self, notes):
+        text = " ".join(notes)
+        if not re.search(r"special\s*k|injection|skif", text, re.I):
+            return ""
+        match = re.search(r"(?:delay|delayed|wait)[^0-9]{0,40}(\d{1,2})\s*(?:s|sec|second)", text, re.I)
+        if match:
+            return str(min(30, max(0, int(match.group(1)))))
+        if re.search(r"delayed\s+injection|injection\s+delay", text, re.I):
+            return "10"
+        return ""
 
 class AntiCheatDetector:
     # Common anti-cheat file signatures

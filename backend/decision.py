@@ -52,12 +52,22 @@ class DecisionTree:
             })
 
         # 3. RenoDX / Luma (Score 90)
-        if renodx_supported or luma_supported or self._is_renodx_supported(title, appid):
+        renodx_flow_enabled = context.get("renodx_flow_enabled", False)
+        if renodx_flow_enabled and (renodx_supported or luma_supported or self._is_renodx_supported(title, appid)):
             recommendations.append({
                 "method": "renodx",
                 "score": 90,
                 "reason": "Exact RenoDX/Luma mod found for this game.",
                 "confidence": "high"
+            })
+        elif renodx_supported or luma_supported:
+            recommendations.append({
+                "method": "renodx_disabled",
+                "score": -1,
+                "reason": "RenoDX/Luma support was detected, but the RenoDX install flow is temporarily disabled.",
+                "confidence": "high",
+                "state": "blocked",
+                "notes": ["Use Special K or ReShade fallback for now."]
             })
 
         # 4. Special K (Score 75)

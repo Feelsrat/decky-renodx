@@ -657,6 +657,39 @@ class BackendMockTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["status"], "success")
         self.assertEqual(result["recommendations"][0]["method"], "special_k")
 
+    async def test_renodx_support_is_blocked_while_flow_disabled(self):
+        tree = self.module.DecisionTree()
+        recommendations = tree.evaluate({
+            "appid": "123",
+            "title": "RenoDX Game",
+            "graphics_api": "d3d11",
+            "anti_cheat": [],
+            "native_hdr": "unknown",
+            "renodx_supported": True,
+            "renodx_flow_enabled": False,
+        })
+
+        methods = [recommendation["method"] for recommendation in recommendations]
+
+        self.assertNotEqual(recommendations[0]["method"], "renodx")
+        self.assertIn("renodx_disabled", methods)
+
+    async def test_surgical_uninstall_fallback_removes_marker_hdr_files(self):
+        plugin = self.module.Plugin()
+        game_dir = self.home / "steamapps" / "common" / "Game"
+        game_dir.mkdir(parents=True)
+        exe = game_dir / "Game.exe"
+        exe.write_text("exe", encoding="utf-8")
+        for name in [".decky-renodx-hdr.json", "dxgi.dll", "dxgi.ini", "SpecialK.ini", "ReShade.ini"]:
+            (game_dir / name).write_text("hdr", encoding="utf-8")
+
+        result = await plugin.run_surgical_uninstall("123", str(exe))
+
+        self.assertEqual(result["status"], "success")
+        self.assertFalse((game_dir / "dxgi.dll").exists())
+        self.assertFalse((game_dir / "SpecialK.ini").exists())
+        self.assertFalse((game_dir / ".decky-renodx-hdr.json").exists())
+
     async def test_restart_uses_helper_when_systemd_run_fails(self):
         plugin = self.module.Plugin()
         calls = []

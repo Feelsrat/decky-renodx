@@ -11,7 +11,7 @@ import { callable, toaster } from "@decky/api";
 
 // New Callables
 const getHdrRecommendation = callable<[string, string, string], any>("get_hdr_recommendation");
-const runSurgicalUninstall = callable<[string], any>("run_surgical_uninstall");
+const runSurgicalUninstall = callable<[string, string], any>("run_surgical_uninstall");
 const getPerGameLog = callable<[string], any>("get_per_game_log");
 const updateSkConfigValue = callable<[string, string, string, string, string], any>("update_sk_config_value");
 const setSpecialKVerified = callable<[string, boolean], any>("set_special_k_verified");
@@ -19,6 +19,8 @@ const listInstalledGames = callable<[], any>("list_installed_games");
 const findGameExecutablePath = callable<[string], any>("find_game_executable_path");
 const forceSpecialKSetup = callable<[string, string, string], any>("force_special_k_setup");
 const resetPluginCaches = callable<[], any>("reset_plugin_caches");
+const getPluginProcessHealth = callable<[], any>("get_plugin_process_health");
+const fixPluginProcesses = callable<[], any>("fix_plugin_processes");
 
 interface Recommendation {
   method: string;
@@ -40,6 +42,8 @@ interface GameContext {
   is_multiplayer: boolean;
   native_hdr: string;
   special_k_wiki: boolean;
+  special_k_notes?: string[];
+  special_k_delay_seconds?: string;
 }
 
 const HdrManagementSection = () => {
@@ -53,6 +57,7 @@ const HdrManagementSection = () => {
 
   const [showSkEditor, setShowSkEditor] = useState(false);
   const [exePath, setExePath] = useState("");
+  const [processHealth, setProcessHealth] = useState<any>(null);
 
   useEffect(() => {
     // Intentionally no Steam focus tracking:
@@ -110,6 +115,8 @@ const HdrManagementSection = () => {
         });
         toaster.toast({ title: "HDR recommendation failed", body: recResponse.message || "See logs for details." });
       }
+      const health = await getPluginProcessHealth();
+      setProcessHealth(health);
     } catch (e) {
       console.error(e);
       setRecommendation({
@@ -171,7 +178,7 @@ const HdrManagementSection = () => {
     if (!selectedGame) return;
     setLoading(true);
     // 1. Remove current
-    await runSurgicalUninstall(selectedGame.appid);
+    await runSurgicalUninstall(selectedGame.appid, exePath);
     // 2. Mark current as failed (TBD in backend, for now just rerun setup)
     // In a real implementation, we'd pass 'skip_current: true' to the backend
     const response = await callable<[string, string, string, boolean], any>("execute_setup_flow")(
@@ -187,7 +194,7 @@ const HdrManagementSection = () => {
 
   const handleUninstall = async () => {
     if (!selectedGame) return;
-    const response = await runSurgicalUninstall(selectedGame.appid);
+    const response = await runSurgicalUninstall(selectedGame.appid, exePath);
     toaster.toast({ title: "HDR Removal", body: response.message });
     refreshState();
   };
@@ -216,6 +223,8 @@ const HdrManagementSection = () => {
     if (response.status === "success") {
       setLogContent(response.log);
       setShowLog(true);
+    } else {
+      toaster.toast({ title: "Log Unavailable", body: response.message || "No log found." });
     }
   };
 
@@ -228,6 +237,15 @@ const HdrManagementSection = () => {
     }
     setLoading(false);
   };
+
+  const handleFixProcesses = async () => {
+    const response = await fixPluginProcesses();
+    toaster.toast({ title: "Plugin Process Fix", body: response.message });
+    setProcessHealth(await getPluginProcessHealth());
+  };
+
+  const methodLabel = recommendation?.method === "renodx_disabled" ? "RENODX DISABLED" : recommendation?.method.toUpperCase();
+  const setupDisabled = !!context?.anti_cheat.length || recommendation?.method === "renodx_disabled" || recommendation?.score === 0;
 
   return (
     <PanelSection title="Per-Game HDR Management">
@@ -259,7 +277,7 @@ const HdrManagementSection = () => {
                   }}>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px", minWidth: 0 }}>
                       <div style={{ fontWeight: "bold", color: getConfidenceColor(recommendation.confidence), minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" }}>
-                        {recommendation.method.toUpperCase()}
+                        {methodLabel}
                       </div>
                       <div style={{ fontSize: "0.8em", opacity: 0.5, flexShrink: 0 }}>Score: {recommendation.score}</div>
                     </div>
@@ -299,9 +317,38 @@ const HdrManagementSection = () => {
                 </PanelSectionRow>
               ) : null}
 
+              {context?.special_k_notes?.length ? (
+                <PanelSectionRow>
+                  <div style={{ padding: "10px", border: "1px solid rgba(255,255,255,0.18)", borderRadius: "4px", fontSize: "0.82em", lineHeight: 1.25, overflowWrap: "anywhere" }}>
+                    <div style={{ fontWeight: 700, marginBottom: "4px" }}>Special K notes from PCGamingWiki</div>
+                    {context.special_k_delay_seconds && context.special_k_delay_seconds !== "0" && (
+                      <div>Injection delay: {context.special_k_delay_seconds}s will be preconfigured.</div>
+                    )}
+                    {context.special_k_notes.slice(0, 3).map((note, i) => (
+                      <div key={i} style={{ opacity: 0.72, marginTop: "3px" }}>{note}</div>
+                    ))}
+                  </div>
+                </PanelSectionRow>
+              ) : null}
+
+              {processHealth?.duplicate ? (
+                <PanelSectionRow>
+                  <div style={{ padding: "10px", borderRadius: "4px", border: "1px solid #e67e22", background: "rgba(230,126,34,0.16)", fontSize: "0.86em", overflowWrap: "anywhere" }}>
+                    <div style={{ marginBottom: "6px" }}>Multiple Decky RenoDX backend processes are running. This can cause stale UI state or stuck installs.</div>
+                    <ButtonItem layout="below" onClick={handleFixProcesses}>
+                      Fix Duplicate Plugin Processes
+                    </ButtonItem>
+                  </div>
+                </PanelSectionRow>
+              ) : null}
+
               <PanelSectionRow>
-                <ButtonItem layout="below" onClick={handleSetup} disabled={!!context?.anti_cheat.length}>
-                  {recommendation?.score === 0 ? "No safe HDR method" : `Install Recommended (${recommendation?.method.toUpperCase()})`}
+                <ButtonItem layout="below" onClick={handleSetup} disabled={setupDisabled}>
+                  {recommendation?.method === "renodx_disabled"
+                    ? "RenoDX Temporarily Disabled"
+                    : recommendation?.score === 0
+                      ? "No safe HDR method"
+                      : `Install Recommended (${methodLabel})`}
                 </ButtonItem>
               </PanelSectionRow>
 
@@ -313,7 +360,7 @@ const HdrManagementSection = () => {
                 </PanelSectionRow>
               )}
 
-              {context && !context.anti_cheat.length && ["renodx", "luma", "native_hdr"].includes(recommendation?.method || "") && (
+              {context && !context.anti_cheat.length && ["renodx_disabled", "renodx", "luma", "native_hdr"].includes(recommendation?.method || "") && (
                 <PanelSectionRow>
                   <ButtonItem layout="below" onClick={handleForceSpecialK}>
                     Use Special K Instead
@@ -386,9 +433,14 @@ const HdrManagementSection = () => {
 
       {showLog && (
         <ModalRoot closeModal={() => setShowLog(false)}>
-          <div style={{ padding: "16px", maxHeight: "60vh", overflowY: "auto", fontSize: "12px", fontFamily: "monospace", backgroundColor: "#1e1e1e", color: "#d4d4d4" }}>
-            <div style={{ marginBottom: "8px", fontWeight: "bold", borderBottom: "1px solid #333" }}>HDR Plugin Log: {selectedGame?.name}</div>
-            <pre style={{ whiteSpace: "pre-wrap" }}>{logContent}</pre>
+          <div style={{ position: "fixed", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(0,0,0,0.42)", zIndex: 9999 }}>
+            <div style={{ width: "min(760px, 86vw)", maxHeight: "72vh", backgroundColor: "#1e1e1e", color: "#d4d4d4", borderRadius: "6px", border: "1px solid rgba(255,255,255,0.14)", boxShadow: "0 18px 60px rgba(0,0,0,0.45)", overflow: "hidden" }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 12px", borderBottom: "1px solid #333", fontWeight: 700 }}>
+                <span>HDR Plugin Log: {selectedGame?.name}</span>
+                <button style={{ width: "32px", height: "32px", borderRadius: "4px", border: "1px solid rgba(255,255,255,0.18)", background: "rgba(255,255,255,0.08)", color: "white", fontSize: "18px" }} onClick={() => setShowLog(false)}>x</button>
+              </div>
+              <pre style={{ margin: 0, padding: "12px", maxHeight: "calc(72vh - 54px)", overflowY: "auto", whiteSpace: "pre-wrap", fontSize: "12px", fontFamily: "monospace" }}>{logContent}</pre>
+            </div>
           </div>
         </ModalRoot>
       )}
@@ -421,9 +473,10 @@ const HdrManagementSection = () => {
                     rgOptions={[
                       { data: "0", label: "None" },
                       { data: "5", label: "5s" },
-                      { data: "10", label: "10s" }
+                      { data: "10", label: "10s" },
+                      { data: "15", label: "15s" }
                     ]}
-                    selectedOption={{ data: "0", label: "None" }}
+                    selectedOption={{ data: context?.special_k_delay_seconds || "0", label: context?.special_k_delay_seconds && context.special_k_delay_seconds !== "0" ? `${context.special_k_delay_seconds}s` : "None" }}
                     onChange={(opt) => handleUpdateSkValue("SpecialK.System", "InjectionDelay", opt.data)}
                   />
                 </Field>
