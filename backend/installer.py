@@ -44,10 +44,10 @@ class HDRInstaller:
             ini_path = os.path.join(game_dir, "SpecialK.ini")
             self._apply_sk_oled_defaults(ini_path, delay_seconds=delay_seconds)
             manifest_data["installed_files"].append(ini_path)
-            dll_ini_path = os.path.join(game_dir, f"{Path(dll_name).stem}.ini")
-            self._apply_sk_oled_defaults(dll_ini_path, delay_seconds=delay_seconds)
-            manifest_data["installed_files"].append(dll_ini_path)
-
+            stale_dll_ini = os.path.join(game_dir, f"{Path(dll_name).stem}.ini")
+            if os.path.exists(stale_dll_ini):
+                os.remove(stale_dll_ini)
+                if self.logger: self.logger.info(f"Removed stale {Path(stale_dll_ini).name} from previous Special K install path")
             # 4. Save manifest
             self.manifest_manager.write_manifest(appid, manifest_data)
             
@@ -79,17 +79,10 @@ class HDRInstaller:
         if 'SpecialK.System' not in config:
             config['SpecialK.System'] = {}
         config['SpecialK.System']['UsingWINE'] = 'true'
-        config['SpecialK.System']['Silent'] = 'true'
         config['SpecialK.System']['InjectionDelay'] = str(delay_seconds or "0")
-
-        # This avoids the Proton popup about unsupported standard SteamAPI integration.
-        if 'Steam.Log' not in config:
-            config['Steam.Log'] = {}
-        config['Steam.Log']['Silent'] = 'true'
-        if 'Steam.System' not in config:
-            config['Steam.System'] = {}
-        config['Steam.System']['Enable'] = 'false'
-        config['Steam.System']['CallbackThrottle'] = 'true'
+        for section in ["Steam.System", "Steam.Log"]:
+            if section in config:
+                del config[section]
 
         with open(ini_path, 'w') as configfile:
             config.write(configfile)

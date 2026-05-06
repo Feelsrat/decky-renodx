@@ -281,6 +281,27 @@ class BackendMockTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("HDR.Enable=true", specialk_ini)
         self.assertIn("Use16BitSwapChain=true", dxgi_ini)
 
+    async def test_backend_specialk_installer_does_not_disable_steamapi(self):
+        plugin = self.module.Plugin()
+        game_dir = self.home / "game"
+        runtime = self.home / "SpecialK64.dll"
+        exe = game_dir / "Game.exe"
+        game_dir.mkdir()
+        runtime.write_text("dll", encoding="utf-8")
+        exe.write_text("exe", encoding="utf-8")
+        (game_dir / "dxgi.ini").write_text("stale", encoding="utf-8")
+        (game_dir / "SpecialK.ini").write_text("[Steam.System]\nEnable=false\n\n[Steam.Log]\nSilent=true\n", encoding="utf-8")
+
+        success, message = plugin.installer.install_special_k("123", str(exe), str(runtime), delay_seconds="5")
+
+        self.assertTrue(success, message)
+        specialk_ini = (game_dir / "SpecialK.ini").read_text(encoding="utf-8")
+        self.assertIn("usingwine = true", specialk_ini.lower())
+        self.assertIn("injectiondelay = 5", specialk_ini.lower())
+        self.assertNotIn("[Steam.System]", specialk_ini)
+        self.assertNotIn("[Steam.Log]", specialk_ini)
+        self.assertFalse((game_dir / "dxgi.ini").exists())
+
     async def test_specialk_widget_repair_backs_up_imgui_state(self):
         plugin = self.module.Plugin()
         game_dir = self.home / "game"
