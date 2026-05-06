@@ -66,6 +66,12 @@ class BackendMockTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(plugin._is_newer_version("0.1.10", "0.1.9"))
         self.assertFalse(plugin._is_newer_version("0.1.10", "0.1.10"))
 
+    async def test_current_version_falls_back_to_module_package_json(self):
+        plugin = self.module.Plugin()
+        self.module.decky.DECKY_PLUGIN_DIR = str(self.home / "missing-plugin")
+
+        self.assertNotEqual(plugin._current_version(), "unknown")
+
     async def test_release_asset_requires_decky_renodx_zip(self):
         plugin = self.module.Plugin()
         release = {

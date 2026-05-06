@@ -1211,28 +1211,28 @@ class Plugin:
     async def save_installed_configuration(self, with_addon: bool, version: str, with_autohdr: bool, selected_shaders: list) -> dict:
         """Save the configuration that was actually installed"""
         try:
-            config_file = os.path.join(self.main_path, "installed_config.json")
-            
-            installed_config = {
-                "with_addon": with_addon,
-                "version": version,
-                "with_autohdr": with_autohdr,
-                "selected_shaders": selected_shaders or [],
-                "installed_at": int(time.time())
-            }
-            
-            os.makedirs(self.main_path, exist_ok=True)
-            
-            with open(config_file, 'w') as f:
-                json.dump(installed_config, f, indent=2)
+            installed_config = self._write_installed_configuration_sync(with_addon, version, with_autohdr, selected_shaders)
             self._fix_deck_user_ownership(Path(self.main_path))
-            
             decky.logger.info(f"Saved installed configuration: {installed_config}")
             return {"status": "success"}
             
         except Exception as e:
             decky.logger.error(f"Error saving installed configuration: {str(e)}")
             return {"status": "error", "message": str(e)}
+
+    def _write_installed_configuration_sync(self, with_addon: bool, version: str, with_autohdr: bool, selected_shaders: list) -> dict:
+        config_file = os.path.join(self.main_path, "installed_config.json")
+        installed_config = {
+            "with_addon": with_addon,
+            "version": version,
+            "with_autohdr": with_autohdr,
+            "selected_shaders": selected_shaders or [],
+            "installed_at": int(time.time()),
+        }
+        os.makedirs(self.main_path, exist_ok=True)
+        with open(config_file, "w") as f:
+            json.dump(installed_config, f, indent=2)
+        return installed_config
 
     async def load_installed_configuration(self) -> dict:
         """Load the configuration that was actually installed"""
@@ -1404,55 +1404,59 @@ class Plugin:
 
     async def run_install_reshade(self, with_addon: bool = False, version: str = "latest", with_autohdr: bool = False, selected_shaders: list = None) -> dict:
         try:
-            asset_result = self._ensure_runtime_assets()
-            if not asset_result["ok"]:
-                return {"status": "error", "message": asset_result["message"]}
-
             install_description = f"Installing ReShade {version}"
             if with_addon:
                 install_description += " with addon support"
             if with_autohdr:
                 install_description += " and AutoHDR components"
             install_description += " with HDR-only payload"
-            
+
             decky.logger.info(install_description)
-            self._install_hdr_runtime_python(version)
+            await asyncio.wait_for(
+                asyncio.to_thread(self._install_hdr_runtime_sync, version, with_addon, with_autohdr),
+                timeout=360,
+            )
 
-            # Create appropriate installation marker
-            if with_addon:
-                marker_file = Path(self.main_path) / ".installed_addon"
-                # Remove non-addon marker if it exists
-                normal_marker = Path(self.main_path) / ".installed"
-                if normal_marker.exists():
-                    normal_marker.unlink()
-            else:
-                marker_file = Path(self.main_path) / ".installed"
-                # Remove addon marker if it exists
-                addon_marker = Path(self.main_path) / ".installed_addon"
-                if addon_marker.exists():
-                    addon_marker.unlink()
-
-            marker_file.touch()
-            self._fix_deck_user_ownership(Path(self.main_path))
-
-            # Save the installed configuration
-            await self.save_installed_configuration(with_addon, version, with_autohdr, ["autohdr"])
-
-            # Clear executable cache since new installation might affect detection
-            self.executable_cache.clear()
-
-            # Create success message
-            version_display = f"ReShade {version.title()}"
-            if with_addon:
-                version_display += ' (with Addon Support)'
-            if with_autohdr:
-                version_display += ' and AutoHDR components'
-            version_display += ' with HDR-only payload'
-            
-            return {"status": "success", "output": f"{version_display} installed successfully!"}
+            return {"status": "success", "output": self._runtime_install_success_message(version, with_addon, with_autohdr)}
+        except asyncio.TimeoutError:
+            message = "HDR runtime install timed out after 6 minutes. Check network/download state, then try again."
+            decky.logger.error(message)
+            return {"status": "error", "message": message}
         except Exception as e:
             decky.logger.error(f"Install error: {str(e)}")
             return {"status": "error", "message": str(e)}
+
+    def _install_hdr_runtime_sync(self, version: str, with_addon: bool, with_autohdr: bool) -> None:
+        asset_result = self._ensure_runtime_assets()
+        if not asset_result["ok"]:
+            raise RuntimeError(asset_result["message"])
+
+        self._install_hdr_runtime_python(version)
+
+        if with_addon:
+            marker_file = Path(self.main_path) / ".installed_addon"
+            normal_marker = Path(self.main_path) / ".installed"
+            if normal_marker.exists():
+                normal_marker.unlink()
+        else:
+            marker_file = Path(self.main_path) / ".installed"
+            addon_marker = Path(self.main_path) / ".installed_addon"
+            if addon_marker.exists():
+                addon_marker.unlink()
+
+        marker_file.touch()
+        self._write_installed_configuration_sync(with_addon, version, with_autohdr, ["autohdr"])
+        self._fix_deck_user_ownership(Path(self.main_path))
+        self.executable_cache.clear()
+
+    def _runtime_install_success_message(self, version: str, with_addon: bool, with_autohdr: bool) -> str:
+        version_display = f"ReShade {version.title()}"
+        if with_addon:
+            version_display += " (with Addon Support)"
+        if with_autohdr:
+            version_display += " and AutoHDR components"
+        version_display += " with HDR-only payload"
+        return f"{version_display} installed successfully!"
 
     async def run_uninstall_reshade(self) -> dict:
         try:
@@ -4428,7 +4432,16 @@ Note: If ReShadePreset.ini already existed, your previous settings were preserve
         return str(package.get("version", ""))
 
     def _current_version(self) -> str:
-        return self._package_version(Path(decky.DECKY_PLUGIN_DIR) / "package.json")
+        plugin_dir = Path(decky.DECKY_PLUGIN_DIR)
+        for candidate in [
+            plugin_dir / "package.json",
+            Path(__file__).resolve().parent / "package.json",
+            Path.cwd() / "package.json",
+        ]:
+            version = self._package_version(candidate)
+            if version:
+                return version
+        return "unknown"
 
     def _has_elevated_permissions(self) -> bool:
         if not hasattr(os, "geteuid"):

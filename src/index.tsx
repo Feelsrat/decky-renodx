@@ -157,7 +157,11 @@ function HdrRuntimeSection() {
     try {
       setInstalling(true);
       await saveAutoHdrPreference(true);
-      const result = await runInstallReShade(true, selectedVersion.value, true, ["autohdr"]);
+      const result = await withTimeout(
+        runInstallReShade(true, selectedVersion.value, true, ["autohdr"]),
+        390000,
+        "HDR component install did not return after 6.5 minutes. Check the plugin log; a download or extraction may still be stuck."
+      );
       setInstallResult(result);
       if (result.status === "success") {
         const config = await loadInstalledConfiguration();
