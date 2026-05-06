@@ -64,6 +64,16 @@ const getUpdateStatus = callable<[], UpdateStatus>("get_update_status");
 const checkUpdate = callable<[force?: boolean], UpdateStatus>("check_update");
 const installUpdate = callable<[], UpdateStatus>("install_update");
 
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timeout = window.setTimeout(() => reject(new Error(message)), timeoutMs);
+    promise
+      .then(resolve)
+      .catch(reject)
+      .finally(() => window.clearTimeout(timeout));
+  });
+}
+
 const versionOptions: VersionOption[] = [
   { label: "ReShade Latest", value: "latest" },
   { label: "ReShade Last Version", value: "last" },
@@ -300,7 +310,11 @@ function UpdatesSection() {
   const install = async () => {
     setBusy(true);
     try {
-      const result = await installUpdate();
+      const result = await withTimeout(
+        installUpdate(),
+        90000,
+        "The updater did not return after 90 seconds. The install may still finish in the background; close and reopen Decky before trying again."
+      );
       setStatus(result);
       toaster.toast({ title: result.ok ? "Update Installed" : "Update Failed", body: result.message });
       if (result.ok) {

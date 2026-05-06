@@ -4364,7 +4364,7 @@ Note: If ReShadePreset.ini already existed, your previous settings were preserve
                 return {**status, "ok": False, "message": f"Update failed: {error}"}
 
             current = self._current_version()
-            decky.logger.info(f"Successfully installed v{latest}. Manual Decky restart required.")
+            decky.logger.info(f"Successfully staged v{latest}. Replacement helper scheduled.")
             
             result = {
                 "ok": True,
@@ -4376,7 +4376,11 @@ Note: If ReShadePreset.ini already existed, your previous settings were preserve
                 "elevated": self._has_elevated_permissions(),
                 "requiresRestart": True,
                 "restarted": False,
-                "message": f"Update v{latest} installed. Restart Decky or Steam manually when convenient.",
+                "replacementScheduled": install_info.get("replacementScheduled", False),
+                "message": (
+                    f"Update v{latest} staged. The plugin files will be swapped in a few seconds. "
+                    "Restart Decky or Steam manually when convenient if the old version is still loaded."
+                ),
             }
             self._cached_update_status = result
             return result
@@ -4508,7 +4512,6 @@ Note: If ReShadePreset.ini already existed, your previous settings were preserve
                 raise ValueError("release zip did not contain a Decky plugin")
             self._validate_extracted_plugin(extracted_plugin)
 
-            backup_dir = plugin_dir.with_name(f"{plugin_dir.name}.previous")
             if staging_dir.exists():
                 shutil.rmtree(staging_dir)
             shutil.copytree(
@@ -4518,33 +4521,66 @@ Note: If ReShadePreset.ini already existed, your previous settings were preserve
                 ignore=shutil.ignore_patterns("*.log", "__pycache__", ".last_update_check"),
             )
             self._validate_extracted_plugin(staging_dir)
-            if backup_dir.exists():
-                shutil.rmtree(backup_dir)
-
-            moved_existing = False
-            try:
-                if plugin_dir.exists():
-                    plugin_dir.rename(backup_dir)
-                    moved_existing = True
-                staging_dir.rename(plugin_dir)
-            except OSError:
-                decky.logger.exception("Update replacement failed, attempting rollback")
-                if moved_existing and plugin_dir.exists():
-                    shutil.rmtree(plugin_dir)
-                if moved_existing and backup_dir.exists() and not plugin_dir.exists():
-                    backup_dir.rename(plugin_dir)
+            backup_dir = plugin_dir.with_name(f"{plugin_dir.name}.previous")
+            replacement = self._schedule_update_replacement(plugin_dir, staging_dir, backup_dir)
+            if not replacement.get("scheduled"):
                 if staging_dir.exists():
                     shutil.rmtree(staging_dir)
-                raise
-
-            # Ensure the resulting installed plugin directory is usable by the
-            # Deck user (some update flows can preserve root ownership).
-            self._fix_deck_user_ownership(plugin_dir)
+                raise OSError(replacement.get("message", "Could not schedule update replacement."))
 
             return {
-                "installedVersion": self._package_version(plugin_dir / "package.json"),
+                "installedVersion": self._package_version(staging_dir / "package.json"),
                 "backupPath": str(backup_dir),
+                "stagingPath": str(staging_dir),
+                "replacementScheduled": True,
             }
+
+    def _schedule_update_replacement(self, plugin_dir: Path, staging_dir: Path, backup_dir: Path) -> dict[str, Any]:
+        helper_path = Path(tempfile.gettempdir()) / f"{PLUGIN_PACKAGE}-apply-update-{os.getpid()}-{int(time.time())}.sh"
+        log_path = Path(decky.DECKY_PLUGIN_DIR).parent / f".{PLUGIN_PACKAGE}-update.log"
+        deck_user = self.environment.get("USER") or getattr(decky, "DECKY_USER", "")
+        chown_line = ""
+        if deck_user and deck_user != "root":
+            chown_line = f"chown -R {shlex.quote(deck_user)}:{shlex.quote(deck_user)} \"$plugin_dir\" || true"
+
+        helper = f"""#!/usr/bin/env bash
+set -u
+sleep 4
+plugin_dir={shlex.quote(str(plugin_dir))}
+staging_dir={shlex.quote(str(staging_dir))}
+backup_dir={shlex.quote(str(backup_dir))}
+log_path={shlex.quote(str(log_path))}
+{{
+  echo "[$(date -Is)] Applying {PLUGIN_PACKAGE} staged update"
+  if [ ! -d "$staging_dir" ]; then
+    echo "Missing staging directory: $staging_dir"
+    exit 1
+  fi
+  rm -rf "$backup_dir"
+  if [ -e "$plugin_dir" ]; then
+    mv "$plugin_dir" "$backup_dir"
+  fi
+  if mv "$staging_dir" "$plugin_dir"; then
+    {chown_line}
+    echo "Update replacement complete"
+    exit 0
+  fi
+  echo "Update replacement failed, attempting rollback"
+  rm -rf "$plugin_dir"
+  if [ -e "$backup_dir" ]; then
+    mv "$backup_dir" "$plugin_dir"
+  fi
+  exit 1
+}} >> "$log_path" 2>&1
+"""
+        try:
+            helper_path.write_text(helper, encoding="utf-8")
+            helper_path.chmod(0o755)
+            subprocess.Popen(["bash", str(helper_path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+            return {"scheduled": True, "method": "helper", "message": "Update replacement helper started."}
+        except Exception as error:
+            decky.logger.warning("Update replacement helper failed: %s", error)
+            return {"scheduled": False, "method": "helper", "message": str(error)}
 
     def _find_extracted_plugin(self, root: Path) -> Path | None:
         for candidate in [root, *root.iterdir()]:

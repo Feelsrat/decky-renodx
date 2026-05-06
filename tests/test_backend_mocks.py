@@ -522,6 +522,42 @@ class BackendMockTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["requiresRestart"])
         self.assertFalse(result["restarted"])
         self.assertEqual(scheduled, [])
+        self.assertIn("staged", result["message"])
+
+    async def test_install_release_zip_stages_and_schedules_replacement(self):
+        plugin = self.module.Plugin()
+        plugin_dir = self.home / "homebrew" / "plugins" / "decky-renodx"
+        plugin_dir.mkdir(parents=True)
+        self.module.decky.DECKY_PLUGIN_DIR = str(plugin_dir)
+
+        release_root = self.home / "release"
+        release_plugin = release_root / "decky-renodx"
+        (release_plugin / "dist").mkdir(parents=True)
+        (release_plugin / "backend").mkdir(parents=True)
+        (release_plugin / "plugin.json").write_text(json.dumps({"name": "Decky RenoDX"}), encoding="utf-8")
+        (release_plugin / "package.json").write_text(json.dumps({"name": "decky-renodx", "version": "9.9.9"}), encoding="utf-8")
+        (release_plugin / "dist" / "index.js").write_text("// ok", encoding="utf-8")
+        (release_plugin / "main.py").write_text("# ok", encoding="utf-8")
+        (release_plugin / "backend" / "__init__.py").write_text("# ok", encoding="utf-8")
+        (release_plugin / "backend" / "cache.py").write_text("# ok", encoding="utf-8")
+        archive_path = self.home / "release.zip"
+        with zipfile.ZipFile(archive_path, "w") as archive:
+            for path in release_plugin.rglob("*"):
+                archive.write(path, path.relative_to(release_root))
+
+        plugin._download_file = lambda _request, target: target.write_bytes(archive_path.read_bytes())
+        scheduled = []
+        plugin._schedule_update_replacement = lambda plugin_dir, staging_dir, backup_dir: (
+            scheduled.append((plugin_dir, staging_dir, backup_dir)) or {"scheduled": True}
+        )
+
+        result = plugin._install_release_zip("https://example.invalid/decky-renodx.zip")
+
+        self.assertEqual(result["installedVersion"], "9.9.9")
+        self.assertTrue(result["replacementScheduled"])
+        self.assertTrue(Path(result["stagingPath"]).exists())
+        self.assertEqual(len(scheduled), 1)
+        self.assertTrue(plugin_dir.exists())
 
 
 if __name__ == "__main__":
