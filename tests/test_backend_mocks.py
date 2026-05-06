@@ -474,6 +474,31 @@ class BackendMockTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["context"]["graphics_api"], "d3d11")
         self.assertEqual(result["recommendations"][0]["method"], "special_k")
 
+    async def test_recommendation_resolves_executable_when_frontend_path_is_empty(self):
+        plugin = self.module.Plugin()
+        game_dir = self.home / "game"
+        exe = game_dir / "Game.exe"
+        game_dir.mkdir()
+        exe.write_bytes(b"imports d3d11.dll")
+        async def fake_find(_appid):
+            return {
+                "status": "success",
+                "steam_logs_result": {"status": "not_found"},
+                "enhanced_detection_result": {"status": "success", "executable_path": str(exe)},
+            }
+        async def fake_renodx(_title):
+            return {"status": "success", "supported": False}
+        plugin.find_game_executable_path = fake_find
+        plugin.check_renodx_support = fake_renodx
+        plugin.wiki_scraper.get_game_data = lambda _appid: {"status": "error"}
+        plugin._detect_api_with_letmereshade_script = lambda _path: {"status": "error", "message": "skip"}
+
+        result = await plugin.get_hdr_recommendation("123", "Example Game", "")
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["context"]["graphics_api"], "d3d11")
+        self.assertEqual(result["recommendations"][0]["method"], "special_k")
+
     async def test_steam_metadata_uses_relaxed_json_fetch(self):
         plugin = self.module.Plugin()
         seen = []
@@ -573,6 +598,18 @@ class BackendMockTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["status"], "success")
         self.assertEqual(result["api"], "dx11_dx12")
         self.assertEqual(result["engine"], "unity")
+
+    async def test_engine_detection_does_not_scan_sibling_games_from_common_parent(self):
+        plugin = self.module.Plugin()
+        common = self.home / "steamapps" / "common"
+        bayonetta = common / "Bayonetta"
+        sibling = common / "SANDLAND" / "SANDLAND" / "Binaries" / "Win64"
+        bayonetta.mkdir(parents=True)
+        sibling.mkdir(parents=True)
+        (bayonetta / "Bayonetta.exe").write_bytes(b"bayonetta")
+        (sibling / "SANDLAND-Win64-Shipping.exe").write_bytes(b"unreal")
+
+        self.assertEqual(plugin._detect_engine_family(bayonetta / "Bayonetta.exe"), "unknown")
 
     async def test_unknown_api_is_not_cached(self):
         cache = self.module.PersistentCache(str(self.home / "cache.json"))

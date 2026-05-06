@@ -2156,12 +2156,15 @@ class Plugin:
 
             # Try to load metadata from cache
             cached_metadata = self.persistent_cache.get_game_metadata(appid)
+            resolved_game_path = game_path
+            if not resolved_game_path or not os.path.exists(resolved_game_path):
+                resolved_game_path = await self._resolve_game_executable_for_recommendation(appid, logger)
             if cached_metadata:
                 logger.info(f"Using cached metadata for {appid}")
                 context.update(cached_metadata)
                 await self._refresh_renodx_recommendation_context(context, title, logger)
-                if game_path and os.path.exists(game_path):
-                    api_info = await self._detect_api_with_cache(game_path, logger)
+                if resolved_game_path and os.path.exists(resolved_game_path):
+                    api_info = await self._detect_api_with_cache(resolved_game_path, logger)
                     if api_info.get("status") == "success":
                         context["graphics_api"] = api_info.get("api", "unknown")
                         context["injection_dll"] = api_info.get("injection_dll", context.get("injection_dll", "auto"))
@@ -2179,13 +2182,13 @@ class Plugin:
                 await self._refresh_renodx_recommendation_context(context, title, logger)
                 
                 # Detect API and Anti-cheat (if path exists)
-                if game_path and os.path.exists(game_path):
-                    api_info = await self._detect_api_with_cache(game_path, logger)
+                if resolved_game_path and os.path.exists(resolved_game_path):
+                    api_info = await self._detect_api_with_cache(resolved_game_path, logger)
                     context["graphics_api"] = api_info.get("api", "unknown")
                     context["injection_dll"] = api_info.get("injection_dll", "auto")
                     context["engine"] = api_info.get("engine", "unknown")
                     
-                    context["anti_cheat"] = self.ac_detector.detect(game_path)
+                    context["anti_cheat"] = self.ac_detector.detect(str(Path(resolved_game_path).parent))
                 if context["graphics_api"] == "unknown":
                     await self._apply_steam_metadata_api_fallback(context, appid, logger)
                 
@@ -2214,6 +2217,23 @@ class Plugin:
         except Exception as e:
             decky.logger.error(f"Error in get_hdr_recommendation: {str(e)}")
             return {"status": "error", "message": str(e)}
+
+    async def _resolve_game_executable_for_recommendation(self, appid: str, logger=None) -> str:
+        try:
+            detection = await self.find_game_executable_path(appid)
+            steam_result = detection.get("steam_logs_result", {}) if detection.get("status") == "success" else {}
+            enhanced_result = detection.get("enhanced_detection_result", {}) if detection.get("status") == "success" else {}
+            exe_path = steam_result.get("executable_path") or enhanced_result.get("executable_path") or ""
+            if exe_path and os.path.exists(exe_path):
+                if logger:
+                    logger.info(f"Resolved executable internally for recommendation: {exe_path}")
+                return exe_path
+            if logger:
+                logger.warning(f"Could not resolve executable internally for recommendation: {detection.get('message', detection)}")
+        except Exception as error:
+            if logger:
+                logger.warning(f"Internal executable resolution failed: {error}")
+        return ""
 
     async def _refresh_renodx_recommendation_context(self, context: dict[str, Any], title: str, logger=None) -> None:
         try:
@@ -2787,7 +2807,7 @@ class Plugin:
                 "confidence": "heuristic",
                 "notes": "Unreal Engine Win64/Shipping layout detected; treating API as DX11/DX12 selectable and using DXGI injection.",
             })
-        elif engine == "unity" and result.get("architecture") == "64" and result.get("api") in ["unknown", "dxgi", "d3d11"]:
+        elif engine == "unity" and result.get("architecture") == "64" and result.get("api") in ["unknown", "dxgi", "d3d11", "opengl32"]:
             result.update({
                 "api": "dx11_dx12",
                 "injection_dll": "dxgi",
@@ -2825,6 +2845,8 @@ class Plugin:
         roots = []
         current = start
         for _ in range(5):
+            if current.name.lower() in {"common", "steamapps"}:
+                break
             if current not in roots and current.exists():
                 roots.append(current)
             parent = current.parent
