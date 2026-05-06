@@ -328,7 +328,7 @@ class Plugin:
             
             # Get the base game path using existing method
             try:
-                steam_root = Path(decky.HOME) / ".steam" / "steam"
+                steam_root = self._deck_user_home() / ".steam" / "steam"
                 library_file = steam_root / "steamapps" / "libraryfolders.vdf"
 
                 if not library_file.exists():
