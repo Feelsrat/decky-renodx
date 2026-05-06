@@ -421,6 +421,25 @@ class BackendMockTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["api"], "d3d11")
         self.assertEqual(result["script_api_hint"], "dxgi")
 
+    async def test_api_detection_keeps_letmereshade_dxgi_default_when_refinement_fails(self):
+        plugin = self.module.Plugin()
+        game_dir = self.home / "game"
+        game_dir.mkdir()
+        (game_dir / "Game.exe").write_bytes(b"packed executable without readable imports")
+        plugin._detect_api_with_letmereshade_script = lambda _path: {
+            "status": "success",
+            "api": "dxgi",
+            "architecture": "64",
+            "injection_dll": "dxgi",
+            "detector": "letmereshade",
+        }
+
+        result = await plugin._detect_api_for_path(str(game_dir))
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["api"], "dxgi")
+        self.assertEqual(result["confidence"], "hook-default")
+
     async def test_api_requirement_text_detects_directx_11(self):
         plugin = self.module.Plugin()
 

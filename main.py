@@ -2733,12 +2733,17 @@ class Plugin:
             if any((search_root / name).exists() for name in ["UnityPlayer.dll", "GameAssembly.dll"]):
                 return {"status": "success", "api": "dx11_dx12", "architecture": arch, "injection_dll": "dxgi", "engine": "unity", "confidence": "heuristic", "notes": "Unity runtime detected; treating API as DX11/DX12 family."}
 
-            if arch == "32" and detected_api == "unknown":
+            if detected_api == "unknown" and script_result.get("status") == "success" and script_result.get("api") == "dxgi":
+                detected_api = "dxgi"
+            elif arch == "32" and detected_api == "unknown":
                 detected_api = "d3d9"
             result = {"status": "success", "api": detected_api, "architecture": arch, "injection_dll": self._api_to_injection_dll(detected_api)}
             if script_result.get("status") == "success":
                 result["detector"] = "python-with-letmereshade-arch"
                 result["script_api_hint"] = script_result.get("api")
+                if detected_api == "dxgi":
+                    result["confidence"] = "hook-default"
+                    result["notes"] = "LetMeReShade detected a 64-bit Windows executable and selected DXGI as the DirectX 10/11/12 hook."
             return self._apply_engine_api_hints(game_path, result)
         except Exception as e:
             return {"status": "error", "message": str(e)}
