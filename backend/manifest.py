@@ -45,20 +45,13 @@ class ManifestManager:
         files_removed = []
         backups_restored = []
 
-        # 1. Restore backups
-        for original, backup in manifest.get("backups", {}).items():
-            if os.path.exists(backup):
-                try:
-                    shutil.move(backup, original)
-                    backups_restored.append(original)
-                    if logger: logger.info(f"Restored backup: {original}")
-                except Exception as e:
-                    errors.append(f"Failed to restore {original}: {str(e)}")
-            else:
-                if logger: logger.warning(f"Backup file not found for restoration: {backup}")
+        backup_targets = set(manifest.get("backups", {}).keys())
 
-        # 2. Delete installed files
+        # 1. Delete installed files before restoring backups. If we restore first,
+        # the installed_files pass can delete the original file we just restored.
         for file_path in manifest.get("installed_files", []):
+            if file_path in backup_targets:
+                continue
             if os.path.exists(file_path):
                 try:
                     if os.path.isdir(file_path):
@@ -69,6 +62,25 @@ class ManifestManager:
                     if logger: logger.info(f"Removed file: {file_path}")
                 except Exception as e:
                     errors.append(f"Failed to remove {file_path}: {str(e)}")
+
+        # 2. Restore backups
+        for original, backup in manifest.get("backups", {}).items():
+            try:
+                if os.path.exists(original):
+                    if os.path.isdir(original):
+                        shutil.rmtree(original)
+                    else:
+                        os.remove(original)
+                    files_removed.append(original)
+                    if logger: logger.info(f"Removed installed file before backup restore: {original}")
+                if os.path.exists(backup):
+                    shutil.move(backup, original)
+                    backups_restored.append(original)
+                    if logger: logger.info(f"Restored backup: {original}")
+                else:
+                    if logger: logger.warning(f"Backup file not found for restoration: {backup}")
+            except Exception as e:
+                errors.append(f"Failed to restore {original}: {str(e)}")
 
         # 3. Clean up empty directories? (Optional, maybe skip for safety)
 

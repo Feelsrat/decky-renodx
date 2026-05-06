@@ -2075,8 +2075,56 @@ class Plugin:
             
             if process.returncode != 0:
                 return {"status": "error", "message": process.stderr}
+            install_dir = Path(game_path)
+            if selected_executable_path and os.path.exists(selected_executable_path):
+                install_dir = Path(selected_executable_path).parent
+            else:
+                try:
+                    install_dir = self._resolve_game_exe_dir(appid, selected_executable_path)
+                except Exception:
+                    install_dir = Path(game_path)
             if action == "uninstall":
                 self._remove_game_hdr_marker(Path(game_path))
+            elif action == "install":
+                installed_files = []
+                for name in [
+                    f"{dll_override}.dll",
+                    "d3dcompiler_47.dll",
+                    "ReShade.ini",
+                    "ReShadePreset.ini",
+                    "ReShade.log",
+                    "ReShade_README.txt",
+                    "ReShade_shaders",
+                    "AutoHDR32.addon",
+                    "AutoHDR64.addon",
+                    "AutoHDR.addon32",
+                    "AutoHDR.addon64",
+                    ".decky-renodx-hdr.json",
+                ]:
+                    path = install_dir / name
+                    if path.exists() or path.is_symlink():
+                        installed_files.append(str(path))
+                arch = "64"
+                try:
+                    detected = await self._detect_api_for_path(str(install_dir))
+                    if detected.get("status") == "success":
+                        arch = str(detected.get("architecture") or "64")
+                except Exception:
+                    pass
+                self._write_game_hdr_marker(install_dir, appid, "reshade-hdr", dll_override, arch)
+                marker = install_dir / ".decky-renodx-hdr.json"
+                if str(marker) not in installed_files:
+                    installed_files.append(str(marker))
+                self.manifest_manager.write_manifest(appid, {
+                    "appid": appid,
+                    "method": "reshade",
+                    "installed_files": installed_files,
+                    "modified_files": [],
+                    "backups": {},
+                    "verified": False,
+                    "verification_notes": "ReShade AutoHDR installed; launch the game to verify ReShade initializes.",
+                    "plugin_version": self._current_version(),
+                })
             self._fix_deck_user_ownership(game_path)
             return {"status": "success", "output": process.stdout}
         except Exception as e:
@@ -2770,6 +2818,7 @@ dgVoodooWatermark=false
 FastVideoMemoryAccess=true
 AppControlledScreenMode=true
 DisableAltEnterToToggleScreenMode=false
+PresentationModel=flip_discard
 """
         config_path.write_text(text, encoding="utf-8")
         config_path.chmod(0o666)
@@ -2888,16 +2937,18 @@ DisableAltEnterToToggleScreenMode=false
                 candidates.append(exe_dir / (marker_dll if marker_dll.endswith(".dll") else f"{marker_dll}.dll"))
                 candidates.append(exe_dir / f"{Path(marker_dll).stem}.ini")
             for name in [
-                "SpecialK.ini", "dxgi.ini", "d3d11.ini", "d3d9.ini", "dinput8.ini", "ddraw.ini",
-                "ReShade.ini", "ReShadePreset.ini", "ReShade.log", "dxgi.log", ".decky-renodx-hdr.json",
+                "SpecialK.ini", "dxgi.ini", "d3d11.ini", "d3d9.ini", "D3D9.ini", "dinput8.ini", "DINPUT8.ini", "ddraw.ini",
+                "ReShade.ini", "ReShadePreset.ini", "ReShade.log", "dxgi.log", "d3d9.log", "dinput8.log",
+                "dgVoodoo.conf", ".decky-renodx-hdr.json",
+                "AutoHDR32.addon", "AutoHDR64.addon", "AutoHDR.addon32", "AutoHDR.addon64",
             ]:
                 candidates.append(exe_dir / name)
-            for dll in ["dxgi.dll", "d3d11.dll", "d3d9.dll", "dinput8.dll", "ddraw.dll"]:
+            for dll in ["dxgi.dll", "d3d11.dll", "d3d9.dll", "D3D9.dll", "dinput8.dll", "DINPUT8.dll", "ddraw.dll", "DDraw.dll"]:
                 ini = exe_dir / f"{Path(dll).stem}.ini"
                 path = exe_dir / dll
                 if ini.exists() or marker:
                     candidates.append(path)
-            for pattern in ["reshade-shaders", "reshade-presets", "Shaders", "Textures"]:
+            for pattern in ["reshade-shaders", "reshade-presets", "ReShade_shaders", "Shaders", "Textures"]:
                 path = exe_dir / pattern
                 if path.exists():
                     candidates.append(path)
