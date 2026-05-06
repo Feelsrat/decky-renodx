@@ -22,6 +22,62 @@ const installDgVoodoo2SpecialK = callable<[string, string, string], any>("instal
 const resetPluginCaches = callable<[], any>("reset_plugin_caches");
 const getPluginProcessHealth = callable<[], any>("get_plugin_process_health");
 const fixPluginProcesses = callable<[], any>("fix_plugin_processes");
+const executeSetupFlow = callable<[string, string, string, boolean?], any>("execute_setup_flow");
+const verifyHdrInstallation = callable<[string, string], any>("verify_hdr_installation");
+
+async function getSteamLaunchOptions(appid: string): Promise<string> {
+  const apps = (SteamClient.Apps as any);
+  if (typeof apps.GetAppLaunchOptions !== "function") {
+    return "";
+  }
+  const value = await apps.GetAppLaunchOptions(parseInt(appid));
+  return typeof value === "string" ? value : value?.strLaunchOptions || value?.launchOptions || "";
+}
+
+function stripHdrLaunchTokens(options: string): string {
+  return (options || "")
+    .replace(/\bPROTON_ENABLE_HDR=\S+\s*/g, "")
+    .replace(/\bDXVK_HDR=\S+\s*/g, "")
+    .replace(/\bENABLE_HDR_WSI=\S+\s*/g, "")
+    .replace(/\bENABLE_GAMESCOPE_WSI=\S+\s*/g, "")
+    .replace(/\bWINEDLLOVERRIDES="[^"]*(?:d3dcompiler_47|dxgi|d3d11|d3d12|d3d9|d3d8|ddraw|dinput8|opengl32)[^"]*"\s*/g, "")
+    .replace(/\bWINEDLLOVERRIDES=[^\s]*?(?:d3dcompiler_47|dxgi|d3d11|d3d12|d3d9|d3d8|ddraw|dinput8|opengl32)[^\s]*\s*/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function mergeHdrLaunchOptions(existing: string, hdrOptions: string): string {
+  const cleanExisting = stripHdrLaunchTokens(existing);
+  const hdrPrefix = (hdrOptions || "").replace(/\s*%command%\s*/g, " ").replace(/\s+/g, " ").trim();
+  if (!hdrPrefix) {
+    return cleanExisting;
+  }
+  if (!cleanExisting) {
+    return `${hdrPrefix} %command%`.trim();
+  }
+  if (cleanExisting.includes("%command%")) {
+    return cleanExisting.replace("%command%", `${hdrPrefix} %command%`).replace(/\s+/g, " ").trim();
+  }
+  return `${hdrPrefix} ${cleanExisting}`.replace(/\s+/g, " ").trim();
+}
+
+async function setMergedHdrLaunchOptions(appid: string, hdrOptions: string) {
+  const apps = (SteamClient.Apps as any);
+  if (typeof apps.SetAppLaunchOptions !== "function") {
+    throw new Error("Steam launch option API is unavailable.");
+  }
+  const existing = await getSteamLaunchOptions(appid);
+  await apps.SetAppLaunchOptions(parseInt(appid), mergeHdrLaunchOptions(existing, hdrOptions));
+}
+
+async function removeHdrLaunchOptions(appid: string) {
+  const apps = (SteamClient.Apps as any);
+  if (typeof apps.SetAppLaunchOptions !== "function") {
+    return;
+  }
+  const existing = await getSteamLaunchOptions(appid);
+  await apps.SetAppLaunchOptions(parseInt(appid), stripHdrLaunchTokens(existing));
+}
 
 interface Recommendation {
   method: string;
@@ -138,14 +194,18 @@ const HdrManagementSection = () => {
   const handleSetup = async () => {
     if (!selectedGame) return;
     setLoading(true);
-    const response = await callable<[string, string, string], any>("execute_setup_flow")(
-      selectedGame.appid, 
-      selectedGame.name, 
-      exePath
-    );
-    toaster.toast({ title: "HDR Setup", body: response.message });
-    refreshState();
-    setLoading(false);
+    try {
+      const response = await executeSetupFlow(selectedGame.appid, selectedGame.name, exePath);
+      if (response.status === "success" && response.launch_options) {
+        await setMergedHdrLaunchOptions(selectedGame.appid, response.launch_options);
+      }
+      toaster.toast({ title: "HDR Setup", body: response.message });
+      await refreshState();
+    } catch (e) {
+      toaster.toast({ title: "HDR Setup Failed", body: String(e), duration: 7000 });
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleUpdateSkValue = async (section: string, key: string, value: string) => {
@@ -165,42 +225,51 @@ const HdrManagementSection = () => {
   const handleVerify = async () => {
     if (!selectedGame || !exePath) return;
     setLoading(true);
-    const response = await callable<[string, string], any>("verify_hdr_installation")(
-      selectedGame.appid, 
-      exePath
-    );
-    toaster.toast({ 
-      title: "Verification", 
-      body: response.message,
-      duration: 5000 
-    });
-    refreshState();
-    setLoading(false);
+    try {
+      const response = await verifyHdrInstallation(selectedGame.appid, exePath);
+      toaster.toast({ 
+        title: "Verification", 
+        body: response.message,
+        duration: 5000 
+      });
+      await refreshState();
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleTryNext = async () => {
     if (!selectedGame) return;
     setLoading(true);
-    // 1. Remove current
-    await runSurgicalUninstall(selectedGame.appid, exePath);
-    // 2. Mark current as failed (TBD in backend, for now just rerun setup)
-    // In a real implementation, we'd pass 'skip_current: true' to the backend
-    const response = await callable<[string, string, string, boolean], any>("execute_setup_flow")(
-      selectedGame.appid, 
-      selectedGame.name, 
-      exePath,
-      true // skip_current
-    );
-    toaster.toast({ title: "HDR Setup", body: response.message });
-    refreshState();
-    setLoading(false);
+    try {
+      await runSurgicalUninstall(selectedGame.appid, exePath);
+      await removeHdrLaunchOptions(selectedGame.appid);
+      const response = await executeSetupFlow(selectedGame.appid, selectedGame.name, exePath, true);
+      if (response.status === "success" && response.launch_options) {
+        await setMergedHdrLaunchOptions(selectedGame.appid, response.launch_options);
+      }
+      toaster.toast({ title: "HDR Setup", body: response.message });
+      await refreshState();
+    } catch (e) {
+      toaster.toast({ title: "Try Next Failed", body: String(e), duration: 7000 });
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleUninstall = async () => {
     if (!selectedGame) return;
-    const response = await runSurgicalUninstall(selectedGame.appid, exePath);
-    toaster.toast({ title: "HDR Removal", body: response.message });
-    refreshState();
+    setLoading(true);
+    try {
+      const response = await runSurgicalUninstall(selectedGame.appid, exePath);
+      await removeHdrLaunchOptions(selectedGame.appid);
+      toaster.toast({ title: "HDR Removal", body: response.message });
+      await refreshState();
+    } catch (e) {
+      toaster.toast({ title: "HDR Removal Failed", body: String(e), duration: 7000 });
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleSpecialKOverride = async (verified: boolean) => {
@@ -215,19 +284,35 @@ const HdrManagementSection = () => {
   const handleForceSpecialK = async () => {
     if (!selectedGame) return;
     setLoading(true);
-    const response = await forceSpecialKSetup(selectedGame.appid, selectedGame.name, exePath);
-    toaster.toast({ title: "Special K Override", body: response.message });
-    await refreshState();
-    setLoading(false);
+    try {
+      const response = await forceSpecialKSetup(selectedGame.appid, selectedGame.name, exePath);
+      if (response.status === "success" && response.launch_options) {
+        await setMergedHdrLaunchOptions(selectedGame.appid, response.launch_options);
+      }
+      toaster.toast({ title: "Special K Override", body: response.message });
+      await refreshState();
+    } catch (e) {
+      toaster.toast({ title: "Special K Override Failed", body: String(e), duration: 7000 });
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleDgVoodoo2SpecialK = async () => {
     if (!selectedGame) return;
     setLoading(true);
-    const response = await installDgVoodoo2SpecialK(selectedGame.appid, selectedGame.name, exePath);
-    toaster.toast({ title: "dgVoodoo2 + Special K", body: response.message, duration: 6000 });
-    await refreshState();
-    setLoading(false);
+    try {
+      const response = await installDgVoodoo2SpecialK(selectedGame.appid, selectedGame.name, exePath);
+      if (response.status === "success" && response.launch_options) {
+        await setMergedHdrLaunchOptions(selectedGame.appid, response.launch_options);
+      }
+      toaster.toast({ title: "dgVoodoo2 + Special K", body: response.message, duration: 6000 });
+      await refreshState();
+    } catch (e) {
+      toaster.toast({ title: "dgVoodoo2 + Special K Failed", body: String(e), duration: 7000 });
+    } finally {
+      setLoading(false);
+    }
   };
 
   const viewLog = async () => {
