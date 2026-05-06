@@ -618,6 +618,32 @@ class BackendMockTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(scheduled), 1)
         self.assertTrue(plugin_dir.exists())
 
+    async def test_update_replacement_helper_restarts_plugin_loader_after_swap(self):
+        plugin = self.module.Plugin()
+        plugin_dir = self.home / "plugins" / "decky-renodx"
+        staging_dir = self.home / "plugins" / ".decky-renodx.update-test"
+        backup_dir = self.home / "plugins" / "decky-renodx.previous"
+        plugin_dir.mkdir(parents=True)
+        staging_dir.mkdir(parents=True)
+        helpers = []
+
+        original_popen = self.module.subprocess.Popen
+
+        def fake_popen(argv, **kwargs):
+            helpers.append(Path(argv[1]))
+            return None
+
+        self.module.subprocess.Popen = fake_popen
+        try:
+            result = plugin._schedule_update_replacement(plugin_dir, staging_dir, backup_dir)
+        finally:
+            self.module.subprocess.Popen = original_popen
+
+        self.assertTrue(result["scheduled"])
+        helper_text = helpers[0].read_text(encoding="utf-8")
+        self.assertIn("mv \"$staging_dir\" \"$plugin_dir\"", helper_text)
+        self.assertIn("restart plugin_loader.service", helper_text)
+
 
 if __name__ == "__main__":
     unittest.main()

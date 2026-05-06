@@ -4379,7 +4379,7 @@ Note: If ReShadePreset.ini already existed, your previous settings were preserve
                 return {**status, "ok": False, "message": f"Update failed: {error}"}
 
             current = self._current_version()
-            decky.logger.info(f"Successfully staged v{latest}. Replacement helper scheduled.")
+            decky.logger.info(f"Successfully staged v{latest}. Replacement and loader restart helper scheduled.")
             
             result = {
                 "ok": True,
@@ -4393,8 +4393,7 @@ Note: If ReShadePreset.ini already existed, your previous settings were preserve
                 "restarted": False,
                 "replacementScheduled": install_info.get("replacementScheduled", False),
                 "message": (
-                    f"Update v{latest} staged. The plugin files will be swapped in a few seconds. "
-                    "Restart Decky or Steam manually when convenient if the old version is still loaded."
+                    f"Update v{latest} staged. Decky Loader will reload the plugin after the files are swapped."
                 ),
             }
             self._cached_update_status = result
@@ -4578,6 +4577,12 @@ log_path={shlex.quote(str(log_path))}
   if mv "$staging_dir" "$plugin_dir"; then
     {chown_line}
     echo "Update replacement complete"
+    sleep 1
+    systemctl --user restart plugin_loader.service \
+      || systemctl --user restart plugin_loader \
+      || systemctl restart plugin_loader.service \
+      || systemctl restart plugin_loader \
+      || echo "Decky Loader restart failed; manual restart required"
     exit 0
   fi
   echo "Update replacement failed, attempting rollback"
