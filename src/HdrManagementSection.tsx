@@ -368,11 +368,12 @@ const HdrManagementSection = () => {
   const hdrInstalled = hdrStatus?.status === "success" && hdrStatus.installed;
   const setupDisabled = !hdrInstalled && (!!context?.anti_cheat.length || recommendation?.method === "renodx_disabled" || recommendation?.score === 0);
   const backendMethodOptions = context?.method_options?.length ? context.method_options : [];
-  const installableBackendOptions = backendMethodOptions.filter((item) => ["recommended", "renodx", "special_k", "reshade"].includes(item.method));
+  const installableBackendOptions = backendMethodOptions.filter((item) => ["recommended", "renodx", "special_k", "special_k_delayed", "reshade"].includes(item.method));
   const methodOptions = (installableBackendOptions.length ? installableBackendOptions : [
     { method: "recommended", label: `Recommended${methodLabel ? ` (${methodLabel})` : ""}`, available: !setupDisabled, reason: recommendation?.reason || "Use the highest-scored safe method." },
     { method: "renodx", label: "RenoDX / Luma", available: false, reason: "No RenoDX/Luma status available yet." },
     { method: "special_k", label: "Special K", available: true, reason: "Manual override. Requires in-game verification." },
+    { method: "special_k_delayed", label: "Special K Delayed", available: false, reason: "Only available for compatibility entries that require delayed/global injection." },
     { method: "reshade", label: "ReShade AutoHDR", available: true, reason: "Fallback AutoHDR shader path." },
   ]).map((item) => ({
     data: item.method,
@@ -458,7 +459,7 @@ const HdrManagementSection = () => {
               {context?.method_options?.length ? (
                 <PanelSectionRow>
                   <div style={{ display: "grid", gap: "6px", width: "100%", maxWidth: "100%", boxSizing: "border-box", paddingRight: "2px" }}>
-                  {context.method_options.filter((item) => ["renodx", "special_k", "reshade"].includes(item.method)).map((item) => (
+                    {context.method_options.filter((item) => ["renodx", "special_k", "special_k_delayed", "reshade"].includes(item.method)).map((item) => (
                       <div key={item.method} style={{
                         padding: "8px",
                         borderRadius: "4px",

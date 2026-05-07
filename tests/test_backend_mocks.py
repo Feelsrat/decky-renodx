@@ -447,6 +447,31 @@ class BackendMockTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("delayed/global", gate["reason"])
         self.assertFalse(next(item for item in options if item["method"] == "special_k")["available"])
 
+    async def test_specialk_global_delayed_compat_exposes_delayed_method(self):
+        plugin = self.module.Plugin()
+        plugin.compat_db = {
+            "games": {
+                "292120": {
+                    "tools": {
+                        "special_k": {
+                            "automation": {
+                                "preferred_injection": "global_delayed",
+                                "avoid_injection_at_launch": True
+                            },
+                            "special_k_delay_seconds": 5,
+                        }
+                    }
+                }
+            }
+        }
+
+        options = plugin._hdr_method_options("292120", {"anti_cheat": [], "is_multiplayer": False}, [])
+        delayed = next(item for item in options if item["method"] == "special_k_delayed")
+
+        self.assertTrue(delayed["available"])
+        self.assertEqual(delayed["badge"], "Experimental")
+        self.assertIn("5s", delayed["reason"])
+
     async def test_decision_tree_respects_specialk_hdr_avoid(self):
         recommendations = DecisionTree().evaluate({
             "appid": "1151340",

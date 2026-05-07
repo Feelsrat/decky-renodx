@@ -3150,7 +3150,7 @@ class Plugin:
             method = "special_k"
         if method == "reshade_autohdr":
             method = "reshade"
-        valid_methods = {"recommended", "native_hdr", "renodx", "special_k", "reshade", "sdr"}
+        valid_methods = {"recommended", "native_hdr", "renodx", "special_k", "special_k_delayed", "reshade", "sdr"}
         if method not in valid_methods:
             return {"status": "error", "message": f"Unsupported HDR method: {method}"}
 
@@ -3213,6 +3213,11 @@ class Plugin:
             result["uninstall"] = uninstall_result
             return result
 
+        if method == "special_k_delayed":
+            result = await self.install_special_k_delayed_global(appid, title, exe_path)
+            result["uninstall"] = uninstall_result
+            return result
+
         if method == "reshade":
             reshade_dll = str(context.get("injection_dll") or "dxgi")
             if reshade_dll == "auto":
@@ -3267,6 +3272,59 @@ class Plugin:
             except Exception as e:
                 decky.logger.error(f"Error in force_special_k_setup: {str(e)}")
                 return {"status": "error", "message": str(e)}
+
+    async def install_special_k_delayed_global(self, appid: str, title: str, exe_path: str = "") -> dict:
+        """Experimental Special K global/delayed injection through a launch wrapper."""
+        try:
+            logger = setup_per_game_logger(appid)
+            if not exe_path or not os.path.exists(exe_path):
+                return {"status": "error", "method": "special_k_delayed", "message": "Game executable path was not resolved. Refresh the game state and try again."}
+            await self._ensure_special_k_bin()
+            specialk_dir = Path(self.main_path) / "SpecialK"
+            injector = self._specialk_global_injector()
+            if not injector:
+                return {"status": "error", "method": "special_k_delayed", "message": "Special K runtime does not include a supported global injector executable. Local DLL injection remains blocked for this game."}
+
+            compat_path = self._steam_compatdata_paths(appid)[0] if self._steam_compatdata_paths(appid) else Path(self._deck_expanduser(f"~/.local/share/Steam/steamapps/compatdata/{appid}"))
+            sk_prefix_dir = compat_path / "pfx" / "drive_c" / "users" / "steamuser" / "Documents" / "My Mods" / "SpecialK"
+            sk_prefix_dir.mkdir(parents=True, exist_ok=True)
+            for item in specialk_dir.iterdir():
+                target = sk_prefix_dir / item.name
+                if item.is_dir():
+                    if target.exists():
+                        shutil.rmtree(target)
+                    shutil.copytree(item, target)
+                elif item.is_file():
+                    shutil.copy2(item, target)
+            prefix_injector = sk_prefix_dir / injector.name
+            ini = sk_prefix_dir / "SpecialK.ini"
+            self._write_specialk_hdr_ini(ini, appid=appid)
+            delay = self._compat_specialk_delay(appid)
+            self._upsert_specialk_global_profile(sk_prefix_dir / "Profiles.ini", title, exe_path, delay)
+            wrapper = Path(decky.DECKY_PLUGIN_DIR) / "assets" / "specialk-delayed-launch.sh"
+            launch_opts = f'STEAM_COMPAT_DATA_PATH="{compat_path}" PROTON_LOG=1 PROTON_ENABLE_HDR=1 DXVK_HDR=1 ENABLE_HDR_WSI=1 ENABLE_GAMESCOPE_WSI=1 bash "{wrapper}" "{appid}" "{delay}" "{prefix_injector}" %command%'
+            await self._set_steam_launch_options(appid, launch_opts)
+            exe_dir = Path(exe_path).parent
+            self._write_game_hdr_marker(exe_dir, appid, "specialk-delayed", "global", "64", {"specialk_prefix": str(sk_prefix_dir), "delay": delay})
+            self.manifest_manager.write_manifest(appid, {
+                "appid": appid,
+                "title": title,
+                "method": "special_k_delayed",
+                "installed_files": [str(sk_prefix_dir), str(exe_dir / ".decky-renodx-hdr.json")],
+                "modified_files": [],
+                "backups": {},
+                "launch_options_after": launch_opts,
+                "verified": False,
+                "verification_notes": "Experimental Special K delayed/global injection configured. Requires in-game verification.",
+                "plugin_version": self._current_version(),
+            })
+            self._fix_deck_user_ownership(sk_prefix_dir)
+            self._fix_deck_user_ownership(exe_dir)
+            logger.info("Configured Special K delayed/global injection for %s with %ss delay.", appid, delay)
+            return {"status": "success", "method": "special_k_delayed", "message": f"Configured experimental Special K delayed injection ({delay}s). Launch the game once and verify the Special K HDR menu.", "launch_options": launch_opts}
+        except Exception as e:
+            decky.logger.error(f"Error in install_special_k_delayed_global: {str(e)}")
+            return {"status": "error", "method": "special_k_delayed", "message": str(e)}
 
     async def _install_renodx_mod_for_game(self, appid: str, title: str, exe_path: str, mod: dict[str, Any], logger=None) -> dict:
         addon_url = str(mod.get("addon_url") or "")
@@ -3516,6 +3574,18 @@ class Plugin:
             return None
         candidates = sorted(specialk_dir.rglob(source_name))
         return candidates[0] if candidates else None
+
+    def _specialk_global_injector(self) -> Path | None:
+        specialk_dir = Path(self.main_path) / "SpecialK"
+        if not specialk_dir.exists():
+            return None
+        preferred = ["SpecialK.exe", "SKIF.exe", "SpecialK64.exe", "SpecialK32.exe"]
+        for name in preferred:
+            matches = sorted(specialk_dir.rglob(name))
+            if matches:
+                return matches[0]
+        matches = sorted(path for path in specialk_dir.rglob("*.exe") if "special" in path.name.lower() or "skif" in path.name.lower())
+        return matches[0] if matches else None
 
     async def _set_steam_launch_options(self, appid: str, options: str):
         """Best-effort backend launch option writer for Steam games."""
@@ -4522,6 +4592,40 @@ class Plugin:
         hdr = automation.get("hdr", {}) if isinstance(automation.get("hdr"), dict) else {}
         return bool(hdr.get("avoid"))
 
+    def _compat_specialk_delay(self, appid: str) -> int:
+        special_k = self._compat_specialk_tool(appid)
+        try:
+            return max(1, int(float(special_k.get("special_k_delay_seconds", 5) or 5)))
+        except (TypeError, ValueError):
+            return 5
+
+    def _specialk_global_delay_gate(self, appid: str) -> dict[str, Any]:
+        special_k = self._compat_specialk_tool(appid)
+        if not special_k:
+            return {"available": False, "reason": "No compatibility entry requires delayed/global Special K injection."}
+        automation = special_k.get("automation", {}) if isinstance(special_k.get("automation", {}), dict) else {}
+        preferred = str(automation.get("preferred_injection") or "").lower()
+        hdr = automation.get("hdr", {}) if isinstance(automation.get("hdr"), dict) else {}
+        if hdr.get("avoid"):
+            return {"available": False, "reason": "Compatibility database says to avoid Special K HDR for this game."}
+        if automation.get("anti_cheat"):
+            return {"available": False, "reason": "Requires anti-cheat/online-service changes before global injection can be considered safe."}
+        if "global" in preferred and ("delayed" in preferred or automation.get("avoid_injection_at_launch")):
+            return {"available": True, "reason": f"Experimental: compatibility data requests {preferred.replace('_', ' ')} injection with a {self._compat_specialk_delay(appid)}s delay."}
+        return {"available": False, "reason": "This entry does not require delayed/global Special K injection."}
+
+    def _upsert_specialk_global_profile(self, ini: Path, title: str, exe_path: str, delay: int) -> None:
+        text = ini.read_text(encoding="utf-8", errors="ignore") if ini.exists() else ""
+        section = f"Profile.{Path(exe_path).stem}"
+        text = self._upsert_ini_section_values(text, section, {
+            "Title": title,
+            "Executable": exe_path,
+            "Enabled": "true",
+            "GlobalInjectDelay": str(float(delay)),
+        })
+        ini.write_text(text, encoding="utf-8")
+        ini.chmod(0o666)
+
     def _specialk_local_install_gate(self, appid: str) -> dict[str, Any]:
         special_k = self._compat_specialk_tool(appid)
         if not special_k:
@@ -4576,6 +4680,7 @@ class Plugin:
         elif engine_bucket in {"unity", "unreal"}:
             renodx_reason = f"Generic {engine_bucket.title()} RenoDX requires confirmed 64-bit architecture. Detected: {architecture}."
         specialk_gate = self._specialk_local_install_gate(appid)
+        delayed_gate = self._specialk_global_delay_gate(appid)
         reshade_api = str(context.get("injection_dll") or "auto")
         if reshade_api in {"", "auto"}:
             reshade_api = "automatic"
@@ -4596,6 +4701,7 @@ class Plugin:
             option("recommended", "Recommended", bool(recommendations and recommendations[0].get("score", 0) > 0), recommendations[0].get("reason", "No safe recommendation.") if recommendations else "No recommendation."),
             option("renodx", "RenoDX / Luma", renodx_available and not anti_cheat, renodx_reason, renodx_badge),
             option("special_k", "Special K", specialk_gate["available"] and not anti_cheat, specialk_gate["reason"], "Verified" if context.get("has_special_k_compat") else ""),
+            option("special_k_delayed", "Special K Delayed", delayed_gate["available"] and not anti_cheat, delayed_gate["reason"], "Experimental" if delayed_gate["available"] else ""),
             option("reshade", "ReShade AutoHDR", not anti_cheat, f"Fallback injection using {reshade_api}.", "Fallback"),
             option("native_hdr", "Native HDR / No Injection", True, f"Native HDR status: {context.get('native_hdr', 'unknown')}."),
             option("sdr", "SDR / Remove Injection", True, "Remove injected HDR files and launch options."),
