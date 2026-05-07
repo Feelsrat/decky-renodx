@@ -19,6 +19,7 @@ const listInstalledGames = callable<[], GameListResponse>("list_installed_games"
 const findGameExecutablePath = callable<[string], ExecutableDetectionResponse>("find_game_executable_path");
 const logError = callable<[string], void>("log_error");
 const checkRenoDxSupport = callable<[string], RenoDxSupportResponse>("check_renodx_support");
+const getGameCompatibilityInfo = callable<[string], any>("get_game_compatibility_info");
 
 interface GameInfo {
   appid: string;
@@ -191,6 +192,7 @@ const SteamGamesSection = () => {
   const [checkingRenoDx, setCheckingRenoDx] = useState<boolean>(false);
   const [hdrStatus, setHdrStatus] = useState<GameHdrStatusResponse | null>(null);
   const [checkingHdrStatus, setCheckingHdrStatus] = useState<boolean>(false);
+  const [compatInfo, setCompatInfo] = useState<any>(null);
 
   const dllOverrides: DllOverride[] = [
     { label: 'Automatic (Enhanced Detection)', value: 'auto' },
@@ -228,6 +230,20 @@ const SteamGamesSection = () => {
     };
     fetchGames();
   }, []);
+
+  useEffect(() => {
+    if (!selectedGame) {
+      setCompatInfo(null);
+      return;
+    }
+    getGameCompatibilityInfo(selectedGame.appid).then((res: any) => {
+      if (res.status === "success" && res.has_compat_data) {
+        setCompatInfo(res.data);
+      } else {
+        setCompatInfo(null);
+      }
+    }).catch(console.error);
+  }, [selectedGame]);
 
   // Unified detection - one call for both executable and Linux detection
   useEffect(() => {
@@ -511,6 +527,72 @@ const SteamGamesSection = () => {
     }
   };
 
+  const renderCompatInfo = () => {
+    if (!compatInfo || !compatInfo.tools) return null;
+    
+    return (
+      <>
+        {Object.keys(compatInfo.tools).map(toolKey => {
+          const tool = compatInfo.tools[toolKey];
+          const hasWarnings = tool.warnings && tool.warnings.length > 0;
+          const hasSteps = tool.manual_steps && tool.manual_steps.length > 0;
+          if (!hasWarnings && !hasSteps) return null;
+          
+          return (
+            <PanelSectionRow key={toolKey}>
+              <div style={{
+                padding: '12px',
+                marginTop: '8px',
+                backgroundColor: 'rgba(255, 167, 38, 0.12)',
+                border: '1px solid rgba(255, 167, 38, 0.35)',
+                borderRadius: '4px',
+                fontSize: '0.86em'
+              }}>
+                <div style={{ fontWeight: 'bold', marginBottom: '6px', color: '#ffa726' }}>
+                  ⚠️ Compatibility Notes ({toolKey.toUpperCase()})
+                </div>
+                {hasWarnings && tool.warnings.map((w: string, i: number) => (
+                  <div key={`w-${i}`} style={{ marginBottom: '4px' }}>• {w}</div>
+                ))}
+                {hasSteps && (
+                  <div style={{ marginTop: '8px' }}>
+                    <div style={{ fontWeight: 'bold', marginBottom: '2px' }}>Manual Steps Required:</div>
+                    {tool.manual_steps.map((s: string, i: number) => (
+                      <div key={`s-${i}`} style={{ marginLeft: '8px', marginBottom: '4px' }}>- {s}</div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </PanelSectionRow>
+          );
+        })}
+      </>
+    );
+  };
+
+  const executeInstallFallback = async () => {
+    if (!selectedGame) return;
+    
+    setResult("Installing...");
+    const response = await installHdrFallback(
+      selectedGame.appid,
+      selectedDll?.value || "auto",
+      selectedExecutablePath
+    );
+
+    if (response.status !== "success") {
+      setResult(`HDR fallback failed: ${response.message || 'Unknown error'}`);
+      return;
+    }
+
+    const launchOptionsMatch = response.output?.match(/Use this launch option: (.+)/);
+    const fallbackDll = selectedDll?.value && selectedDll.value !== "auto" ? selectedDll.value : "dxgi";
+    const launchOptions = response.launch_options || launchOptionsMatch?.[1] || hdrLaunchOptionsForDll(fallbackDll);
+    await setMergedHdrLaunchOptions(selectedGame.appid, launchOptions);
+    await refreshHdrStatus();
+    setResult(`No RenoDX addon was imported. Installed ${response.method === "specialk" ? "Special K HDR" : "ReShade HDR shader"} fallback for ${selectedGame.name}. Existing launch wrappers such as decky-lsfg-vk were preserved.`);
+  };
+
   const installAutomaticHdrFallback = async () => {
     if (!selectedGame) return false;
 
@@ -520,23 +602,31 @@ const SteamGamesSection = () => {
       return false;
     }
 
-    const response = await installHdrFallback(
-      selectedGame.appid,
-      selectedDll?.value || "auto",
-      selectedExecutablePath
-    );
-
-    if (response.status !== "success") {
-      setResult(`HDR fallback failed: ${response.message || 'Unknown error'}`);
-      return false;
+    // Check if there are manual steps
+    let hasManualSteps = false;
+    if (compatInfo && compatInfo.tools) {
+      for (const tool of Object.values<any>(compatInfo.tools)) {
+        if (tool.manual_steps && tool.manual_steps.length > 0) {
+          hasManualSteps = true;
+          break;
+        }
+      }
     }
 
-    const launchOptionsMatch = response.output?.match(/Use this launch option: (.+)/);
-    const fallbackDll = selectedDll?.value && selectedDll.value !== "auto" ? selectedDll.value : "dxgi";
-    const launchOptions = response.launch_options || launchOptionsMatch?.[1] || hdrLaunchOptionsForDll(fallbackDll);
-    await setMergedHdrLaunchOptions(selectedGame.appid, launchOptions);
-    await refreshHdrStatus();
-    setResult(`No RenoDX addon was imported. Installed ${response.method === "specialk" ? "Special K HDR" : "ReShade HDR shader"} fallback for ${selectedGame.name}. Existing launch wrappers such as decky-lsfg-vk were preserved.`);
+    if (hasManualSteps) {
+      showModal(
+        <ConfirmModal
+          strTitle="Manual Steps Required"
+          strDescription="This game has required manual steps listed in the compatibility notes above. Please make sure you have read and understood them before continuing."
+          strOKButtonText="I Understand, Install"
+          strCancelButtonText="Cancel"
+          onOK={executeInstallFallback}
+        />
+      );
+      return true;
+    }
+
+    await executeInstallFallback();
     return true;
   };
 
@@ -922,6 +1012,8 @@ const SteamGamesSection = () => {
           {renderHdrStatus()}
 
           {renderDetectionInfo()}
+
+          {renderCompatInfo()}
 
           {selectedGame && (
             <PanelSectionRow>

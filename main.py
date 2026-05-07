@@ -101,7 +101,7 @@ class Plugin:
         # Initialize backend managers
         self.persistent_cache = PersistentCache(self.persistent_cache_path)
         self.manifest_manager = ManifestManager(self.manifest_path)
-        self.wiki_scraper = PCGamingWikiScraper()
+        self.wiki_scraper = PCGamingWikiScraper(decky.logger)
         self.ac_detector = AntiCheatDetector()
         self.decision_tree = DecisionTree() # Will populate mods later
         self.installer = HDRInstaller(self.manifest_manager)
@@ -113,6 +113,10 @@ class Plugin:
         self._last_check_time = 0.0
         self._auto_update_task: asyncio.Task[None] | None = None
         self._install_lock = asyncio.Lock()
+
+        self.compat_db_path = os.path.join(self.environment['XDG_DATA_HOME'], 'decky-renodx', 'compatibility.json')
+        self.compat_db = self._load_compatibility_db()
+        self._compat_update_task = asyncio.create_task(self._update_compatibility_db_loop())
         
         # Create necessary directories
         os.makedirs(self.main_path, exist_ok=True)
@@ -121,6 +125,65 @@ class Plugin:
         os.makedirs(self.manifest_path, exist_ok=True)
         self._migrate_existing_runtime_files()
         self._fix_deck_user_ownership(Path(xdg_data_home) / PLUGIN_PACKAGE)
+
+    def _load_compatibility_db(self) -> dict:
+        bundled_path = Path(decky.DECKY_PLUGIN_DIR) / "compatibility.json"
+        
+        db = {}
+        if bundled_path.exists():
+            try:
+                db.update(json.loads(bundled_path.read_text("utf-8")))
+            except Exception as e:
+                decky.logger.error(f"Failed to load bundled compatibility.json: {e}")
+                
+        cached_path = Path(self.compat_db_path)
+        if cached_path.exists():
+            try:
+                db.update(json.loads(cached_path.read_text("utf-8")))
+            except Exception as e:
+                decky.logger.error(f"Failed to load cached compatibility.json: {e}")
+                
+        return db
+
+    async def get_game_compatibility_info(self, appid: str) -> dict:
+        try:
+            if not hasattr(self, "compat_db") or str(appid) not in self.compat_db.get("games", {}):
+                return {"status": "success", "has_compat_data": False, "data": {}}
+            
+            return {
+                "status": "success",
+                "has_compat_data": True,
+                "data": self.compat_db["games"][str(appid)]
+            }
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+
+    async def _update_compatibility_db_loop(self):
+        url = "https://raw.githubusercontent.com/Feelsrat/decky-renodx/main/compatibility.json"
+        while True:
+            try:
+                # Basic fetch without heavy dependencies
+                request = urllib.request.Request(url, headers={"User-Agent": "DeckyRenoDX/Updater"})
+                
+                def _download():
+                    import ssl
+                    ctx = ssl.create_default_context()
+                    ctx.check_hostname = False
+                    ctx.verify_mode = ssl.CERT_NONE
+                    with urllib.request.urlopen(request, timeout=15, context=ctx) as response:
+                        return response.read().decode("utf-8", "ignore")
+                        
+                content = await asyncio.to_thread(_download)
+                if content:
+                    parsed = json.loads(content)
+                    if isinstance(parsed, dict):
+                        Path(self.compat_db_path).parent.mkdir(parents=True, exist_ok=True)
+                        Path(self.compat_db_path).write_text(content, "utf-8")
+                        self.compat_db.update(parsed)
+                        decky.logger.info("Successfully updated compatibility.json from GitHub")
+            except Exception as e:
+                decky.logger.warning(f"Failed to update compatibility.json from GitHub: {e}")
+            await asyncio.sleep(86400) # Check once a day
 
     def _deck_user(self, home: Path | None = None) -> str:
         value = getattr(decky, "DECKY_USER", "") or os.environ.get("SUDO_USER") or ""
@@ -2399,7 +2462,7 @@ class Plugin:
                     "installed_files": installed_files,
                     "modified_files": wine_override.get("modified_files", []),
                     "backups": wine_override.get("backups", {}),
-                    "launch_options_after": self._hdr_launch_options(effective_dll),
+                    "launch_options_after": self._hdr_launch_options(effective_dll, appid),
                     "wine_dll_overrides": wine_override.get("wine_dll_overrides", {}),
                     "verified": verify_success,
                     "verification_notes": verify_message,
@@ -2412,7 +2475,7 @@ class Plugin:
                 if effective_dll == "auto":
                     effective_dll = "dxgi"
                 response["injection_dll"] = effective_dll
-                response["launch_options"] = self._hdr_launch_options(effective_dll)
+                response["launch_options"] = self._hdr_launch_options(effective_dll, appid)
                 await self._set_steam_launch_options(appid, response["launch_options"])
             return response
         except Exception as e:
@@ -2467,7 +2530,7 @@ class Plugin:
 
             specialk_result = self._install_specialk_for_game(exe_dir, api, arch)
             if specialk_result.get("status") == "success":
-                launch_options = self._hdr_launch_options(str(specialk_result["dll"]))
+                launch_options = self._hdr_launch_options(str(specialk_result["dll"]), appid, "special_k")
                 await self._set_steam_launch_options(appid, launch_options)
                 self._write_game_hdr_marker(exe_dir, appid, "specialk", str(specialk_result["dll"]), arch)
                 self._fix_deck_user_ownership(exe_dir)
@@ -2525,7 +2588,17 @@ class Plugin:
                 "renodx_flow_enabled": False,
                 "special_k_notes": [],
                 "special_k_delay_seconds": "0",
+                "has_renodx_compat": False,
+                "has_special_k_compat": False,
             }
+
+            if hasattr(self, "compat_db") and str(appid) in self.compat_db.get("games", {}):
+                game_compat = self.compat_db["games"][str(appid)]
+                tools = game_compat.get("tools", {})
+                context["has_renodx_compat"] = "renodx" in tools
+                context["has_special_k_compat"] = "special_k" in tools
+                if "special_k" in tools:
+                    context["special_k_delay_seconds"] = str(tools["special_k"].get("special_k_delay_seconds", 0))
 
             resolved_game_path = game_path
             if not resolved_game_path or not os.path.exists(resolved_game_path):
@@ -2572,6 +2645,14 @@ class Plugin:
             # 3. Evaluate recommendations
             recommendations = self.decision_tree.evaluate(context)
             
+            for rec in recommendations:
+                if hasattr(self, "compat_db") and str(appid) in self.compat_db.get("games", {}):
+                    tool_data = self.compat_db["games"][str(appid)].get("tools", {}).get(rec["method"], {})
+                    if "warnings" in tool_data:
+                        rec["warnings"] = tool_data["warnings"]
+                    if "manual_steps" in tool_data:
+                        rec["manual_steps"] = tool_data["manual_steps"]
+
             return {
                 "status": "success",
                 "recommendations": recommendations,
@@ -2914,7 +2995,7 @@ class Plugin:
                         if success:
                             # Verification check would usually happen AFTER launch, 
                             # but we return the success state for now.
-                            launch_opts = self._hdr_launch_options("dxgi")
+                            launch_opts = self._hdr_launch_options("dxgi", appid, "special_k")
                             await self._set_steam_launch_options(appid, launch_opts)
                             return {
                                 "status": "success", 
@@ -2932,7 +3013,7 @@ class Plugin:
                             reshade_dll = "dxgi"
                         reshade_result = await self.manage_game_reshade(appid, "install", reshade_dll, "", exe_path)
                         if reshade_result["status"] == "success":
-                            launch_opts = self._hdr_launch_options(reshade_dll)
+                            launch_opts = self._hdr_launch_options(reshade_dll, appid, "reshade")
                             return {
                                 "status": "success", 
                                 "method": "reshade", 
@@ -3356,18 +3437,32 @@ class Plugin:
                 return self._api_to_injection_dll(item.lower())
         return ""
 
-    def _hdr_launch_options(self, dll: str) -> str:
+    def _hdr_launch_options(self, dll: str, appid: str = "", active_tool: str = "") -> str:
         overrides = []
         for item in str(dll or "dxgi").split(";"):
             item = item.strip()
             if item:
                 overrides.append(f"{item}=n,b")
-        if overrides == ["opengl32=n,b"]:
-            return "PROTON_LOG=1 PROTON_ENABLE_HDR=1 DXVK_HDR=1 ENABLE_HDR_WSI=1 %command%"
+
+        env = "PROTON_LOG=1 PROTON_ENABLE_HDR=1 DXVK_HDR=1 ENABLE_HDR_WSI=1"
+
         if not any(item.startswith("opengl32=") for item in overrides):
             overrides.insert(0, "d3dcompiler_47=n")
-        return f'PROTON_LOG=1 PROTON_ENABLE_HDR=1 DXVK_HDR=1 ENABLE_HDR_WSI=1 WINEDLLOVERRIDES="{";".join(overrides)}" %command%'
 
+        dll_overrides = f'WINEDLLOVERRIDES="{";".join(overrides)}"'
+
+        compat_flags = ""
+        if hasattr(self, "compat_db") and str(appid) in self.compat_db.get("games", {}):
+            game_compat = self.compat_db["games"][str(appid)]
+            tool_compat = game_compat.get("tools", {}).get(active_tool, {})
+            if "launch_options" in tool_compat:
+                compat_flags = " " + " ".join(tool_compat["launch_options"])
+                decky.logger.info(f"Applying compatibility launch options for {appid} ({active_tool}): {compat_flags}")
+
+        if overrides == ["opengl32=n,b"]:
+            return f"{env} %command%{compat_flags}"
+
+        return f"{env} {dll_overrides} %command%{compat_flags}"
     async def update_sk_config_value(self, appid: str, exe_path: str, section: str, key: str, value: str) -> dict:
         """Update a specific value in SpecialK.ini."""
         try:
@@ -4028,7 +4123,7 @@ class Plugin:
     def _normalize_title(self, title: str) -> str:
         return re.sub(r"[^a-z0-9]+", " ", title.lower()).strip()
 
-    def _install_specialk_for_game(self, exe_dir: Path, dll_override: str, arch: str) -> dict:
+    def _install_specialk_for_game(self, exe_dir: Path, dll_override: str, arch: str, appid: str = "") -> dict:
         specialk_dir = Path(self.main_path) / "SpecialK"
         if not specialk_dir.exists():
             return {"status": "error", "message": "Special K runtime is not installed."}
@@ -4041,11 +4136,11 @@ class Plugin:
         shutil.copy2(candidates[0], target)
         target.chmod(0o666)
         ini = exe_dir / "SpecialK.ini"
-        self._write_specialk_hdr_ini(ini)
-        self._write_specialk_hdr_ini(exe_dir / f"{dll}.ini")
+        self._write_specialk_hdr_ini(ini, appid=appid)
+        self._write_specialk_hdr_ini(exe_dir / f"{dll}.ini", appid=appid)
         return {"status": "success", "dll": dll}
 
-    def _write_specialk_hdr_ini(self, ini: Path, repair_widget: bool = False) -> None:
+    def _write_specialk_hdr_ini(self, ini: Path, repair_widget: bool = False, appid: str = "") -> None:
         text = ini.read_text(encoding="utf-8", errors="ignore") if ini.exists() else ""
         updates = {
             "SpecialK.System": {
@@ -4075,6 +4170,27 @@ class Plugin:
                 "Scale": "1.0",
                 "UseHardwareCursor": "false",
             }
+            
+        if hasattr(self, "compat_db") and str(appid) in self.compat_db.get("games", {}):
+            game_compat = self.compat_db["games"][str(appid)]
+            sk_compat = game_compat.get("tools", {}).get("special_k", {})
+            
+            # Apply ini tweaks
+            tweaks = sk_compat.get("special_k_ini_tweaks", {})
+            for section, values in tweaks.items():
+                if section not in updates:
+                    updates[section] = {}
+                updates[section].update(values)
+                decky.logger.info(f"Applying Special K compatibility INI tweak to {appid}: [{section}] {values}")
+                
+            # Apply delay
+            delay = sk_compat.get("special_k_delay_seconds", 0)
+            if delay > 0:
+                if "SpecialK.System" not in updates:
+                    updates["SpecialK.System"] = {}
+                updates["SpecialK.System"]["GlobalInjectDelay"] = str(float(delay))
+                decky.logger.info(f"Applying Special K injection delay to {appid}: {delay}s")
+
         for section, values in updates.items():
             text = self._upsert_ini_section_values(text, section, values)
         ini.write_text(text, encoding="utf-8")
@@ -4137,18 +4253,32 @@ class Plugin:
                 return self._api_to_injection_dll(item.lower())
         return ""
 
-    def _hdr_launch_options(self, dll: str) -> str:
+    def _hdr_launch_options(self, dll: str, appid: str = "", active_tool: str = "") -> str:
         overrides = []
         for item in str(dll or "dxgi").split(";"):
             item = item.strip()
             if item:
                 overrides.append(f"{item}=n,b")
-        if overrides == ["opengl32=n,b"]:
-            return "PROTON_LOG=1 PROTON_ENABLE_HDR=1 DXVK_HDR=1 ENABLE_HDR_WSI=1 %command%"
+
+        env = "PROTON_LOG=1 PROTON_ENABLE_HDR=1 DXVK_HDR=1 ENABLE_HDR_WSI=1"
+
         if not any(item.startswith("opengl32=") for item in overrides):
             overrides.insert(0, "d3dcompiler_47=n")
-        return f'PROTON_LOG=1 PROTON_ENABLE_HDR=1 DXVK_HDR=1 ENABLE_HDR_WSI=1 WINEDLLOVERRIDES="{";".join(overrides)}" %command%'
 
+        dll_overrides = f'WINEDLLOVERRIDES="{";".join(overrides)}"'
+
+        compat_flags = ""
+        if hasattr(self, "compat_db") and str(appid) in self.compat_db.get("games", {}):
+            game_compat = self.compat_db["games"][str(appid)]
+            tool_compat = game_compat.get("tools", {}).get(active_tool, {})
+            if "launch_options" in tool_compat:
+                compat_flags = " " + " ".join(tool_compat["launch_options"])
+                decky.logger.info(f"Applying compatibility launch options for {appid} ({active_tool}): {compat_flags}")
+
+        if overrides == ["opengl32=n,b"]:
+            return f"{env} %command%{compat_flags}"
+
+        return f"{env} {dll_overrides} %command%{compat_flags}"
     async def list_installed_games(self) -> dict:
         try:
             games = []
@@ -4863,15 +4993,15 @@ class Plugin:
                 # Replace system paths with relative game paths (convert to Windows format for Wine)
                 if merged_path:
                     # For merged shader setup
-                    ini_content = re.sub(r'EffectSearchPaths=.*', r'EffectSearchPaths=.\\ReShade_shaders\\Merged\\Shaders', ini_content)
-                    ini_content = re.sub(r'TextureSearchPaths=.*', r'TextureSearchPaths=.\\ReShade_shaders\\Merged\\Textures', ini_content)
+                    ini_content = re.sub(r'EffectSearchPaths=.*', lambda _: r'EffectSearchPaths=.\\ReShade_shaders\\Merged\\Shaders', ini_content)
+                    ini_content = re.sub(r'TextureSearchPaths=.*', lambda _: r'TextureSearchPaths=.\\ReShade_shaders\\Merged\\Textures', ini_content)
                 else:
                     # For individual shader repositories
-                    ini_content = re.sub(r'EffectSearchPaths=.*', r'EffectSearchPaths=.\\ReShade_shaders', ini_content)
-                    ini_content = re.sub(r'TextureSearchPaths=.*', r'TextureSearchPaths=.\\ReShade_shaders', ini_content)
+                    ini_content = re.sub(r'EffectSearchPaths=.*', lambda _: r'EffectSearchPaths=.\\ReShade_shaders', ini_content)
+                    ini_content = re.sub(r'TextureSearchPaths=.*', lambda _: r'TextureSearchPaths=.\\ReShade_shaders', ini_content)
                     
                 # Update the PresetPath to use the local directory
-                ini_content = re.sub(r'PresetPath=.*', r'PresetPath=.\\ReShadePreset.ini', ini_content)
+                ini_content = re.sub(r'PresetPath=.*', lambda _: r'PresetPath=.\\ReShadePreset.ini', ini_content)
                 if re.search(r'(?im)^TutorialProgress\s*=', ini_content):
                     ini_content = re.sub(r'(?im)^TutorialProgress\s*=.*$', 'TutorialProgress=4', ini_content)
                 elif re.search(r'(?im)^\[GENERAL\]\s*$', ini_content):
@@ -6213,7 +6343,7 @@ rm -f "{helper_path}"
                 "status": "success",
                 "output": f"Imported RenoDX files to {game_path}",
                 "copied": copied,
-                "launch_options": self._hdr_launch_options("dxgi"),
+                "launch_options": self._hdr_launch_options("dxgi", appid, "renodx"),
             }
         except Exception as e:
             decky.logger.error(f"RenoDX import failed: {str(e)}")

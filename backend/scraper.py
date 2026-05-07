@@ -7,45 +7,29 @@ import re
 class PCGamingWikiScraper:
     API_URL = "https://www.pcgamingwiki.com/w/api.php"
 
-    def get_game_data(self, appid: str):
-        """Fetch PCGamingWiki data via MediaWiki/Cargo API only.
+    def __init__(self, logger=None):
+        self.logger = logger
+        self._ssl_context = None
+        try:
+            import ssl
+            self._ssl_context = ssl.create_default_context()
+            self._ssl_context.check_hostname = False
+            self._ssl_context.verify_mode = ssl.CERT_NONE
+        except Exception:
+            pass
 
-        This intentionally never parses rendered HTML pages. Structured fields
-        come from Cargo (`action=cargoquery`) and notes come from the MediaWiki
-        revisions API (`action=query&prop=revisions`).
+    def get_game_data(self, appid: str):
+        """Fetch PCGamingWiki data via MediaWiki/Cargo API.
+
+        Prioritizes getting a valid page name from Infobox_game, then fetches
+        specific attributes from Video, Middleware, and API tables individually
+        to avoid join-related empty results.
         """
         try:
-            # Table Video for HDR info
-            # Table Middleware for Special K info
-            # Table Infobox_game for Steam AppID matching
-            
-            # Query 1: HDR Support
-            hdr_query = {
-                "action": "cargoquery",
-                "format": "json",
-                "tables": "Infobox_game,Video",
-                "fields": "Infobox_game._pageName=Page,Video.HDR",
-                "join_on": "Infobox_game._pageName=Video._pageName",
-                "where": f'Infobox_game.Steam_AppID HOLDS "{appid}"'
-            }
-            
-            # Query 2: Special K / Middleware info
-            sk_query = {
-                "action": "cargoquery",
-                "format": "json",
-                "tables": "Infobox_game,Middleware",
-                "fields": "Infobox_game._pageName=Page,Middleware.Middleware",
-                "join_on": "Infobox_game._pageName=Middleware._pageName",
-                "where": f'Infobox_game.Steam_AppID HOLDS "{appid}" AND Middleware.Middleware HOLDS "Special K"'
-            }
-            
-            hdr_data = self._fetch(hdr_query)
-            sk_data = self._fetch(sk_query)
-            api_data = self._fetch_api_data(appid)
-            
+            page_name = self._page_name_for_appid(appid)
             result = {
                 "appid": appid,
-                "page_name": "",
+                "page_name": page_name,
                 "native_hdr": "unknown",
                 "graphics_api": "unknown",
                 "api_source": "",
@@ -55,41 +39,74 @@ class PCGamingWikiScraper:
                 "special_k_delay_seconds": "0",
                 "notes": []
             }
-            
+
+            if not page_name:
+                # If we can't find by AppID, try to see if we have some API data via AppID directly
+                api_data = self._fetch_api_data(appid)
+                api_info = self._parse_api_data(api_data)
+                if api_info.get("api") and api_info["api"] != "unknown":
+                    result.update(api_info)
+                return result
+
+            # Fetch HDR Support
+            hdr_query = {
+                "action": "cargoquery",
+                "format": "json",
+                "tables": "Video",
+                "fields": "HDR",
+                "where": f'_pageName="{page_name}"'
+            }
+            hdr_data = self._fetch(hdr_query)
             if hdr_data and "cargoquery" in hdr_data and hdr_data["cargoquery"]:
-                hdr_val = hdr_data["cargoquery"][0]["title"]["HDR"]
+                hdr_val = hdr_data["cargoquery"][0]["title"].get("HDR")
                 result["native_hdr"] = hdr_val.lower() if hdr_val else "unknown"
-                
+
+            # Fetch Special K / Middleware info
+            sk_query = {
+                "action": "cargoquery",
+                "format": "json",
+                "tables": "Middleware",
+                "fields": "Middleware",
+                "where": f'_pageName="{page_name}" AND Middleware HOLDS "Special K"'
+            }
+            sk_data = self._fetch(sk_query)
             if sk_data and "cargoquery" in sk_data and sk_data["cargoquery"]:
                 result["special_k_compatible"] = True
 
+            # Fetch API data
+            api_data = self._fetch({
+                "action": "cargoquery",
+                "format": "json",
+                "tables": "API",
+                "fields": "Direct3D_versions,OpenGL_versions,Vulkan_versions",
+                "where": f'_pageName="{page_name}"',
+            })
             api_info = self._parse_api_data(api_data)
             if api_info.get("api") and api_info["api"] != "unknown":
                 result.update(api_info)
+                result["api_page"] = page_name
 
-            page_name = ""
-            if hdr_data and "cargoquery" in hdr_data and hdr_data["cargoquery"]:
-                page_name = hdr_data["cargoquery"][0]["title"].get("Page", "")
-            elif sk_data and "cargoquery" in sk_data and sk_data["cargoquery"]:
-                page_name = sk_data["cargoquery"][0]["title"].get("Page", "")
-            if page_name:
-                result["page_name"] = page_name
-                notes = self._fetch_page_notes(page_name)
-                result["special_k_notes"] = notes[:8]
-                delay = self._extract_special_k_delay(notes)
-                if delay:
-                    result["special_k_delay_seconds"] = delay
+            # Fetch notes and delay
+            notes = self._fetch_page_notes(page_name)
+            result["special_k_notes"] = notes[:8]
+            delay = self._extract_special_k_delay(notes)
+            if delay:
+                result["special_k_delay_seconds"] = delay
                 
             return result
         except Exception as e:
-            return {"status": "error", "message": str(e)}
+            if self.logger: self.logger.error(f"PCGW get_game_data error: {str(e)}")
+            return {"status": "error", "message": str(e), "appid": appid}
+
 
     def get_improvements_and_issues(self, appid: str):
         try:
             page_name = self._page_name_for_appid(appid)
             if not page_name:
-                return {"status": "error", "message": "PCGamingWiki page was not found for this Steam AppID."}
+                return {"status": "error", "message": f"PCGamingWiki page was not found for Steam AppID {appid}."}
             text = self._fetch_page_wikitext(page_name)
+            if not text:
+                return {"status": "error", "message": f"Could not fetch wiki content for '{page_name}'."}
             return {
                 "status": "success",
                 "appid": appid,
@@ -98,16 +115,26 @@ class PCGamingWikiScraper:
                 "issues_fixed": self._extract_named_section(text, "Issues fixed"),
             }
         except Exception as error:
+            if self.logger: self.logger.error(f"PCGW get_improvements_and_issues error: {str(error)}")
             return {"status": "error", "message": str(error)}
 
     def _fetch(self, params):
-        url = f"{self.API_URL}?{urllib.parse.urlencode(params)}"
+        query_string = urllib.parse.urlencode(params)
+        url = f"{self.API_URL}?{query_string}"
         try:
-            request = urllib.request.Request(url, headers={"User-Agent": "DeckyRenoDX/0.0.65"})
-            with urllib.request.urlopen(request, timeout=10) as response:
-                return json.loads(response.read().decode())
-        except Exception:
+            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) DeckyRenoDX/1.0"}
+            request = urllib.request.Request(url, headers=headers)
+            
+            kwargs = {"timeout": 15}
+            if self._ssl_context:
+                kwargs["context"] = self._ssl_context
+                
+            with urllib.request.urlopen(request, **kwargs) as response:
+                return json.loads(response.read().decode("utf-8", "ignore"))
+        except Exception as e:
+            if self.logger: self.logger.warning(f"PCGW fetch failed for {url}: {str(e)}")
             return None
+
 
     def _fetch_api_data(self, appid: str):
         return self._fetch({

@@ -316,7 +316,7 @@ class BackendMockTest(unittest.IsolatedAsyncioTestCase):
         runtime.mkdir(parents=True)
         (runtime / "SpecialK64.dll").write_text("dll", encoding="utf-8")
 
-        result = plugin._install_specialk_for_game(game_dir, "dxgi", "64")
+        result = plugin._install_specialk_for_game(game_dir, "dxgi", "64", "123")
 
         self.assertEqual(result["status"], "success")
         self.assertTrue((game_dir / "dxgi.dll").exists())

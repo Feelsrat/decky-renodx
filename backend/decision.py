@@ -98,7 +98,11 @@ class DecisionTree:
         sk_requires_verification = False
         sk_attemptable_apis = {"dx10", "dx11", "dx12", "d3d10", "d3d11", "d3d12", "dx11_dx12", "dxgi"}
         
-        if special_k_wiki or special_k_verified or special_k_wrapper:
+        has_special_k_compat = context.get("has_special_k_compat", False)
+        
+        if special_k_wiki or special_k_verified or special_k_wrapper or has_special_k_compat:
+            if has_special_k_compat:
+                sk_notes.append("Game has verified settings in our compatibility database.")
             if special_k_wiki:
                 sk_notes.append("PCGamingWiki confirms exact-game Special K HDR compatibility.")
             if special_k_verified:

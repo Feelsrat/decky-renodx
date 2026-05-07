@@ -249,39 +249,48 @@ detect_game_arch_and_api_enhanced() {
         if echo "$import_strings" | grep -qE 'opengl32|wgl(createcontext|deletecontext|getprocaddress|makecurrent|swapbuffers|choosepixelformat|setpixelformat)'; then
             detected_api="opengl32"
             log_message "Detected OpenGL/WGL imports, using OpenGL API"
+        elif echo "$import_strings" | grep -q "d3d12\.dll"; then
+            detected_api="d3d12"
+            log_message "Detected d3d12.dll imports, using D3D12 API"
+        elif echo "$import_strings" | grep -q "d3d11\.dll"; then
+            detected_api="d3d11"
+            log_message "Detected d3d11.dll imports, using D3D11 API"
+        elif echo "$import_strings" | grep -q "dxgi\.dll"; then
+            detected_api="dxgi"
+            log_message "Detected dxgi.dll imports, using DXGI API"
         fi
 
         if echo "$file_info" | grep -q "x86-64"; then
             arch="64"
-            if [ "$detected_api" != "opengl32" ]; then
+            if [[ ! "$detected_api" =~ ^(opengl32|d3d11|d3d12|dxgi)$ ]]; then
                 detected_api="dxgi"
                 log_message "Detected 64-bit executable (x86-64), using DXGI"
             else
-                log_message "Detected 64-bit executable (x86-64), keeping OpenGL API"
+                log_message "Detected 64-bit executable (x86-64), keeping $detected_api API"
             fi
         elif echo "$file_info" | grep -q "PE32+"; then
             arch="64"
-            if [ "$detected_api" != "opengl32" ]; then
+            if [[ ! "$detected_api" =~ ^(opengl32|d3d11|d3d12|dxgi)$ ]]; then
                 detected_api="dxgi"
                 log_message "Detected 64-bit executable (PE32+), using DXGI"
             else
-                log_message "Detected 64-bit executable (PE32+), keeping OpenGL API"
+                log_message "Detected 64-bit executable (PE32+), keeping $detected_api API"
             fi
         elif echo "$file_info" | grep -q "PE32 executable" && ! echo "$file_info" | grep -q "PE32+"; then
             arch="32"
-            if [ "$detected_api" != "opengl32" ]; then
+            if [[ ! "$detected_api" =~ ^(opengl32|d3d11|d3d12|dxgi)$ ]]; then
                 detected_api="d3d9"
                 log_message "Detected 32-bit executable (PE32), using D3D9"
             else
-                log_message "Detected 32-bit executable (PE32), keeping OpenGL API"
+                log_message "Detected 32-bit executable (PE32), keeping $detected_api API"
             fi
         elif echo "$file_info" | grep -q "Intel i386"; then
             arch="32"
-            if [ "$detected_api" != "opengl32" ]; then
+            if [[ ! "$detected_api" =~ ^(opengl32|d3d11|d3d12|dxgi)$ ]]; then
                 detected_api="d3d9"
                 log_message "Detected 32-bit executable (i386), using D3D9"
             else
-                log_message "Detected 32-bit executable (i386), keeping OpenGL API"
+                log_message "Detected 32-bit executable (i386), keeping $detected_api API"
             fi
         else
             log_message "Could not determine architecture from file info, using defaults"
