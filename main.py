@@ -56,6 +56,7 @@ PLUGIN_PACKAGE = "decky-renodx"
 GITHUB_RELEASES_URL = "https://api.github.com/repos/Feelsrat/decky-renodx/releases"
 RENODX_MODS_URL = "https://raw.githubusercontent.com/wiki/clshortfuse/renodx/Mods.md"
 RESHADE_FXH_URL = "https://raw.githubusercontent.com/crosire/reshade-shaders/slim/Shaders/ReShade.fxh"
+RESHAPE_MIN_RENODX_VERSION = (6, 7, 3)
 SPECIALK_RELEASES_URL = "https://api.github.com/repos/SpecialKO/SpecialK/releases/latest"
 LILIUM_HDR_RELEASES_URL = "https://api.github.com/repos/EndlesslyFlowering/ReShade_HDR_shaders/releases/latest"
 PUMBO_AUTOHDR_ZIP_URL = "https://github.com/Filoppi/PumboAutoHDR/archive/refs/heads/master.zip"
@@ -1506,9 +1507,13 @@ class Plugin:
             bin_dir.mkdir(parents=True, exist_ok=True)
 
             reshade_target = bin_dir / "reshade_latest_addon.exe"
-            if not reshade_target.exists() or reshade_target.stat().st_size < 1024 * 1024:
+            reshade_version_file = bin_dir / "reshade_latest_addon.version"
+            if not reshade_target.exists() or reshade_target.stat().st_size < 1024 * 1024 or not self._reshade_installer_supports_renodx(reshade_target, reshade_version_file):
                 url = self._latest_reshade_addon_url()
                 self._download_url(url, reshade_target)
+                reshade_version_file.write_text(".".join(map(str, self._reshade_version_from_name(url))), encoding="utf-8")
+                if not self._reshade_installer_supports_renodx(reshade_target, reshade_version_file):
+                    raise RuntimeError("Downloaded ReShade add-on runtime is too old for current RenoDX addons.")
             last_target = bin_dir / "reshade_last_addon.exe"
             if not last_target.exists():
                 shutil.copy2(reshade_target, last_target)
@@ -1787,8 +1792,28 @@ class Plugin:
             if match:
                 return f"https://reshade.me/downloads/{match.group(1)}"
 
-        # Stable fallback if the homepage changes format.
-        return "https://reshade.me/downloads/ReShade_Setup_6.5.1_Addon.exe"
+        # Stable fallback if the homepage changes format. RenoDX currently
+        # needs add-on API 18, which ReShade 6.7.3 provides.
+        return "https://reshade.me/downloads/ReShade_Setup_6.7.3_Addon.exe"
+
+    def _reshade_installer_supports_renodx(self, installer: Path, version_file: Path | None = None) -> bool:
+        version = (0, 0, 0)
+        if version_file and version_file.exists():
+            try:
+                parts = [int(part) for part in version_file.read_text(encoding="utf-8").strip().split(".")[:3]]
+                if len(parts) == 3:
+                    version = tuple(parts)
+            except (OSError, ValueError):
+                version = (0, 0, 0)
+        if version == (0, 0, 0):
+            version = self._reshade_version_from_name(installer.name)
+        return version >= RESHAPE_MIN_RENODX_VERSION
+
+    def _reshade_version_from_name(self, name: str) -> tuple[int, int, int]:
+        match = re.search(r"ReShade_Setup_([0-9]+)\.([0-9]+)\.([0-9]+)", name, re.I)
+        if not match:
+            return (0, 0, 0)
+        return tuple(int(part) for part in match.groups())
 
     def _download_latest_github_asset(self, api_url: str, target: Path, extensions: list[str]) -> None:
         release = self._fetch_json(api_url)
@@ -1893,10 +1918,10 @@ class Plugin:
         request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 DeckyRenoDX/1.0"})
         self._download_file(request, target)
 
-    async def check_renodx_support(self, game_name: str) -> dict[str, Any]:
+    async def check_renodx_support(self, game_name: str, engine: str = "") -> dict[str, Any]:
         try:
             mods = self._renodx_mod_list()
-            match = self._match_renodx_mod(game_name, mods)
+            match = self._match_renodx_mod(game_name, mods, engine)
             if match is None:
                 return {
                     "status": "success",
@@ -1936,37 +1961,218 @@ class Plugin:
     def _read_renodx_mod_cache(self, cache_file: Path) -> dict[str, Any] | None:
         try:
             if cache_file.exists():
-                return json.loads(cache_file.read_text(encoding="utf-8"))
+                data = json.loads(cache_file.read_text(encoding="utf-8"))
+                mods = data.get("mods", []) if isinstance(data, dict) else []
+                if mods and not all(("match_type" in mod and "addon_url" in mod) for mod in mods[:20] if isinstance(mod, dict)):
+                    cache_file.unlink(missing_ok=True)
+                    return None
+                return data
         except (OSError, json.JSONDecodeError):
             return None
         return None
 
     def _parse_renodx_mods(self, markdown: str) -> list[dict[str, Any]]:
         mods = []
+        section = ""
+        table: list[str] = []
+        generic_engine = ""
+        generic_links: list[str] = []
+
+        def flush_table() -> None:
+            nonlocal table
+            if not table:
+                return
+            if section == "specific":
+                mods.extend(self._parse_renodx_specific_table(table))
+            elif section == "multi" and generic_engine:
+                mods.extend(self._parse_renodx_multi_game_table(table, generic_engine, generic_links))
+            table = []
+
+        for raw_line in markdown.splitlines():
+            line = raw_line.rstrip()
+            heading = re.match(r"^\s*(#{1,4})\s+(.+?)\s*$", line)
+            if heading:
+                flush_table()
+                title = self._strip_markdown(heading.group(2)).lower()
+                heading_links = re.findall(r"https?://[^\s)]+", line)
+                if title == "list":
+                    section = "specific"
+                    generic_engine = ""
+                    generic_links = []
+                elif title == "multi-game mods":
+                    section = "multi"
+                    generic_engine = ""
+                    generic_links = []
+                elif section == "multi" and "engine" in title:
+                    generic_engine = self._renodx_engine_bucket(title)
+                    generic_links = heading_links
+                elif title in {"related mods", "deprecated mods"}:
+                    section = ""
+                    generic_engine = ""
+                    generic_links = []
+                continue
+            if line.lstrip().startswith("|"):
+                table.append(line)
+            elif table:
+                flush_table()
+        flush_table()
+        if not mods:
+            mods.extend(self._parse_renodx_legacy_rows(markdown))
+        return mods
+
+    def _parse_renodx_legacy_rows(self, markdown: str) -> list[dict[str, Any]]:
+        mods: list[dict[str, Any]] = []
         row_pattern = re.compile(
             r"\|\s*(?P<name>[^|\n]+?)\s*\|\s*(?P<maintainer>[^|\n]*?)\s*\|\s*(?P<links>.*?)\s*\|\s*(?P<status>(?:\[:(?:white_check_mark|construction):\]\(#\s*\"[^\"]*\"\)|:white_check_mark:|:construction:|[^|\n]*?))\s*\|",
             re.I | re.S,
         )
         for match in row_pattern.finditer(markdown):
-            name_cell = match.group("name")
-            maintainer = match.group("maintainer")
-            links_cell = match.group("links")
-            status_cell = match.group("status")
-            name = self._strip_markdown(name_cell)
-            if not name or name.lower() == "name" or set(name) <= {":", "-"}:
+            name = self._strip_markdown(match.group("name"))
+            if not self._valid_renodx_name(name):
                 continue
-            links = re.findall(r"https?://[^\s)]+", links_cell)
-            status = self._strip_markdown(status_cell)
+            links = self._renodx_links(match.group("links"))
+            mods.append({
+                "name": name,
+                "normalized": self._normalize_game_title(name),
+                "maintainer": self._strip_markdown(match.group("maintainer")),
+                "status": self._renodx_status_label(match.group("status")),
+                "notes": self._renodx_notes(match.group("status")),
+                **links,
+                "source_type": self._renodx_source_type(links["links"]),
+                "bitness": self._renodx_bitness(links["links"]),
+                "engine_bucket": "",
+                "match_type": "specific",
+            })
+        return mods
+
+    def _parse_renodx_specific_table(self, rows: list[str]) -> list[dict[str, Any]]:
+        mods: list[dict[str, Any]] = []
+        for cells in self._markdown_table_rows(rows):
+            if len(cells) < 4:
+                continue
+            name_cell, maintainer, links_cell, status_cell = cells[:4]
+            name = self._strip_markdown(name_cell)
+            if not self._valid_renodx_name(name):
+                continue
+            links = self._renodx_links(links_cell)
             mods.append({
                 "name": name,
                 "normalized": self._normalize_game_title(name),
                 "maintainer": self._strip_markdown(maintainer),
                 "status": self._renodx_status_label(status_cell),
-                "links": links,
-                "snapshotLinks": [url for url in links if ".addon" in url.lower()],
-                "pageLinks": [url for url in links if ".addon" not in url.lower()],
+                "notes": self._renodx_notes(status_cell),
+                **links,
+                "source_type": self._renodx_source_type(links["links"]),
+                "bitness": self._renodx_bitness(links["links"]),
+                "engine_bucket": "",
+                "match_type": "specific",
             })
         return mods
+
+    def _parse_renodx_multi_game_table(self, rows: list[str], engine_bucket: str, addon_links: list[str]) -> list[dict[str, Any]]:
+        mods: list[dict[str, Any]] = []
+        shared_links = self._renodx_links(" ".join(addon_links))
+        for cells in self._markdown_table_rows(rows):
+            if len(cells) < 2:
+                continue
+            name = self._strip_markdown(cells[0])
+            if not self._valid_renodx_name(name):
+                continue
+            notes_cell = cells[2] if len(cells) > 2 else ""
+            mods.append({
+                "name": name,
+                "normalized": self._normalize_game_title(name),
+                "maintainer": "RenoDX",
+                "status": self._renodx_status_label(cells[1]),
+                "notes": [self._strip_markdown(notes_cell)] if self._strip_markdown(notes_cell) else [],
+                **shared_links,
+                "source_type": "generic",
+                "bitness": self._renodx_bitness(shared_links["links"]),
+                "engine_bucket": engine_bucket,
+                "match_type": "generic_listed",
+            })
+        if engine_bucket and shared_links["addon_url"]:
+            mods.append({
+                "name": f"Generic {engine_bucket.title()} Engine",
+                "normalized": f"generic{engine_bucket}engine",
+                "maintainer": "RenoDX",
+                "status": "experimental",
+                "notes": ["Experimental generic engine install. Use only when no exact game entry exists."],
+                **shared_links,
+                "source_type": "generic",
+                "bitness": self._renodx_bitness(shared_links["links"]),
+                "engine_bucket": engine_bucket,
+                "match_type": "generic_engine",
+            })
+        return mods
+
+    def _markdown_table_rows(self, rows: list[str]) -> list[list[str]]:
+        parsed = []
+        for row in rows:
+            cells = [cell.strip() for cell in row.strip().strip("|").split("|")]
+            if not cells or all(set(cell) <= {":", "-"} for cell in cells if cell):
+                continue
+            if cells[0].lower() in {"name", "game"}:
+                continue
+            parsed.append(cells)
+        return parsed
+
+    def _valid_renodx_name(self, name: str) -> bool:
+        return bool(name and name.lower() not in {"name", "game"} and not set(name) <= {":", "-"})
+
+    def _renodx_links(self, value: str) -> dict[str, Any]:
+        links = [url.rstrip(".,") for url in re.findall(r"https?://[^\s)]+", value or "")]
+        addon_links = [url for url in links if re.search(r"\.addon(?:32|64)?(?:$|[?#])", url.lower())]
+        page_links = [url for url in links if url not in addon_links]
+        return {
+            "links": links,
+            "addon_url": addon_links[0] if addon_links else "",
+            "snapshotLinks": addon_links,
+            "pageLinks": page_links,
+            "manual_url": page_links[0] if page_links and not addon_links else "",
+        }
+
+    def _renodx_source_type(self, links: list[str]) -> str:
+        if not links:
+            return "unknown"
+        lower = " ".join(links).lower()
+        if "github.com" in lower and "releases/download" in lower:
+            return "github_release"
+        if "github.io" in lower or ".addon" in lower:
+            return "snapshot"
+        if "nexusmods.com" in lower:
+            return "nexus"
+        if "discord." in lower:
+            return "discord"
+        return "page"
+
+    def _renodx_bitness(self, links: list[str]) -> str:
+        text = " ".join(links).lower()
+        has64 = ".addon64" in text or "64.addon" in text
+        has32 = ".addon32" in text or "32.addon" in text
+        if has64 and has32:
+            return "both"
+        if has64:
+            return "64"
+        if has32:
+            return "32"
+        return "unknown"
+
+    def _renodx_notes(self, status_cell: str) -> list[str]:
+        notes = []
+        for note in re.findall(r'\]\(#\s*"([^"]+)"\)', status_cell or ""):
+            clean = self._strip_markdown(note)
+            if clean:
+                notes.append(clean)
+        return notes
+
+    def _renodx_engine_bucket(self, heading: str) -> str:
+        lower = heading.lower()
+        if "unreal" in lower:
+            return "unreal"
+        if "unity" in lower:
+            return "unity"
+        return self._normalize_game_title(heading.replace("engine", ""))
 
     def _strip_markdown(self, value: str) -> str:
         value = re.sub(r"!\[[^\]]*\]\([^)]+\)", "", value)
@@ -1990,13 +2196,15 @@ class Plugin:
         title = re.sub(r"\b(the|definitive edition|directors cut|director's cut|remastered|remake|dx10|dx11|dx12|steam only)\b", " ", title)
         return re.sub(r"[^a-z0-9]+", "", title)
 
-    def _match_renodx_mod(self, game_name: str, mods: list[dict[str, Any]]) -> dict[str, Any] | None:
+    def _match_renodx_mod(self, game_name: str, mods: list[dict[str, Any]], engine: str = "") -> dict[str, Any] | None:
         query = self._normalize_game_title(game_name)
         if not query:
             return None
 
         best: tuple[int, dict[str, Any]] | None = None
         for mod in mods:
+            if mod.get("match_type") == "generic_engine":
+                continue
             candidate = str(mod.get("normalized", ""))
             if not candidate:
                 continue
@@ -2011,11 +2219,20 @@ class Plugin:
             if score >= 70 and (best is None or score > best[0]):
                 best = (score, mod)
 
-        if best is None:
-            return None
-        result = dict(best[1])
-        result["score"] = best[0]
-        return result
+        if best is not None:
+            result = dict(best[1])
+            result["score"] = best[0]
+            return result
+
+        engine_bucket = self._renodx_engine_bucket(engine or "")
+        if engine_bucket in {"unreal", "unity"}:
+            for mod in mods:
+                if mod.get("match_type") == "generic_engine" and mod.get("engine_bucket") == engine_bucket:
+                    result = dict(mod)
+                    result["score"] = 62
+                    result["experimental"] = True
+                    return result
+        return None
 
     async def manage_game_reshade(self, appid: str, action: str, dll_override: str = "dxgi", vulkan_mode: str = "", selected_executable_path: str = "") -> dict:
         try:
@@ -2291,8 +2508,10 @@ class Plugin:
                         context["architecture"] = api_info.get("architecture", context.get("architecture", "unknown"))
                         context["injection_dll"] = api_info.get("injection_dll", context.get("injection_dll", "auto"))
                         context["engine"] = api_info.get("engine", context.get("engine", "unknown"))
+                        await self._refresh_renodx_recommendation_context(context, title, logger)
                 if context["graphics_api"] == "unknown":
                     await self._apply_steam_metadata_api_fallback(context, appid, logger)
+                    await self._refresh_renodx_recommendation_context(context, title, logger)
             else:
                 # Fetch PCGamingWiki data
                 wiki_data = self.wiki_scraper.get_game_data(appid)
@@ -2317,12 +2536,15 @@ class Plugin:
                     context["architecture"] = api_info.get("architecture", "unknown")
                     context["injection_dll"] = api_info.get("injection_dll", "auto")
                     context["engine"] = api_info.get("engine", "unknown")
+                    await self._refresh_renodx_recommendation_context(context, title, logger)
                     
                     context["anti_cheat"] = self.ac_detector.detect(str(Path(resolved_game_path).parent))
                 if context["graphics_api"] == "unknown":
                     await self._apply_pcgw_api_fallback(context, appid, logger)
+                    await self._refresh_renodx_recommendation_context(context, title, logger)
                 if context["graphics_api"] == "unknown":
                     await self._apply_steam_metadata_api_fallback(context, appid, logger)
+                    await self._refresh_renodx_recommendation_context(context, title, logger)
                 
                 # Save to cache
                 self.persistent_cache.set_game_metadata(appid, {
@@ -2389,12 +2611,16 @@ class Plugin:
 
     async def _refresh_renodx_recommendation_context(self, context: dict[str, Any], title: str, logger=None) -> None:
         try:
-            renodx_result = await self.check_renodx_support(title)
+            renodx_result = await self.check_renodx_support(title, str(context.get("engine", "")))
             context["renodx_supported"] = bool(renodx_result.get("supported"))
             if context["renodx_supported"]:
                 context["renodx_match"] = renodx_result.get("match", {})
+                match_type = context["renodx_match"].get("match_type", "")
+                context["renodx_flow_enabled"] = True
+                if match_type == "generic_engine":
+                    context["renodx_experimental"] = True
                 if logger:
-                    logger.info(f"RenoDX exact match found: {renodx_result.get('match', {}).get('name', title)}")
+                    logger.info(f"RenoDX match found: {renodx_result.get('match', {}).get('name', title)} ({match_type or 'unknown'})")
         except Exception as error:
             if logger:
                 logger.warning(f"RenoDX support lookup failed: {error}")
@@ -2635,18 +2861,17 @@ class Plugin:
                         return {"status": "success", "method": "native_hdr", "message": "Game has native HDR support. No injection needed."}
 
                     if method == "renodx":
-                        logger.info("Skipping RenoDX because the RenoDX install flow is temporarily disabled.")
-                        continue
-                        mod_result = await self.check_renodx_support(title)
-                        if mod_result.get("supported") and mod_result.get("match"):
-                            logger.info(f"RenoDX mod found. Applying launch options.")
-                            launch_opts = self._hdr_launch_options("dxgi")
-                            return {
-                                "status": "success", 
-                                "method": "renodx", 
-                                "message": "RenoDX launch options ready. Ensure mod files are imported.",
-                                "launch_options": launch_opts
-                            }
+                        mod = context.get("renodx_match") or {}
+                        if not mod:
+                            mod_result = await self.check_renodx_support(title, str(context.get("engine", "")))
+                            mod = mod_result.get("match", {}) if mod_result.get("supported") else {}
+                        if mod:
+                            result = await self._install_renodx_mod_for_game(appid, title, exe_path, mod, logger)
+                            if result.get("status") == "success":
+                                return result
+                            if result.get("manual_download"):
+                                return result
+                            logger.error(f"RenoDX install failed: {result.get('message')}")
                         continue
 
                     if method == "special_k":
@@ -2746,6 +2971,161 @@ class Plugin:
             except Exception as e:
                 decky.logger.error(f"Error in force_special_k_setup: {str(e)}")
                 return {"status": "error", "message": str(e)}
+
+    async def _install_renodx_mod_for_game(self, appid: str, title: str, exe_path: str, mod: dict[str, Any], logger=None) -> dict:
+        addon_url = str(mod.get("addon_url") or "")
+        manual_url = str(mod.get("manual_url") or "")
+        if not addon_url:
+            return {
+                "status": "manual_required",
+                "method": "renodx",
+                "manual_download": True,
+                "url": manual_url or ((mod.get("pageLinks") or [""])[0]),
+                "message": "RenoDX support was found, but this entry requires a manual download. Open the linked page, download the addon/archive, then import it.",
+                "match": mod,
+            }
+
+        if not exe_path or not os.path.exists(exe_path):
+            exe_path = await self._resolve_game_executable_for_recommendation(appid, logger)
+        if not exe_path or not os.path.exists(exe_path):
+            return {
+                "status": "error",
+                "method": "renodx",
+                "message": "Could not resolve the game executable for RenoDX install.",
+                "match": mod,
+            }
+
+        exe_dir = self._resolve_game_exe_dir(appid, exe_path)
+        api = "dxgi"
+        try:
+            detected = await self._detect_api_for_path(str(exe_dir))
+            if detected.get("status") == "success":
+                api = self._api_to_injection_dll(str(detected.get("api") or api))
+        except Exception:
+            pass
+        if api in {"auto", "unknown", "vulkan"}:
+            api = "dxgi"
+
+        reshade_result = await self.manage_game_reshade(appid, "install", api, "", exe_path)
+        if reshade_result.get("status") != "success":
+            return {
+                "status": "error",
+                "method": "renodx",
+                "message": f"ReShade prerequisite install failed before RenoDX addon copy: {reshade_result.get('message')}",
+                "match": mod,
+            }
+
+        addon_cache = Path(self.renodx_import_path) / "downloads"
+        addon_cache.mkdir(parents=True, exist_ok=True)
+        addon_name = Path(urllib.parse.urlparse(addon_url).path).name or f"renodx-{self._normalize_game_title(title)}.addon64"
+        target_cache = addon_cache / addon_name
+        self._download_url(addon_url, target_cache)
+
+        target = exe_dir / addon_name
+        shutil.copy2(target_cache, target)
+        removed_effects = self._configure_renodx_only_install(exe_dir, addon_name, logger)
+        self._fix_deck_user_ownership(exe_dir)
+
+        injection_dll = str(reshade_result.get("injection_dll") or api)
+        launch_options = self._hdr_launch_options(injection_dll)
+        await self._set_steam_launch_options(appid, launch_options)
+        arch = "64" if addon_name.lower().endswith(".addon64") else "32" if addon_name.lower().endswith(".addon32") else "unknown"
+        self._write_game_hdr_marker(
+            exe_dir,
+            appid,
+            "renodx",
+            injection_dll,
+            arch,
+            {"renodx_match": mod, "renodx_addon": str(target)},
+        )
+
+        manifest = self.manifest_manager.read_manifest(appid) or {"appid": appid, "installed_files": [], "modified_files": [], "backups": {}}
+        retained_existing = [
+            path for path in manifest.get("installed_files", [])
+            if Path(path).exists() and Path(path).name not in removed_effects
+        ]
+        manifest.update({
+            "appid": appid,
+            "title": title,
+            "method": "renodx",
+            "installed_files": list(dict.fromkeys([*retained_existing, str(target), str(exe_dir / ".decky-renodx-hdr.json")])),
+            "launch_options_after": launch_options,
+            "renodx_match": mod,
+            "verified": True,
+            "verification_notes": "RenoDX addon downloaded and copied alongside a clean ReShade addon host.",
+            "plugin_version": self._current_version(),
+        })
+        self.manifest_manager.write_manifest(appid, manifest)
+        if logger:
+            logger.info("Installed RenoDX addon %s for %s from %s", target, appid, addon_url)
+        return {
+            "status": "success",
+            "method": "renodx",
+            "message": f"Installed RenoDX addon for {mod.get('name', title)}.",
+            "copied": [str(target)],
+            "launch_options": launch_options,
+            "match": mod,
+        }
+
+    def _configure_renodx_only_install(self, exe_dir: Path, addon_name: str, logger=None) -> set[str]:
+        """Remove fallback shader effects from a RenoDX install.
+
+        RenoDX uses ReShade as an addon host. For RenoDX installs we should not
+        also enable AutoHDR/Lilium/Pumbo shaders, because that can double tone
+        map or confuse the ReShade UI.
+        """
+        removed: set[str] = set()
+        for pattern in [
+            "AutoHDR*.addon",
+            "AutoHDR.addon*",
+            "AdvancedAutoHDR.fx",
+            "ConvertColorSpace.fx",
+            "lilium*.fx",
+            "lilium*.fxh",
+        ]:
+            for path in exe_dir.glob(pattern):
+                try:
+                    if path.is_dir():
+                        shutil.rmtree(path)
+                    else:
+                        path.unlink()
+                    removed.add(path.name)
+                    if logger:
+                        logger.info("Removed non-RenoDX effect from RenoDX install: %s", path)
+                except OSError as error:
+                    if logger:
+                        logger.warning("Could not remove non-RenoDX effect %s: %s", path, error)
+        shader_dir = exe_dir / "ReShade_shaders"
+        if shader_dir.exists():
+            try:
+                shutil.rmtree(shader_dir)
+                removed.add(shader_dir.name)
+                if logger:
+                    logger.info("Removed shader directory from RenoDX-only install: %s", shader_dir)
+            except OSError as error:
+                if logger:
+                    logger.warning("Could not remove shader directory %s: %s", shader_dir, error)
+
+        preset = exe_dir / "ReShadePreset.ini"
+        preset.write_text("Techniques=\nTechniqueSorting=\n", encoding="utf-8")
+
+        ini = exe_dir / "ReShade.ini"
+        if ini.exists():
+            text = ini.read_text(encoding="utf-8", errors="ignore")
+        else:
+            text = "[GENERAL]\n"
+        text = self._upsert_ini_section_values(text, "GENERAL", {
+            "EffectSearchPaths": "",
+            "TextureSearchPaths": "",
+            "PresetPath": ".\\ReShadePreset.ini",
+            "TutorialProgress": "4",
+            "SkipLoadingDisabledEffects": "1",
+        })
+        text = self._upsert_ini_section_values(text, "ADDON", {
+            "LoadFromDllMain": addon_name,
+        })
+        ini.write_text(text, encoding="utf-8")
+        return removed
 
     async def _ensure_special_k_bin(self):
         """Ensure Special K binaries are present in the cache."""
@@ -5539,8 +5919,11 @@ rm -f "{helper_path}"
     async def open_renodx_search(self, game_name: str = "") -> dict:
         """Open a browser search that helps the user fetch Nexus/GitHub-hosted RenoDX files."""
         try:
-            query = f"{game_name} RenoDX NexusMods".strip() if game_name else "RenoDX NexusMods"
-            url = "https://www.google.com/search?q=" + query.replace(" ", "+")
+            if re.match(r"^https?://", game_name or ""):
+                url = game_name
+            else:
+                query = f"{game_name} RenoDX NexusMods".strip() if game_name else "RenoDX NexusMods"
+                url = "https://www.google.com/search?q=" + query.replace(" ", "+")
             clean_env = {**os.environ, **self.environment}
             clean_env["LD_LIBRARY_PATH"] = ""
             subprocess.Popen(["xdg-open", url], env=clean_env)

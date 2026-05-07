@@ -54,12 +54,34 @@ class DecisionTree:
         # 3. RenoDX / Luma (Score 90)
         renodx_flow_enabled = context.get("renodx_flow_enabled", False)
         if renodx_flow_enabled and (renodx_supported or luma_supported or self._is_renodx_supported(title, appid)):
+            match = context.get("renodx_match", {}) or {}
+            match_type = match.get("match_type", "specific")
+            is_experimental = bool(context.get("renodx_experimental")) or match_type == "generic_engine"
+            needs_manual_download = bool(match.get("manual_url")) and not bool(match.get("addon_url"))
             recommendations.append({
                 "method": "renodx",
                 "score": 90,
-                "reason": "Exact RenoDX/Luma mod found for this game.",
-                "confidence": "high"
+                "reason": (
+                    "Experimental generic RenoDX engine addon is available for this engine."
+                    if is_experimental
+                    else "RenoDX/Luma mod found for this game."
+                ),
+                "confidence": "medium" if is_experimental else "high",
+                "notes": [
+                    f"RenoDX match: {match.get('name', title)}.",
+                    f"Source: {match.get('source_type', 'unknown')}.",
+                    f"Type: {match_type}.",
+                ]
             })
+            if not needs_manual_download:
+                recommendations.append({
+                    "method": "sdr",
+                    "score": 0,
+                    "reason": "Standard Dynamic Range fallback.",
+                    "confidence": "high"
+                })
+                recommendations.sort(key=lambda x: x["score"], reverse=True)
+                return recommendations
         elif renodx_supported or luma_supported:
             recommendations.append({
                 "method": "renodx_disabled",

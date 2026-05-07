@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import {
   PanelSection,
   PanelSectionRow,
@@ -6,6 +6,7 @@ import {
   DropdownItem,
   Field,
   ModalRoot,
+  showModal,
 } from "@decky/ui";
 import { callable, toaster } from "@decky/api";
 
@@ -24,6 +25,50 @@ const fixPluginProcesses = callable<[], any>("fix_plugin_processes");
 const executeSetupFlow = callable<[string, string, string, boolean?], any>("execute_setup_flow");
 const verifyHdrInstallation = callable<[string, string], any>("verify_hdr_installation");
 const getGameHdrStatus = callable<[string, string], any>("get_game_hdr_status");
+const openRenoDxSearch = callable<[string], any>("open_renodx_search");
+const importRenoDxForGame = callable<[string, string, string], any>("import_renodx_for_game");
+
+const FullscreenLogModal = ({ title, content, closeModal }: { title: string; content: string; closeModal?: () => void }) => {
+  const bWasPressed = useRef(false);
+
+  useEffect(() => {
+    const close = () => closeModal?.();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" || event.key === "Backspace" || event.key.toLowerCase() === "b") {
+        event.preventDefault();
+        close();
+      }
+    };
+
+    let frame = 0;
+    const pollGamepad = () => {
+      const pads = navigator.getGamepads?.() || [];
+      const bPressed = pads.some((pad) => !!pad?.buttons?.[1]?.pressed);
+      if (bPressed && !bWasPressed.current) {
+        close();
+      }
+      bWasPressed.current = bPressed;
+      frame = requestAnimationFrame(pollGamepad);
+    };
+
+    window.addEventListener("keydown", onKeyDown, true);
+    frame = requestAnimationFrame(pollGamepad);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown, true);
+      cancelAnimationFrame(frame);
+    };
+  }, [closeModal]);
+
+  return (
+    <div style={{ position: "fixed", left: 0, right: 0, top: "48px", bottom: 0, background: "#101113", color: "#d4d4d4", zIndex: 999999, display: "flex", flexDirection: "column" }}>
+      <div style={{ height: "52px", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0 16px", borderBottom: "1px solid rgba(255,255,255,0.16)", background: "#17191d", boxSizing: "border-box" }}>
+        <div style={{ fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", paddingRight: "12px" }}>{title}</div>
+        <button style={{ width: "36px", height: "36px", borderRadius: "4px", border: "1px solid rgba(255,255,255,0.22)", background: "rgba(255,255,255,0.08)", color: "white", fontSize: "18px" }} onClick={closeModal}>x</button>
+      </div>
+      <pre style={{ flex: 1, margin: 0, padding: "14px 16px", overflow: "auto", whiteSpace: "pre-wrap", overflowWrap: "anywhere", fontSize: "12px", lineHeight: 1.35, fontFamily: "monospace", boxSizing: "border-box" }}>{content}</pre>
+    </div>
+  );
+};
 
 async function getSteamLaunchOptions(appid: string): Promise<string> {
   const apps = (SteamClient.Apps as any);
@@ -110,8 +155,7 @@ const HdrManagementSection = () => {
   const [recommendation, setRecommendation] = useState<Recommendation | null>(null);
   const [context, setContext] = useState<GameContext | null>(null);
   const [loading, setLoading] = useState(false);
-  const [logContent, setLogContent] = useState<string>("");
-  const [showLog, setShowLog] = useState(false);
+  const [manualRenoDx, setManualRenoDx] = useState<any>(null);
 
   const [showSkEditor, setShowSkEditor] = useState(false);
   const [exePath, setExePath] = useState("");
@@ -141,8 +185,6 @@ const HdrManagementSection = () => {
       setContext(null);
       setExePath("");
       setHdrStatus(null);
-      setLogContent("");
-      setShowLog(false);
       refreshState();
     } else {
       setRecommendation(null);
@@ -207,6 +249,9 @@ const HdrManagementSection = () => {
       if (response.status === "success" && response.launch_options) {
         await setMergedHdrLaunchOptions(selectedGame.appid, response.launch_options);
       }
+      if (response.manual_download) {
+        setManualRenoDx(response);
+      }
       toaster.toast({ title: "HDR Setup", body: response.message });
       await refreshState();
     } catch (e) {
@@ -255,6 +300,9 @@ const HdrManagementSection = () => {
       const response = await executeSetupFlow(selectedGame.appid, selectedGame.name, exePath, true);
       if (response.status === "success" && response.launch_options) {
         await setMergedHdrLaunchOptions(selectedGame.appid, response.launch_options);
+      }
+      if (response.manual_download) {
+        setManualRenoDx(response);
       }
       toaster.toast({ title: "HDR Setup", body: response.message });
       await refreshState();
@@ -310,8 +358,7 @@ const HdrManagementSection = () => {
     if (!selectedGame) return;
     const response = await getPerGameLog(selectedGame.appid);
     if (response.status === "success") {
-      setLogContent(response.log);
-      setShowLog(true);
+      showModal(<FullscreenLogModal title={`HDR Plugin Log: ${selectedGame?.name || selectedGame.appid}`} content={response.log} />);
     } else {
       toaster.toast({ title: "Log Unavailable", body: response.message || "No log found." });
     }
@@ -331,6 +378,30 @@ const HdrManagementSection = () => {
     const response = await fixPluginProcesses();
     toaster.toast({ title: "Plugin Process Fix", body: response.message });
     setProcessHealth(await getPluginProcessHealth());
+  };
+
+  const handleOpenManualRenoDx = async () => {
+    if (!manualRenoDx?.url) return;
+    const response = await openRenoDxSearch(manualRenoDx.url);
+    toaster.toast({ title: "RenoDX Download", body: response.message || "Opened browser." });
+  };
+
+  const handleImportManualRenoDx = async () => {
+    if (!selectedGame) return;
+    setLoading(true);
+    try {
+      const response = await importRenoDxForGame(selectedGame.appid, "", exePath);
+      if (response.status === "success" && response.launch_options) {
+        await setMergedHdrLaunchOptions(selectedGame.appid, response.launch_options);
+        setManualRenoDx(null);
+      }
+      toaster.toast({ title: "RenoDX Import", body: response.message || response.output });
+      await refreshState();
+    } catch (e) {
+      toaster.toast({ title: "RenoDX Import Failed", body: String(e), duration: 7000 });
+    } finally {
+      setLoading(false);
+    }
   };
 
   const methodLabel = recommendation?.method === "renodx_disabled" ? "RENODX DISABLED" : recommendation?.method.toUpperCase();
@@ -541,20 +612,6 @@ const HdrManagementSection = () => {
         </>
       )}
 
-      {showLog && (
-        <ModalRoot closeModal={() => setShowLog(false)}>
-          <div style={{ position: "fixed", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(0,0,0,0.42)", zIndex: 9999 }}>
-            <div style={{ width: "min(760px, 86vw)", maxHeight: "72vh", backgroundColor: "#1e1e1e", color: "#d4d4d4", borderRadius: "6px", border: "1px solid rgba(255,255,255,0.14)", boxShadow: "0 18px 60px rgba(0,0,0,0.45)", overflow: "hidden" }}>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 12px", borderBottom: "1px solid #333", fontWeight: 700 }}>
-                <span>HDR Plugin Log: {selectedGame?.name}</span>
-                <button style={{ width: "32px", height: "32px", borderRadius: "4px", border: "1px solid rgba(255,255,255,0.18)", background: "rgba(255,255,255,0.08)", color: "white", fontSize: "18px" }} onClick={() => setShowLog(false)}>x</button>
-              </div>
-              <pre style={{ margin: 0, padding: "12px", maxHeight: "calc(72vh - 54px)", overflowY: "auto", whiteSpace: "pre-wrap", fontSize: "12px", fontFamily: "monospace" }}>{logContent}</pre>
-            </div>
-          </div>
-        </ModalRoot>
-      )}
-
       {showSkEditor && (
         <ModalRoot closeModal={() => setShowSkEditor(false)}>
           <div style={{ padding: "16px" }}>
@@ -592,6 +649,27 @@ const HdrManagementSection = () => {
                 </Field>
               </PanelSectionRow>
             </PanelSection>
+          </div>
+        </ModalRoot>
+      )}
+
+      {manualRenoDx && (
+        <ModalRoot closeModal={() => setManualRenoDx(null)}>
+          <div style={{ position: "fixed", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(0,0,0,0.42)", zIndex: 9999 }}>
+            <div style={{ width: "min(920px, 92vw)", height: "min(680px, 86vh)", backgroundColor: "#1e1e1e", color: "#fff", borderRadius: "6px", border: "1px solid rgba(255,255,255,0.14)", overflow: "hidden", display: "flex", flexDirection: "column" }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 12px", borderBottom: "1px solid #333", fontWeight: 700 }}>
+                <span>Manual RenoDX Download</span>
+                <button style={{ width: "32px", height: "32px", borderRadius: "4px", border: "1px solid rgba(255,255,255,0.18)", background: "rgba(255,255,255,0.08)", color: "white", fontSize: "18px" }} onClick={() => setManualRenoDx(null)}>x</button>
+              </div>
+              <div style={{ padding: "10px 12px", fontSize: "0.82em", opacity: 0.82 }}>{manualRenoDx.message}</div>
+              {manualRenoDx.url && (
+                <iframe title="RenoDX manual download" src={manualRenoDx.url} style={{ flex: 1, width: "100%", border: 0, background: "#111" }} />
+              )}
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px", padding: "10px 12px", borderTop: "1px solid #333" }}>
+                <button onClick={handleOpenManualRenoDx}>Open In Browser</button>
+                <button onClick={handleImportManualRenoDx} disabled={loading}>Detect Download And Import</button>
+              </div>
+            </div>
           </div>
         </ModalRoot>
       )}

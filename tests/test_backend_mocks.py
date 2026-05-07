@@ -124,11 +124,13 @@ class BackendMockTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_renodx_mod_parser_and_matcher(self):
         plugin = self.module.Plugin()
-        markdown = (
-            "| Name | Maintainer | Links | Status | "
-            "| Bayonetta | ShortFuse | [![Snapshot](badge)](https://example.com/renodx-bayonetta.addon32) | :white_check_mark: | "
-            "| Other Game | Dev | [![Nexus Mods](badge)](https://www.nexusmods.com/other/mods/1) | :construction: |"
-        )
+        markdown = """
+        # List
+        | Name | Maintainer | Links | Status |
+        | --- | --- | --- | --- |
+        | Bayonetta | ShortFuse | [![Snapshot](badge)](https://example.com/renodx-bayonetta.addon32) | :white_check_mark: |
+        | Other Game | Dev | [![Nexus Mods](badge)](https://www.nexusmods.com/other/mods/1) | :construction: |
+        """
 
         mods = plugin._parse_renodx_mods(markdown)
         match = plugin._match_renodx_mod("Bayonetta", mods)
@@ -137,6 +139,9 @@ class BackendMockTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(match["name"], "Bayonetta")
         self.assertEqual(match["status"], "working")
         self.assertEqual(match["snapshotLinks"], ["https://example.com/renodx-bayonetta.addon32"])
+        self.assertEqual(match["addon_url"], "https://example.com/renodx-bayonetta.addon32")
+        self.assertEqual(match["source_type"], "snapshot")
+        self.assertEqual(match["bitness"], "32")
 
     async def test_renodx_parser_matches_alien_isolation_from_wiki_row(self):
         plugin = self.module.Plugin()
@@ -154,6 +159,46 @@ class BackendMockTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(match["name"], "Alien: Isolation")
         self.assertEqual(match["status"], "in_progress")
         self.assertIn("https://github.com/mqhaji/renodx/releases/download/snapshot/renodx-alienisolation.addon32", match["snapshotLinks"])
+
+    async def test_renodx_parser_supports_multi_game_engine_sections(self):
+        plugin = self.module.Plugin()
+        markdown = """
+        # List
+        | Name | Maintainer | Links | Status |
+        | --- | --- | --- | --- |
+        | Exact Game | Dev | [![Snapshot](badge)](https://example.com/exact.addon64) | :white_check_mark: |
+
+        ## Multi-Game Mods
+        ### Unreal Engine [![Snapshot](badge)](https://example.com/renodx-unrealengine.addon64)
+        | Name | Status | Notes |
+        | --- | --- | --- |
+        | Sand Land | :white_check_mark: | Use output size upgrade. |
+        """
+
+        mods = plugin._parse_renodx_mods(markdown)
+        listed = plugin._match_renodx_mod("SAND LAND", mods)
+        generic = plugin._match_renodx_mod("Unknown Unreal Game", mods, "Unreal Engine 5")
+
+        self.assertEqual(listed["match_type"], "generic_listed")
+        self.assertEqual(listed["engine_bucket"], "unreal")
+        self.assertEqual(listed["addon_url"], "https://example.com/renodx-unrealengine.addon64")
+        self.assertEqual(generic["match_type"], "generic_engine")
+        self.assertTrue(generic["experimental"])
+
+    async def test_renodx_parser_marks_manual_sources(self):
+        plugin = self.module.Plugin()
+        markdown = """
+        # List
+        | Name | Maintainer | Links | Status |
+        | --- | --- | --- | --- |
+        | Manual Game | Dev | [![Nexus Mods](badge)](https://www.nexusmods.com/game/mods/1) | :white_check_mark: |
+        """
+
+        match = plugin._match_renodx_mod("Manual Game", plugin._parse_renodx_mods(markdown))
+
+        self.assertEqual(match["source_type"], "nexus")
+        self.assertEqual(match["addon_url"], "")
+        self.assertEqual(match["manual_url"], "https://www.nexusmods.com/game/mods/1")
 
     async def test_list_installed_games_parses_steam_libraries(self):
         plugin = self.module.Plugin()
@@ -712,6 +757,104 @@ class BackendMockTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["status"], "success")
         self.assertEqual(result["recommendations"][0]["method"], "special_k")
+
+    async def test_recommendation_refreshes_renodx_after_engine_detection(self):
+        plugin = self.module.Plugin()
+        game_dir = self.home / ".local" / "share" / "Steam" / "steamapps" / "common" / "Sand Land" / "SandLand" / "Binaries" / "Win64"
+        game_dir.mkdir(parents=True)
+        exe = game_dir / "SandLand-Win64-Shipping.exe"
+        exe.write_bytes(b"MZ")
+        plugin.wiki_scraper.get_game_data = lambda _appid: {"native_hdr": "unknown", "graphics_api": "unknown", "special_k_compatible": False}
+        async def fake_detect(_path, _logger=None):
+            return {"status": "success", "api": "dxgi", "architecture": "64", "injection_dll": "dxgi", "engine": "unreal"}
+        plugin._detect_api_with_cache = fake_detect
+
+        async def fake_renodx(_title, engine=""):
+            if engine == "unreal":
+                return {"status": "success", "supported": True, "match": {"name": "Sand Land", "match_type": "generic_listed", "source_type": "generic", "addon_url": "https://example.com/renodx-unrealengine.addon64"}}
+            return {"status": "success", "supported": False}
+        plugin.check_renodx_support = fake_renodx
+
+        result = await plugin.get_hdr_recommendation("1979440", "SAND LAND", str(exe))
+
+        self.assertEqual(result["context"]["engine"], "unreal")
+        self.assertTrue(result["context"]["renodx_supported"])
+        self.assertEqual(result["recommendations"][0]["method"], "renodx")
+        self.assertNotIn("special_k", [item["method"] for item in result["recommendations"]])
+
+    async def test_manual_renodx_keeps_special_k_as_lazy_option(self):
+        tree = self.module.DecisionTree()
+
+        recommendations = tree.evaluate({
+            "appid": "123",
+            "title": "Manual RenoDX Game",
+            "graphics_api": "d3d11",
+            "anti_cheat": [],
+            "native_hdr": "unknown",
+            "renodx_supported": True,
+            "renodx_flow_enabled": True,
+            "renodx_match": {
+                "name": "Manual RenoDX Game",
+                "match_type": "specific",
+                "source_type": "nexus",
+                "manual_url": "https://www.nexusmods.com/game/mods/1",
+                "addon_url": "",
+            },
+        })
+
+        methods = [item["method"] for item in recommendations]
+        self.assertEqual(methods[0], "renodx")
+        self.assertIn("special_k", methods)
+
+    async def test_renodx_install_resolves_executable_before_install(self):
+        plugin = self.module.Plugin()
+        base = self.home / ".local" / "share" / "Steam" / "steamapps" / "common" / "SANDLAND"
+        exe_dir = base / "SANDLAND" / "Binaries" / "Win64"
+        exe_dir.mkdir(parents=True)
+        exe = exe_dir / "SANDLAND-Win64-Shipping.exe"
+        exe.write_bytes(b"MZ")
+        addon = self.home / "renodx-unrealengine.addon64"
+        addon.write_text("addon", encoding="utf-8")
+        called = {}
+
+        async def fake_resolve(_appid, _logger=None):
+            return str(exe)
+        async def fake_manage(_appid, _action, _api, _vulkan, selected_executable_path):
+            called["selected_executable_path"] = selected_executable_path
+            (exe_dir / "dxgi.dll").write_text("dll", encoding="utf-8")
+            return {"status": "success", "injection_dll": "dxgi", "launch_options": "opts"}
+        plugin._resolve_game_executable_for_recommendation = fake_resolve
+        plugin.manage_game_reshade = fake_manage
+        plugin._download_url = lambda _url, target: target.write_text("addon", encoding="utf-8")
+        async def fake_set_launch(_appid, _opts):
+            return None
+        plugin._set_steam_launch_options = fake_set_launch
+
+        result = await plugin._install_renodx_mod_for_game("1979440", "SAND LAND", "", {"name": "Sand Land", "addon_url": "https://example.com/renodx-unrealengine.addon64"})
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(called["selected_executable_path"], str(exe))
+        self.assertTrue((exe_dir / "renodx-unrealengine.addon64").exists())
+
+    async def test_renodx_install_removes_fallback_effects(self):
+        plugin = self.module.Plugin()
+        exe_dir = self.home / "Game" / "Binaries" / "Win64"
+        exe_dir.mkdir(parents=True)
+        for name in ["AutoHDR64.addon", "AutoHDR.addon64", "AdvancedAutoHDR.fx", "lilium__hdr.fx"]:
+            (exe_dir / name).write_text("effect", encoding="utf-8")
+        (exe_dir / "ReShade_shaders").mkdir()
+        (exe_dir / "ReShadePreset.ini").write_text("Techniques=AutoHDR\n", encoding="utf-8")
+        (exe_dir / "ReShade.ini").write_text("[GENERAL]\nEffectSearchPaths=.\\ReShade_shaders\\Merged\\Shaders\n", encoding="utf-8")
+
+        removed = plugin._configure_renodx_only_install(exe_dir, "renodx-unrealengine.addon64")
+
+        for name in ["AutoHDR64.addon", "AutoHDR.addon64", "AdvancedAutoHDR.fx", "lilium__hdr.fx", "ReShade_shaders"]:
+            self.assertFalse((exe_dir / name).exists())
+            self.assertIn(name, removed)
+        self.assertIn("Techniques=", (exe_dir / "ReShadePreset.ini").read_text(encoding="utf-8"))
+        ini = (exe_dir / "ReShade.ini").read_text(encoding="utf-8")
+        self.assertIn("EffectSearchPaths=", ini)
+        self.assertIn("LoadFromDllMain=renodx-unrealengine.addon64", ini)
 
     async def test_renodx_support_is_blocked_while_flow_disabled(self):
         tree = self.module.DecisionTree()
