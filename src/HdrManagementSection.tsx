@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect } from "react";
 import {
   PanelSection,
   PanelSectionRow,
@@ -29,81 +29,10 @@ const getGameHdrStatus = callable<[string, string], any>("get_game_hdr_status");
 const openRenoDxSearch = callable<[string], any>("open_renodx_search");
 const importRenoDxForGame = callable<[string, string, string], any>("import_renodx_for_game");
 
-type FullscreenTab = { title: string; content: string };
-
-const FullscreenLogModal = ({ title, content, tabs, closeModal }: { title: string; content?: string; tabs?: FullscreenTab[]; closeModal?: () => void }) => {
-  const bWasPressed = useRef(false);
-  const [activeTab, setActiveTab] = useState(0);
-  const visibleTabs = tabs && tabs.length ? tabs : [{ title: "Log", content: content || "" }];
-  const activeContent = visibleTabs[Math.min(activeTab, visibleTabs.length - 1)]?.content || "";
-
-  useEffect(() => {
-    const close = () => closeModal?.();
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape" || event.key === "Backspace" || event.key.toLowerCase() === "b") {
-        event.preventDefault();
-        close();
-      }
-    };
-
-    let frame = 0;
-    const pollGamepad = () => {
-      const pads = navigator.getGamepads?.() || [];
-      const bPressed = pads.some((pad) => !!pad?.buttons?.[1]?.pressed);
-      if (bPressed && !bWasPressed.current) {
-        close();
-      }
-      bWasPressed.current = bPressed;
-      frame = requestAnimationFrame(pollGamepad);
-    };
-
-    window.addEventListener("keydown", onKeyDown, true);
-    frame = requestAnimationFrame(pollGamepad);
-    return () => {
-      window.removeEventListener("keydown", onKeyDown, true);
-      cancelAnimationFrame(frame);
-    };
-  }, [closeModal]);
-
-  return (
-    <ModalRoot closeModal={closeModal}>
-      <div style={{ 
-        position: "fixed", 
-        left: 0, 
-        right: 0, 
-        top: 0, 
-        bottom: 0, 
-        background: "#101113", 
-        color: "#d4d4d4", 
-        zIndex: 9999, 
-        display: "flex", 
-        flexDirection: "column" 
-      }}>
-        <div style={{ 
-          height: "52px", 
-          display: "flex", 
-          alignItems: "center", 
-          justifyContent: "space-between", 
-          padding: "0 16px", 
-          borderBottom: "1px solid rgba(255,255,255,0.16)", 
-          background: "#17191d", 
-          boxSizing: "border-box" 
-        }}>
-          <div style={{ fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", paddingRight: "12px" }}>{title}</div>
-          <button style={{ width: "36px", height: "36px", borderRadius: "4px", border: "1px solid rgba(255,255,255,0.22)", background: "rgba(255,255,255,0.08)", color: "white", fontSize: "18px" }} onClick={closeModal}>x</button>
-        </div>
-        {visibleTabs.length > 1 && (
-          <div style={{ display: "flex", gap: "8px", padding: "8px 16px", borderBottom: "1px solid rgba(255,255,255,0.12)", background: "#14161a" }}>
-            {visibleTabs.map((tab, index) => (
-              <button key={tab.title} onClick={() => setActiveTab(index)} style={{ padding: "6px 10px", borderRadius: "4px", border: "1px solid rgba(255,255,255,0.18)", background: activeTab === index ? "rgba(255,255,255,0.18)" : "rgba(255,255,255,0.06)", color: "white" }}>{tab.title}</button>
-            ))}
-          </div>
-        )}
-        <pre style={{ flex: 1, minHeight: 0, margin: 0, padding: "14px 16px 72px", overflow: "auto", whiteSpace: "pre-wrap", overflowWrap: "anywhere", fontSize: "12px", lineHeight: 1.35, fontFamily: "monospace", boxSizing: "border-box" }}>{activeContent}</pre>
-      </div>
-    </ModalRoot>
-  );
-};
+import { FullscreenLogModal, FullscreenTab } from "./components/FullscreenLogModal";
+import { GameSelector } from "./components/GameSelector";
+import { RecommendationCard } from "./components/RecommendationCard";
+import { HdrStatusBadge } from "./components/HdrStatusBadge";
 
 async function getSteamLaunchOptions(appid: string): Promise<string> {
   const apps = (SteamClient.Apps as any);
@@ -114,33 +43,7 @@ async function getSteamLaunchOptions(appid: string): Promise<string> {
   return typeof value === "string" ? value : value?.strLaunchOptions || value?.launchOptions || "";
 }
 
-function stripHdrLaunchTokens(options: string): string {
-  return (options || "")
-    .replace(/\bPROTON_ENABLE_HDR=\S+\s*/g, "")
-    .replace(/\bDXVK_HDR=\S+\s*/g, "")
-    .replace(/\bENABLE_HDR_WSI=\S+\s*/g, "")
-    .replace(/\bENABLE_GAMESCOPE_WSI=\S+\s*/g, "")
-    .replace(/\bPROTON_LOG=\S+\s*/g, "")
-    .replace(/\bWINEDLLOVERRIDES="[^"]*(?:d3dcompiler_47|dxgi|d3d11|d3d12|d3d9|d3d8|ddraw|dinput8|opengl32)[^"]*"\s*/g, "")
-    .replace(/\bWINEDLLOVERRIDES=[^\s]*?(?:d3dcompiler_47|dxgi|d3d11|d3d12|d3d9|d3d8|ddraw|dinput8|opengl32)[^\s]*\s*/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function mergeHdrLaunchOptions(existing: string, hdrOptions: string): string {
-  const cleanExisting = stripHdrLaunchTokens(existing);
-  const hdrPrefix = (hdrOptions || "").replace(/\s*%command%\s*/g, " ").replace(/\s+/g, " ").trim();
-  if (!hdrPrefix) {
-    return cleanExisting;
-  }
-  if (!cleanExisting) {
-    return `${hdrPrefix} %command%`.trim();
-  }
-  if (cleanExisting.includes("%command%")) {
-    return cleanExisting.replace("%command%", `${hdrPrefix} %command%`).replace(/\s+/g, " ").trim();
-  }
-  return `${hdrPrefix} ${cleanExisting}`.replace(/\s+/g, " ").trim();
-}
+import { stripHdrLaunchTokens, mergeHdrLaunchOptions } from "./utils/hdr_logic";
 
 async function setMergedHdrLaunchOptions(appid: string, hdrOptions: string) {
   const apps = (SteamClient.Apps as any);
@@ -168,6 +71,8 @@ interface Recommendation {
   blocked?: string[];
   notes?: string[];
   requires_verification?: boolean;
+  renodx_status?: string;
+  renodx_match_type?: string;
 }
 
 interface GameContext {
@@ -473,20 +378,27 @@ const HdrManagementSection = () => {
     }
   };
 
-  const methodLabel = recommendation?.method === "renodx_disabled" ? "RENODX DISABLED" : recommendation?.method.toUpperCase();
+  let methodLabel = recommendation?.method === "renodx_disabled" ? "RENODX DISABLED" : recommendation?.method.toUpperCase();
+  if (recommendation?.method === "renodx" && recommendation.renodx_status) {
+    const isGeneric = recommendation.renodx_match_type === "generic_engine";
+    let icon = "⚠️";
+    if (isGeneric) icon = "🧪";
+    else if (recommendation.renodx_status === "working") icon = "✅";
+    else if (recommendation.renodx_status === "in_progress") icon = "🚧";
+    
+    if (isGeneric) {
+      methodLabel = `${icon} Experimental RenoDX Mod for ${context?.engine || "Unknown Engine"}`;
+    } else {
+      methodLabel = `${icon} RenoDX Mod (${recommendation.renodx_status.replace("_", " ")})`;
+    }
+  }
+
   const hdrInstalled = hdrStatus?.status === "success" && hdrStatus.installed;
   const setupDisabled = !hdrInstalled && (!!context?.anti_cheat.length || recommendation?.method === "renodx_disabled" || recommendation?.score === 0);
 
   return (
     <PanelSection title="Per-Game HDR Management">
-      <PanelSectionRow>
-        <DropdownItem
-          rgOptions={games.map(g => ({ data: g, label: g.name }))}
-          selectedOption={selectedGame}
-          onChange={(opt) => setSelectedGame(opt.data)}
-          strDefaultLabel="Select Game..."
-        />
-      </PanelSectionRow>
+      <GameSelector games={games} selectedGame={selectedGame} setSelectedGame={setSelectedGame} />
 
       {selectedGame && (
         <>
@@ -494,42 +406,12 @@ const HdrManagementSection = () => {
             <PanelSectionRow><div>Processing...</div></PanelSectionRow>
           ) : (
             <>
-              {recommendation && (
-                <PanelSectionRow>
-                  <div style={{
-                    padding: "12px",
-                    borderRadius: "4px",
-                    backgroundColor: "rgba(255, 255, 255, 0.05)",
-                    borderLeft: `4px solid ${getConfidenceColor(recommendation.confidence)}`,
-                    width: "100%",
-                    boxSizing: "border-box",
-                    overflowWrap: "anywhere"
-                  }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px", minWidth: 0 }}>
-                      <div style={{ fontWeight: "bold", color: getConfidenceColor(recommendation.confidence), minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" }}>
-                        {methodLabel}
-                      </div>
-                      <div style={{ fontSize: "0.8em", opacity: 0.5, flexShrink: 0 }}>Score: {recommendation.score}</div>
-                    </div>
-                    {context && (
-                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "4px 8px", fontSize: "0.78em", opacity: 0.7, marginTop: "6px" }}>
-                        <div>API: {context.graphics_api || "unknown"}</div>
-                        <div>Hook: {context.injection_dll || "auto"}</div>
-                        <div>Engine: {context.engine || "unknown"}</div>
-                        <div>Arch: {context.architecture || "unknown"}</div>
-                      </div>
-                    )}
-                    <div style={{ fontSize: "0.9em", marginTop: "4px", color: "#eee" }}>
-                      {recommendation.reason}
-                    </div>
-                    {recommendation.notes?.map((note: string, i: number) => (
-                      <div key={i} style={{ fontSize: "0.8em", opacity: 0.6, marginTop: "2px", fontStyle: "italic" }}>
-                        - {note}
-                      </div>
-                    ))}
-                  </div>
-                </PanelSectionRow>
-              )}
+              <RecommendationCard 
+                recommendation={recommendation}
+                context={context}
+                methodLabel={methodLabel || ""}
+                getConfidenceColor={getConfidenceColor}
+              />
 
               {context?.anti_cheat.length ? (
                 <PanelSectionRow>
@@ -547,7 +429,7 @@ const HdrManagementSection = () => {
                 </PanelSectionRow>
               ) : null}
 
-              {context?.special_k_notes?.length ? (
+              {recommendation?.method === "special_k" && context?.special_k_notes?.length ? (
                 <PanelSectionRow>
                   <div style={{ padding: "10px", border: "1px solid rgba(255,255,255,0.18)", borderRadius: "4px", fontSize: "0.82em", lineHeight: 1.25, overflowWrap: "anywhere" }}>
                     <div style={{ fontWeight: 700, marginBottom: "4px" }}>Special K notes from PCGamingWiki</div>
@@ -572,23 +454,7 @@ const HdrManagementSection = () => {
                 </PanelSectionRow>
               ) : null}
 
-              {hdrStatus?.status === "success" && (
-                <PanelSectionRow>
-                  <div style={{
-                    padding: "10px",
-                    borderRadius: "4px",
-                    border: `1px solid ${hdrInstalled ? "#4CAF50" : "rgba(255,255,255,0.16)"}`,
-                    background: hdrInstalled ? "rgba(76,175,80,0.12)" : "rgba(255,255,255,0.04)",
-                    fontSize: "0.84em",
-                    lineHeight: 1.25,
-                    overflowWrap: "anywhere"
-                  }}>
-                    <div style={{ fontWeight: 700 }}>{hdrInstalled ? "HDR Installed" : "HDR Not Installed"}</div>
-                    <div>{hdrStatus.message}</div>
-                    {hdrStatus.method && <div style={{ opacity: 0.7 }}>Method: {hdrStatus.method}</div>}
-                  </div>
-                </PanelSectionRow>
-              )}
+              <HdrStatusBadge hdrStatus={hdrStatus} hdrInstalled={hdrInstalled} />
 
               <PanelSectionRow>
                 <ButtonItem layout="below" onClick={handleSetup} disabled={setupDisabled}>

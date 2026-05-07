@@ -60,6 +60,13 @@ class BackendMockTest(unittest.IsolatedAsyncioTestCase):
     def tearDown(self):
         self.temp.cleanup()
 
+    async def test_plugin_initialization_does_not_crash(self):
+        # This will fail if __init__ or _main do something unsafe (like calling asyncio.create_task 
+        # before the event loop is fully established in the environment test setup, though 
+        # IsolatedAsyncioTestCase has a loop, the actual decky environment might not in its init).
+        plugin = self.module.Plugin()
+        self.assertIsNotNone(plugin)
+
     async def test_version_comparison_is_semantic(self):
         plugin = self.module.Plugin()
         self.assertTrue(plugin._is_newer_version("0.1.9", "0.1.10"))
@@ -435,6 +442,66 @@ class BackendMockTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(recommendations[0]["method"], "special_k")
         self.assertTrue(recommendations[0]["requires_verification"])
+
+    async def test_decision_tree_auto_hdr_script_boosts_special_k_score(self):
+        recommendations = DecisionTree().evaluate({
+            "appid": "999",
+            "title": "Auto HDR Script Game",
+            "graphics_api": "dx11_dx12",
+            "anti_cheat": [],
+            "is_multiplayer": False,
+            "native_hdr": "unknown",
+            "special_k_wiki": False,
+            "auto_hdr_script": "https://example.com/script.ini",
+        })
+
+        special_k_rec = next(r for r in recommendations if r["method"] == "special_k")
+        # Base DX11 score is 75, script gives +15, so 90.
+        self.assertEqual(special_k_rec["score"], 90)
+        self.assertTrue(any("AutoHDR script provided" in note for note in special_k_rec["notes"]))
+
+    async def test_decision_tree_generic_engine_flags_renodx_experimental_and_scores_90(self):
+        recommendations = DecisionTree([{"name": "Generic Game", "match_type": "generic_engine", "experimental": True, "engine_bucket": "unreal"}]).evaluate({
+            "appid": "123",
+            "title": "Generic Game",
+            "graphics_api": "dx12",
+            "engine": "Unreal Engine 5",
+            "anti_cheat": [],
+            "is_multiplayer": False,
+            "native_hdr": "unknown",
+            "special_k_wiki": False,
+            "renodx_flow_enabled": True,
+            "renodx_supported": True,
+            "renodx_experimental": True,
+            "renodx_match": {"match_type": "generic_engine", "name": "Generic Game", "status": "working", "source_type": "generic"}
+        })
+
+        renodx_rec = next(r for r in recommendations if r["method"] == "renodx")
+        self.assertEqual(renodx_rec["score"], 90)
+        self.assertEqual(renodx_rec["confidence"], "medium")
+        self.assertIn("Experimental generic RenoDX engine addon", renodx_rec["reason"])
+        self.assertEqual(renodx_rec["renodx_match_type"], "generic_engine")
+
+    async def test_decision_tree_injects_manual_steps_and_warnings(self):
+        recommendations = DecisionTree([{"name": "Game", "match_type": "listed"}]).evaluate({
+            "appid": "123",
+            "title": "Game",
+            "graphics_api": "dx12",
+            "anti_cheat": [],
+            "is_multiplayer": False,
+            "native_hdr": "unknown",
+            "special_k_wiki": False,
+            "renodx_flow_enabled": True,
+            "renodx_supported": True,
+            "renodx_match": {"match_type": "listed"},
+            "tools": {
+                "renodx": {"manual_steps": ["Step 1"], "warnings": ["Warning 1"]}
+            }
+        })
+        
+        renodx_rec = next(r for r in recommendations if r["method"] == "renodx")
+        self.assertIn("Step 1", renodx_rec["notes"])
+        self.assertIn("Warning 1", renodx_rec["notes"])
 
     async def test_api_detection_scans_unity_player_imports(self):
         plugin = self.module.Plugin()

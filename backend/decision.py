@@ -67,6 +67,8 @@ class DecisionTree:
                     else "RenoDX/Luma mod found for this game."
                 ),
                 "confidence": "medium" if is_experimental else "high",
+                "renodx_status": match.get("status", "listed"),
+                "renodx_match_type": match_type,
                 "notes": [
                     f"RenoDX match: {match.get('name', title)}.",
                     f"Source: {match.get('source_type', 'unknown')}.",
@@ -80,8 +82,7 @@ class DecisionTree:
                     "reason": "Standard Dynamic Range fallback.",
                     "confidence": "high"
                 })
-                recommendations.sort(key=lambda x: x["score"], reverse=True)
-                return recommendations
+                return self._finalize_recommendations(recommendations, context)
         elif renodx_supported or luma_supported:
             recommendations.append({
                 "method": "renodx_disabled",
@@ -120,9 +121,14 @@ class DecisionTree:
             sk_eligible = False
             
         if sk_eligible:
+            score = 75
+            if context.get("auto_hdr_script"):
+                score += 15
+                sk_notes.append("AutoHDR script provided (+15 score).")
+
             recommendations.append({
                 "method": "special_k",
-                "score": 75,
+                "score": score,
                 "reason": (
                     "Special K can be attempted for this API family, but HDR support must be verified."
                     if sk_requires_verification
@@ -155,8 +161,25 @@ class DecisionTree:
             "confidence": "high"
         })
 
+        return self._finalize_recommendations(recommendations, context)
+
+    def _finalize_recommendations(self, recommendations, context):
         # Sort by score descending
         recommendations.sort(key=lambda x: x["score"], reverse=True)
+        
+        # Inject tool-specific metadata from context.tools if present
+        tools_meta = context.get("tools", {})
+        for rec in recommendations:
+            method = rec["method"]
+            if method in tools_meta:
+                meta = tools_meta[method]
+                if "manual_steps" in meta:
+                    rec["manual_steps"] = meta["manual_steps"]
+                    rec.setdefault("notes", []).extend(meta["manual_steps"])
+                if "warnings" in meta:
+                    rec["warnings"] = meta["warnings"]
+                    rec.setdefault("notes", []).extend(meta["warnings"])
+                    
         return recommendations
 
     def _is_renodx_supported(self, title, appid):

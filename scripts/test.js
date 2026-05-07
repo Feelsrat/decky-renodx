@@ -46,6 +46,8 @@ function main() {
     console.log("OK: Python syntax");
     run("python", ["-m", "unittest", "tests.test_backend_mocks"]);
     console.log("OK: backend tests");
+    run(process.execPath, ["--experimental-strip-types", "scripts/test_hdr_logic.ts"]);
+    console.log("OK: frontend logic tests");
     run(process.execPath, [join(rootDir, "node_modules", "typescript", "bin", "tsc"), "--noEmit", "--skipLibCheck"]);
     console.log("OK: TypeScript types");
     run(process.execPath, [join(rootDir, "node_modules", "rollup", "dist", "bin", "rollup"), "-c"]);
