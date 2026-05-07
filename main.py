@@ -35,6 +35,7 @@ try:
     from backend.decision import DecisionTree
     from backend.installer import HDRInstaller
     from backend.cache import PersistentCache
+    from backend.pe_imports import imported_dlls, pe_architecture
 except ImportError as e:
     decky.logger.error(f"Failed to import backend modules: {e}")
     raise
@@ -56,7 +57,6 @@ GITHUB_RELEASES_URL = "https://api.github.com/repos/Feelsrat/decky-renodx/releas
 RENODX_MODS_URL = "https://raw.githubusercontent.com/wiki/clshortfuse/renodx/Mods.md"
 RESHADE_FXH_URL = "https://raw.githubusercontent.com/crosire/reshade-shaders/slim/Shaders/ReShade.fxh"
 SPECIALK_RELEASES_URL = "https://api.github.com/repos/SpecialKO/SpecialK/releases/latest"
-DGVOODOO2_RELEASES_URL = "https://api.github.com/repos/dege-diosg/dgVoodoo2/releases/latest"
 LILIUM_HDR_RELEASES_URL = "https://api.github.com/repos/EndlesslyFlowering/ReShade_HDR_shaders/releases/latest"
 PUMBO_AUTOHDR_ZIP_URL = "https://github.com/Filoppi/PumboAutoHDR/archive/refs/heads/master.zip"
 AUTO_CHECK_INTERVAL = 86400
@@ -1643,13 +1643,13 @@ class Plugin:
 
         lilium_archive = bin_dir / "lilium_hdr_shaders.7z"
         if lilium_archive.exists():
-            self._extract_shader_archive(lilium_archive, shader_dir, texture_dir)
+            self._extract_shader_archive(lilium_archive, shader_dir, texture_dir, preserve_lilium_layout=True)
 
         pumbo_archive = bin_dir / "PumboAutoHDR-master.zip"
         if pumbo_archive.exists():
             self._extract_shader_archive(pumbo_archive, shader_dir, texture_dir)
 
-    def _extract_shader_archive(self, archive_path: Path, shader_dir: Path, texture_dir: Path) -> None:
+    def _extract_shader_archive(self, archive_path: Path, shader_dir: Path, texture_dir: Path, preserve_lilium_layout: bool = False) -> None:
         with tempfile.TemporaryDirectory(prefix=f"{PLUGIN_PACKAGE}-shader-pack-") as temp_root:
             temp_path = Path(temp_root)
             if archive_path.suffix.lower() == ".zip":
@@ -1664,9 +1664,31 @@ class Plugin:
                 lower_parent = str(path.parent).lower()
                 suffix = path.suffix.lower()
                 if suffix in [".fx", ".fxh"]:
-                    shutil.copy2(path, shader_dir / path.name)
+                    relative = self._shader_pack_relative_path(path, temp_path)
+                    if preserve_lilium_layout and relative:
+                        target = shader_dir / relative
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(path, target)
+                    else:
+                        shutil.copy2(path, shader_dir / path.name)
                 elif suffix in [".png", ".jpg", ".jpeg", ".dds"] or "texture" in lower_parent:
                     shutil.copy2(path, texture_dir / path.name)
+
+    def _shader_pack_relative_path(self, path: Path, root: Path) -> Path | None:
+        try:
+            relative = path.relative_to(root)
+        except ValueError:
+            return None
+        parts = list(relative.parts)
+        lower_parts = [part.lower() for part in parts]
+        for marker in ("shaders", "reshade-shaders", "reshade_shaders"):
+            if marker in lower_parts:
+                index = lower_parts.index(marker)
+                if index + 1 < len(parts):
+                    return Path(*parts[index + 1:])
+        if len(parts) > 1:
+            return Path(*parts[1:])
+        return relative
 
     def _install_specialk_runtime(self, main_path: Path, bin_dir: Path) -> None:
         archive = bin_dir / "SpecialK.7z"
@@ -1710,6 +1732,7 @@ class Plugin:
             "[GENERAL]\n"
             "EffectSearchPaths=.\\ReShade_shaders\\Merged\\Shaders\n"
             "TutorialProgress=4\n"
+            "SkipLoadingDisabledEffects=1\n"
             "TextureSearchPaths=.\\ReShade_shaders\\Merged\\Textures\n"
             "PresetPath=.\\ReShadePreset.ini\n",
             encoding="utf-8",
@@ -2086,9 +2109,20 @@ class Plugin:
             if action == "uninstall":
                 self._remove_game_hdr_marker(Path(game_path))
             elif action == "install":
+                verify_success, verify_message = self.installer.verify_reshade(str(install_dir))
+                if not verify_success:
+                    logger.error("ReShade install verification failed: %s", verify_message)
+                    return {
+                        "status": "error",
+                        "message": verify_message,
+                        "output": process.stdout,
+                    }
+                effective_dll = self._parse_reshade_selected_api(process.stdout) or dll_override
+                if effective_dll == "auto":
+                    effective_dll = "dxgi"
                 installed_files = []
                 for name in [
-                    f"{dll_override}.dll",
+                    f"{effective_dll}.dll",
                     "d3dcompiler_47.dll",
                     "ReShade.ini",
                     "ReShadePreset.ini",
@@ -2111,7 +2145,19 @@ class Plugin:
                         arch = str(detected.get("architecture") or "64")
                 except Exception:
                     pass
-                self._write_game_hdr_marker(install_dir, appid, "reshade-hdr", dll_override, arch)
+                wine_override = {"modified_files": [], "backups": {}, "wine_dll_overrides": {}}
+                if effective_dll == "opengl32":
+                    wine_override = self._set_wine_dll_override(appid, "opengl32", "native,builtin", logger)
+                self._write_game_hdr_marker(
+                    install_dir,
+                    appid,
+                    "reshade-hdr",
+                    effective_dll,
+                    arch,
+                    {
+                        "wine_dll_overrides": wine_override.get("wine_dll_overrides", {}),
+                    },
+                )
                 marker = install_dir / ".decky-renodx-hdr.json"
                 if str(marker) not in installed_files:
                     installed_files.append(str(marker))
@@ -2119,14 +2165,24 @@ class Plugin:
                     "appid": appid,
                     "method": "reshade",
                     "installed_files": installed_files,
-                    "modified_files": [],
-                    "backups": {},
-                    "verified": False,
-                    "verification_notes": "ReShade AutoHDR installed; launch the game to verify ReShade initializes.",
+                    "modified_files": wine_override.get("modified_files", []),
+                    "backups": wine_override.get("backups", {}),
+                    "launch_options_after": self._hdr_launch_options(effective_dll),
+                    "wine_dll_overrides": wine_override.get("wine_dll_overrides", {}),
+                    "verified": verify_success,
+                    "verification_notes": verify_message,
                     "plugin_version": self._current_version(),
                 })
             self._fix_deck_user_ownership(game_path)
-            return {"status": "success", "output": process.stdout}
+            response = {"status": "success", "output": process.stdout}
+            if action == "install":
+                effective_dll = self._parse_reshade_selected_api(process.stdout) or dll_override
+                if effective_dll == "auto":
+                    effective_dll = "dxgi"
+                response["injection_dll"] = effective_dll
+                response["launch_options"] = self._hdr_launch_options(effective_dll)
+                await self._set_steam_launch_options(appid, response["launch_options"])
+            return response
         except Exception as e:
             decky.logger.error(str(e))
             return {"status": "error", "message": str(e)}
@@ -2160,6 +2216,7 @@ class Plugin:
             specialk_result = self._install_specialk_for_game(exe_dir, api, arch)
             if specialk_result.get("status") == "success":
                 launch_options = self._hdr_launch_options(str(specialk_result["dll"]))
+                await self._set_steam_launch_options(appid, launch_options)
                 self._write_game_hdr_marker(exe_dir, appid, "specialk", str(specialk_result["dll"]), arch)
                 self._fix_deck_user_ownership(exe_dir)
                 return {
@@ -2176,6 +2233,8 @@ class Plugin:
             decky.logger.warning("Special K fallback was not applied: %s", specialk_result.get("message"))
             reshade_result = await self.manage_game_reshade(appid, "install", api, "", selected_executable_path)
             if reshade_result.get("status") == "success":
+                if reshade_result.get("launch_options"):
+                    await self._set_steam_launch_options(appid, str(reshade_result["launch_options"]))
                 self._write_game_hdr_marker(exe_dir, appid, "reshade-hdr", api, arch)
                 reshade_result["method"] = "reshade-hdr"
                 reshade_result["output"] = (
@@ -2214,7 +2273,6 @@ class Plugin:
                 "renodx_flow_enabled": False,
                 "special_k_notes": [],
                 "special_k_delay_seconds": "0",
-                "dgvoodoo2_enabled": False,
             }
 
             # Try to load metadata from cache
@@ -2240,6 +2298,11 @@ class Plugin:
                 wiki_data = self.wiki_scraper.get_game_data(appid)
                 if "status" not in wiki_data:
                     context["native_hdr"] = wiki_data.get("native_hdr", "unknown")
+                    if wiki_data.get("graphics_api") and wiki_data.get("graphics_api") != "unknown":
+                        context["graphics_api"] = wiki_data.get("graphics_api", "unknown")
+                        context["injection_dll"] = self._api_to_injection_dll(context["graphics_api"])
+                        context["api_source"] = wiki_data.get("api_source", "pcgamingwiki_api_table")
+                        context["api_page"] = wiki_data.get("api_page", "")
                     context["special_k_wiki"] = wiki_data.get("special_k_compatible", False)
                     context["special_k_notes"] = wiki_data.get("special_k_notes", [])
                     context["special_k_delay_seconds"] = wiki_data.get("special_k_delay_seconds", "0")
@@ -2256,6 +2319,8 @@ class Plugin:
                     context["engine"] = api_info.get("engine", "unknown")
                     
                     context["anti_cheat"] = self.ac_detector.detect(str(Path(resolved_game_path).parent))
+                if context["graphics_api"] == "unknown":
+                    await self._apply_pcgw_api_fallback(context, appid, logger)
                 if context["graphics_api"] == "unknown":
                     await self._apply_steam_metadata_api_fallback(context, appid, logger)
                 
@@ -2287,6 +2352,23 @@ class Plugin:
         except Exception as e:
             decky.logger.error(f"Error in get_hdr_recommendation: {str(e)}")
             return {"status": "error", "message": str(e)}
+
+    async def _apply_pcgw_api_fallback(self, context: dict[str, Any], appid: str, logger=None) -> None:
+        try:
+            wiki_data = await asyncio.to_thread(self.wiki_scraper.get_game_data, appid)
+            api = wiki_data.get("graphics_api") if isinstance(wiki_data, dict) else ""
+            if not api or api == "unknown":
+                return
+            context["graphics_api"] = api
+            context["injection_dll"] = self._api_to_injection_dll(api)
+            context["api_confidence"] = "metadata"
+            context["api_source"] = wiki_data.get("api_source", "pcgamingwiki_api_table")
+            context["api_page"] = wiki_data.get("api_page", "")
+            if logger:
+                logger.info("PCGamingWiki API table detected %s for AppID %s", api, appid)
+        except Exception as error:
+            if logger:
+                logger.info("PCGamingWiki API fallback unavailable for AppID %s: %s", appid, error)
 
     async def _resolve_game_executable_for_recommendation(self, appid: str, logger=None) -> str:
         try:
@@ -2533,6 +2615,7 @@ class Plugin:
                     return rec_result
 
                 recommendations = rec_result["recommendations"]
+                context = rec_result.get("context", {}) or {}
                 
                 # If skip_current, remove the top recommendation if it's already installed
                 if skip_current and len(recommendations) > 1:
@@ -2575,7 +2658,6 @@ class Plugin:
                             logger.error(f"Special K install failed: SpecialK{arch}.dll was not found after runtime setup.")
                             continue
                         
-                        context = rec_result.get("context", {})
                         success, message = self.installer.install_special_k(
                             appid,
                             exe_path,
@@ -2587,6 +2669,7 @@ class Plugin:
                             # Verification check would usually happen AFTER launch, 
                             # but we return the success state for now.
                             launch_opts = self._hdr_launch_options("dxgi")
+                            await self._set_steam_launch_options(appid, launch_opts)
                             return {
                                 "status": "success", 
                                 "method": "special_k", 
@@ -2597,24 +2680,13 @@ class Plugin:
                             logger.error(f"Special K install failed: {message}")
                             continue
 
-                    if method == "dgvoodoo2_special_k":
-                        result = await self.install_dgvoodoo2_specialk(appid, title, exe_path)
-                        if result.get("status") == "success":
-                            return result
-                        logger.error(f"dgVoodoo2 + Special K install failed: {result.get('message')}")
-                        continue
-
                     if method == "reshade":
-                        reshade_result = await self.manage_game_reshade(appid, "install", "dxgi", "", exe_path)
+                        reshade_dll = str(context.get("injection_dll") or "dxgi")
+                        if reshade_dll == "auto":
+                            reshade_dll = "dxgi"
+                        reshade_result = await self.manage_game_reshade(appid, "install", reshade_dll, "", exe_path)
                         if reshade_result["status"] == "success":
-                            self.manifest_manager.write_manifest(appid, {
-                                "appid": appid,
-                                "method": "reshade",
-                                "installed_files": [os.path.join(os.path.dirname(exe_path), "dxgi.dll")],
-                                "backups": {},
-                                "verified": True
-                            })
-                            launch_opts = self._hdr_launch_options("dxgi")
+                            launch_opts = self._hdr_launch_options(reshade_dll)
                             return {
                                 "status": "success", 
                                 "method": "reshade", 
@@ -2663,6 +2735,7 @@ class Plugin:
                     return {"status": "error", "message": message}
 
                 launch_opts = self._hdr_launch_options("dxgi")
+                await self._set_steam_launch_options(appid, launch_opts)
                 logger.info("Forced Special K install completed; HDR still requires in-game verification.")
                 return {
                     "status": "success",
@@ -2672,87 +2745,6 @@ class Plugin:
                 }
             except Exception as e:
                 decky.logger.error(f"Error in force_special_k_setup: {str(e)}")
-                return {"status": "error", "message": str(e)}
-
-    async def install_dgvoodoo2_specialk(self, appid: str, title: str, exe_path: str = "") -> dict:
-        """Experimental DX9 wrapper path: dgVoodoo2 D3D9 -> DX11, then Special K DXGI."""
-        async with self._install_lock:
-            try:
-                logger = setup_per_game_logger(appid)
-                logger.info(f"User requested experimental dgVoodoo2 + Special K setup for {title}")
-                if not exe_path or not os.path.exists(exe_path):
-                    exe_path = await self._resolve_game_executable_for_recommendation(appid, logger)
-                if not exe_path or not os.path.exists(exe_path):
-                    return {"status": "error", "message": "Game executable path was not resolved. Refresh the game state and try again."}
-
-                api_info = await self._detect_api_with_cache(exe_path, logger)
-                api = str(api_info.get("api", "unknown")).lower()
-                arch = str(api_info.get("architecture", "64") or "64")
-                if api not in {"dx9", "d3d9"}:
-                    return {"status": "error", "message": f"dgVoodoo2 wrapper mode is only offered for DX9/D3D9 games. Detected: {api}."}
-
-                compat_result = self._clear_steam_compatdata(appid, logger)
-                if compat_result["status"] == "error":
-                    return {"status": "error", "message": compat_result["message"], "compatdata": compat_result}
-
-                await self._ensure_special_k_bin()
-                self._ensure_dgvoodoo2_bin()
-                sk_source = self._specialk_runtime_source(arch)
-                dgvoodoo_source = self._dgvoodoo2_d3d9_source(arch)
-                if not sk_source:
-                    return {"status": "error", "message": f"SpecialK{arch}.dll was not found after runtime setup."}
-                if not dgvoodoo_source:
-                    return {"status": "error", "message": "dgVoodoo2 D3D9.dll was not found after runtime setup."}
-
-                exe_dir = Path(exe_path).parent
-                installed_files: list[str] = []
-                backups: dict[str, str] = {}
-                for source, target_name in [(dgvoodoo_source, "D3D9.dll"), (sk_source, "dxgi.dll")]:
-                    target = exe_dir / target_name
-                    if target.exists():
-                        backup = target.with_name(f"{target.name}.decky-renodx-bak")
-                        shutil.move(str(target), str(backup))
-                        backups[str(target)] = str(backup)
-                    shutil.copy2(source, target)
-                    target.chmod(0o666)
-                    installed_files.append(str(target))
-
-                config = exe_dir / "dgVoodoo.conf"
-                self._write_dgvoodoo2_config(config)
-                installed_files.append(str(config))
-                self._write_specialk_hdr_ini(exe_dir / "SpecialK.ini")
-                self._write_specialk_hdr_ini(exe_dir / "dxgi.ini")
-                installed_files.extend([str(exe_dir / "SpecialK.ini"), str(exe_dir / "dxgi.ini")])
-                self._write_game_hdr_marker(exe_dir, appid, "dgvoodoo2-specialk", "dxgi", arch)
-                installed_files.append(str(exe_dir / ".decky-renodx-hdr.json"))
-
-                self.manifest_manager.write_manifest(appid, {
-                    "appid": appid,
-                    "title": title,
-                    "method": "dgvoodoo2_special_k",
-                    "installed_files": installed_files,
-                    "modified_files": [],
-                    "backups": backups,
-                    "verified": False,
-                    "verification_notes": "Experimental DX9 wrapper path. Launch the game and verify Special K HDR menu/setup is available.",
-                    "plugin_version": self._current_version(),
-                    "compatdata_cleared": compat_result.get("removed", []),
-                })
-                self._fix_deck_user_ownership(exe_dir)
-                launch_options = self._hdr_launch_options("d3d9;dxgi")
-                logger.info("Installed experimental dgVoodoo2 + Special K wrapper path.")
-                return {
-                    "status": "success",
-                    "method": "dgvoodoo2_special_k",
-                    "message": f"Installed experimental dgVoodoo2 {('x86' if arch == '32' else 'x64')} D3D9 wrapper + SpecialK{arch}. Launch and verify the Special K HDR menu appears.",
-                    "launch_options": launch_options,
-                    "architecture": arch,
-                    "wrapper": "dgVoodoo2 x86" if arch == "32" else "dgVoodoo2 x64",
-                    "special_k": f"SpecialK{arch}",
-                    "compatdata": compat_result,
-                }
-            except Exception as e:
-                decky.logger.exception("dgVoodoo2 + Special K setup failed")
                 return {"status": "error", "message": str(e)}
 
     async def _ensure_special_k_bin(self):
@@ -2769,60 +2761,6 @@ class Plugin:
         except Exception as e:
             decky.logger.error(f"Failed to ensure Special K binaries: {str(e)}")
 
-    def _ensure_dgvoodoo2_bin(self) -> None:
-        bin_dir = Path(self.bin_cache_path)
-        bin_dir.mkdir(parents=True, exist_ok=True)
-        archive = bin_dir / "dgVoodoo2.zip"
-        target_dir = Path(self.main_path) / "dgVoodoo2"
-        if not archive.exists() or archive.stat().st_size < 256 * 1024:
-            self._download_latest_github_asset(DGVOODOO2_RELEASES_URL, archive, [".zip"])
-        if target_dir.exists() and any(target_dir.rglob("D3D9.dll")):
-            return
-        if target_dir.exists():
-            shutil.rmtree(target_dir)
-        target_dir.mkdir(parents=True, exist_ok=True)
-        with zipfile.ZipFile(archive) as zip_archive:
-            self._safe_extract(zip_archive, target_dir)
-
-    def _dgvoodoo2_d3d9_source(self, arch: str = "64") -> Path | None:
-        dgvoodoo_dir = Path(self.main_path) / "dgVoodoo2"
-        if not dgvoodoo_dir.exists():
-            return None
-        candidates = [path for path in dgvoodoo_dir.rglob("D3D9.dll") if path.is_file()]
-        if not candidates:
-            return None
-        preferred_arch = "x64" if str(arch) == "64" else "x86"
-        for path in candidates:
-            parts = [part.lower() for part in path.parts]
-            if "ms" in parts and preferred_arch in parts:
-                return path
-        for path in candidates:
-            parts = [part.lower() for part in path.parts]
-            if "ms" in parts:
-                return path
-        return candidates[0]
-
-    def _write_dgvoodoo2_config(self, config_path: Path) -> None:
-        text = """\
-[General]
-OutputAPI=bestavailable
-AdapterIDType=default
-FullScreenMode=false
-ScalingMode=unspecified
-ProgressiveScanlineOrder=false
-
-[DirectX]
-DisableAndPassThru=false
-VRAM=1024
-dgVoodooWatermark=false
-FastVideoMemoryAccess=true
-AppControlledScreenMode=true
-DisableAltEnterToToggleScreenMode=false
-PresentationModel=flip_discard
-"""
-        config_path.write_text(text, encoding="utf-8")
-        config_path.chmod(0o666)
-
     def _specialk_runtime_source(self, arch: str = "64") -> Path | None:
         specialk_dir = Path(self.main_path) / "SpecialK"
         source_name = "SpecialK32.dll" if str(arch) == "32" else "SpecialK64.dll"
@@ -2832,15 +2770,110 @@ PresentationModel=flip_discard
         return candidates[0] if candidates else None
 
     async def _set_steam_launch_options(self, appid: str, options: str):
-        """Placeholder for setting launch options - usually handled in frontend."""
-        pass
+        """Best-effort backend launch option writer for Steam games."""
+        await asyncio.to_thread(self._set_steam_launch_options_sync, appid, options)
+
+    def _set_steam_launch_options_sync(self, appid: str, options: str) -> None:
+        if not re.fullmatch(r"\d+", str(appid or "")):
+            raise ValueError(f"Invalid appid: {appid}")
+        escaped = (options or "").replace("\\", "\\\\").replace('"', '\\"')
+        updated = False
+        for localconfig in self._steam_localconfig_candidates():
+            if not localconfig.exists():
+                continue
+            text = localconfig.read_text(encoding="utf-8", errors="ignore")
+            new_text, changed = self._replace_localconfig_launch_options(text, str(appid), escaped)
+            if changed:
+                localconfig.write_text(new_text, encoding="utf-8")
+                updated = True
+        if not updated:
+            decky.logger.warning("Could not find Steam localconfig launch options block for appid %s", appid)
+
+    def _steam_localconfig_candidates(self) -> list[Path]:
+        candidates: list[Path] = []
+        for steam_root in self._steam_root_candidates():
+            userdata = steam_root / "userdata"
+            if not userdata.exists():
+                continue
+            candidates.extend(userdata.glob("*/config/localconfig.vdf"))
+        unique: list[Path] = []
+        seen: set[str] = set()
+        for path in candidates:
+            key = str(path.resolve())
+            if key not in seen:
+                unique.append(path)
+                seen.add(key)
+        return unique
+
+    def _replace_localconfig_launch_options(self, text: str, appid: str, escaped_options: str) -> tuple[str, bool]:
+        needle = f'"{appid}"'
+        pos = 0
+        changed_any = False
+        while True:
+            idx = text.find(needle, pos)
+            if idx < 0:
+                return text, changed_any
+            brace = text.find("{", idx)
+            if brace < 0:
+                return text, False
+            depth = 0
+            end = None
+            for offset in range(brace, len(text)):
+                if text[offset] == "{":
+                    depth += 1
+                elif text[offset] == "}":
+                    depth -= 1
+                    if depth == 0:
+                        end = offset + 1
+                        break
+            if end is None:
+                return text, False
+            block = text[idx:end]
+            if '"LaunchOptions"' in block:
+                new_block = re.sub(
+                    r'(?m)^(\s*"LaunchOptions"\s+").*("\s*)$',
+                    lambda match: f"{match.group(1)}{escaped_options}{match.group(2)}",
+                    block,
+                    count=1,
+                )
+                if new_block != block:
+                    text = text[:idx] + new_block + text[end:]
+                    end = idx + len(new_block)
+                    changed_any = True
+                pos = end
+                continue
+            insert_at = block.rfind("}")
+            if insert_at >= 0:
+                indent = re.search(r'(?m)^(\s*)"[^"]+"\s+"[^"]*"\s*$', block)
+                prefix = indent.group(1) if indent else "\t\t\t"
+                line = f'{prefix}"LaunchOptions"\t\t"{escaped_options}"\n'
+                new_block = block[:insert_at] + line + block[insert_at:]
+                text = text[:idx] + new_block + text[end:]
+                pos = idx + len(new_block)
+                changed_any = True
+                continue
+            pos = end
+
+    def _parse_reshade_selected_api(self, output: str) -> str:
+        match = re.search(r"Selected API:\s*([a-z0-9_]+)", output or "", re.I)
+        if match:
+            return self._api_to_injection_dll(match.group(1).lower())
+        matches = re.findall(r"([a-z0-9_]+)=n,b", output or "", re.I)
+        for item in reversed(matches):
+            if item.lower() != "d3dcompiler_47":
+                return self._api_to_injection_dll(item.lower())
+        return ""
 
     def _hdr_launch_options(self, dll: str) -> str:
-        overrides = ["d3dcompiler_47=n"]
+        overrides = []
         for item in str(dll or "dxgi").split(";"):
             item = item.strip()
             if item:
                 overrides.append(f"{item}=n,b")
+        if overrides == ["opengl32=n,b"]:
+            return "PROTON_ENABLE_HDR=1 DXVK_HDR=1 ENABLE_HDR_WSI=1 %command%"
+        if not any(item.startswith("opengl32=") for item in overrides):
+            overrides.insert(0, "d3dcompiler_47=n")
         return f'PROTON_ENABLE_HDR=1 DXVK_HDR=1 ENABLE_HDR_WSI=1 WINEDLLOVERRIDES="{";".join(overrides)}" %command%'
 
     async def update_sk_config_value(self, appid: str, exe_path: str, section: str, key: str, value: str) -> dict:
@@ -2924,6 +2957,61 @@ PresentationModel=flip_discard
                 decky.logger.warning("Could not enumerate library compatdata paths: %s", error)
         return paths
 
+    def _set_wine_dll_override(self, appid: str, dll: str, value: str = "native,builtin", logger=None) -> dict[str, Any]:
+        """Persist a Wine DLL override in the Steam compatdata prefix.
+
+        OpenGL ReShade under Proton can be ignored when provided only through
+        Steam launch options, so we write user.reg and track the backup in the
+        install manifest for clean removal.
+        """
+        dll = Path(str(dll)).stem.lower()
+        compat_paths = self._steam_compatdata_paths(appid)
+        compat_path = compat_paths[0] if compat_paths else self._deck_expanduser(f"~/.local/share/Steam/steamapps/compatdata/{appid}")
+        user_reg = Path(compat_path) / "pfx" / "user.reg"
+        user_reg.parent.mkdir(parents=True, exist_ok=True)
+
+        backup_path = ""
+        text = "WINE REGISTRY Version 2\n\n"
+        if user_reg.exists():
+            text = user_reg.read_text(encoding="utf-8", errors="ignore")
+            backup_path = str(user_reg.with_name(f"{user_reg.name}.decky-renodx-bak-{appid}-{int(time.time())}"))
+            shutil.copy2(user_reg, backup_path)
+
+        text = self._upsert_wine_dll_override_text(text, dll, value)
+        user_reg.write_text(text, encoding="utf-8")
+        if logger:
+            logger.info("Set Wine DLL override for %s: %s=%s in %s", appid, dll, value, user_reg)
+        return {
+            "modified_files": [str(user_reg)],
+            "backups": {str(user_reg): backup_path} if backup_path else {},
+            "wine_dll_overrides": {dll: value},
+        }
+
+    def _upsert_wine_dll_override_text(self, text: str, dll: str, value: str) -> str:
+        if not text.strip():
+            text = "WINE REGISTRY Version 2\n\n"
+        # Clean up the malformed single-backslash section that an older manual
+        # experiment could leave behind, then write the canonical Wine section.
+        text = re.sub(
+            rf'(?ms)^\[Software\\Wine\\DllOverrides\].*?(?=^\[|\Z)',
+            "",
+            text,
+        )
+        section_re = re.compile(r'(?ms)^\[Software\\\\Wine\\\\DllOverrides\][^\n]*\n(?P<body>.*?)(?=^\[|\Z)')
+        line_re = re.compile(rf'(?m)^"{re.escape(dll)}"="[^"]*"\n?')
+        entry = f'"{dll}"="{value}"\n'
+        match = section_re.search(text)
+        if match:
+            section = match.group(0)
+            header = section.splitlines()[0] + "\n"
+            body = section[len(header):]
+            body = line_re.sub("", body).rstrip() + "\n" + entry
+            replacement = header + body + "\n"
+            return text[:match.start()] + replacement + text[match.end():]
+        if not text.endswith("\n"):
+            text += "\n"
+        return text + f'\n[Software\\\\Wine\\\\DllOverrides] {int(time.time())}\n{entry}\n'
+
     def _cleanup_hdr_files_without_manifest(self, appid: str, exe_path: str = "", logger=None) -> dict:
         try:
             exe_dir = Path(exe_path).parent if exe_path and os.path.exists(exe_path) else self._resolve_game_exe_dir(appid, "")
@@ -2939,7 +3027,7 @@ PresentationModel=flip_discard
             for name in [
                 "SpecialK.ini", "dxgi.ini", "d3d11.ini", "d3d9.ini", "D3D9.ini", "dinput8.ini", "DINPUT8.ini", "ddraw.ini",
                 "ReShade.ini", "ReShadePreset.ini", "ReShade.log", "dxgi.log", "d3d9.log", "dinput8.log",
-                "dgVoodoo.conf", ".decky-renodx-hdr.json",
+                ".decky-renodx-hdr.json",
                 "AutoHDR32.addon", "AutoHDR64.addon", "AutoHDR.addon32", "AutoHDR.addon64",
             ]:
                 candidates.append(exe_dir / name)
@@ -3090,7 +3178,7 @@ PresentationModel=flip_discard
             return Path(selected_executable_path).parent
         return Path(self._find_game_path(appid))
 
-    def _write_game_hdr_marker(self, exe_dir: Path, appid: str, method: str, dll: str, arch: str) -> None:
+    def _write_game_hdr_marker(self, exe_dir: Path, appid: str, method: str, dll: str, arch: str, extra: dict[str, Any] | None = None) -> None:
         marker = {
             "appid": appid,
             "method": method,
@@ -3099,6 +3187,8 @@ PresentationModel=flip_discard
             "plugin_version": self._current_version(),
             "installed_at": datetime.now(timezone.utc).isoformat(),
         }
+        if extra:
+            marker.update(extra)
         (exe_dir / ".decky-renodx-hdr.json").write_text(json.dumps(marker, indent=2), encoding="utf-8")
 
     def _read_game_hdr_marker(self, exe_dir: Path) -> dict[str, Any]:
@@ -3131,15 +3221,37 @@ PresentationModel=flip_discard
         }
 
     def _steam_launch_options(self, appid: str) -> str:
-        try:
-            appinfo = self._steam_root_candidates()[0] / "appcache" / "appinfo.vdf"
-            if appinfo.exists():
-                text = appinfo.read_text(encoding="utf-8", errors="ignore")
-                match = re.search(rf'"appid"\s+"{re.escape(str(appid))}".{{0,5000}}?"LaunchOptions"\s+"((?:\\.|[^"\\])*)"', text, re.S | re.I)
-                if match:
-                    return bytes(match.group(1), "utf-8").decode("unicode_escape")
-        except Exception:
-            pass
+        for localconfig in self._steam_localconfig_candidates():
+            try:
+                text = localconfig.read_text(encoding="utf-8", errors="ignore")
+                needle = f'"{appid}"'
+                pos = 0
+                while True:
+                    idx = text.find(needle, pos)
+                    if idx < 0:
+                        break
+                    brace = text.find("{", idx)
+                    if brace < 0:
+                        break
+                    depth = 0
+                    end = None
+                    for offset in range(brace, len(text)):
+                        if text[offset] == "{":
+                            depth += 1
+                        elif text[offset] == "}":
+                            depth -= 1
+                            if depth == 0:
+                                end = offset + 1
+                                break
+                    if end is None:
+                        break
+                    block = text[idx:end]
+                    match = re.search(r'"LaunchOptions"\s+"((?:\\.|[^"\\])*)"', block)
+                    if match:
+                        return bytes(match.group(1), "utf-8").decode("unicode_escape")
+                    pos = idx + 1
+            except Exception:
+                continue
         return ""
 
     def _launch_options_have_hdr(self, launch_options: str) -> bool:
@@ -3168,10 +3280,13 @@ PresentationModel=flip_discard
 
             for exe, _size in exe_files[:3]:
                 try:
+                    pe_arch = pe_architecture(exe)
+                    if pe_arch in {"32", "64"}:
+                        arch = pe_arch
                     result = subprocess.run(["file", str(exe)], capture_output=True, text=True, env=self._clean_subprocess_env(), timeout=10)
-                    if "PE32 executable" in result.stdout and "PE32+" not in result.stdout:
+                    if pe_arch == "unknown" and "PE32 executable" in result.stdout and "PE32+" not in result.stdout:
                         arch = "32"
-                    elif "PE32+ executable" in result.stdout or "x86-64" in result.stdout:
+                    elif pe_arch == "unknown" and ("PE32+ executable" in result.stdout or "x86-64" in result.stdout):
                         arch = "64"
                 except Exception:
                     pass
@@ -3316,6 +3431,14 @@ PresentationModel=flip_discard
         }
 
     def _detect_api_from_binary_imports(self, binary_path: Path) -> str:
+        try:
+            dlls = imported_dlls(binary_path)
+            for api in ["d3d12", "d3d11", "dxgi", "d3d9", "d3d8", "ddraw", "dinput8", "opengl32"]:
+                if f"{api}.dll" in dlls:
+                    return api
+        except Exception:
+            pass
+
         imports = ""
         try:
             result = subprocess.run(["objdump", "-p", str(binary_path)], capture_output=True, text=True, env=self._clean_subprocess_env(), timeout=15)
@@ -3327,7 +3450,9 @@ PresentationModel=flip_discard
                 imports = binary_path.read_bytes().decode("latin-1", errors="ignore").lower()
             except OSError:
                 imports = ""
-        for api in ["d3d12", "d3d11", "dxgi", "d3d9", "d3d8", "opengl32", "ddraw", "dinput8"]:
+        if re.search(r"\bopengl32(?:\.dll)?\b|\bwgl(?:createcontext|deletecontext|getprocaddress|makecurrent|swapbuffers|choosepixelformat|setpixelformat)\b", imports):
+            return "opengl32"
+        for api in ["d3d12", "d3d11", "dxgi", "d3d9", "d3d8", "ddraw", "dinput8"]:
             if f"{api}.dll" in imports or f"{api.lower()}.dll" in imports:
                 return api
         return "unknown"
@@ -3437,12 +3562,26 @@ PresentationModel=flip_discard
             return dll
         return "dxgi"
 
+    def _parse_reshade_selected_api(self, output: str) -> str:
+        match = re.search(r"Selected API:\s*([a-z0-9_]+)", output or "", re.I)
+        if match:
+            return self._api_to_injection_dll(match.group(1).lower())
+        matches = re.findall(r"([a-z0-9_]+)=n,b", output or "", re.I)
+        for item in reversed(matches):
+            if item.lower() != "d3dcompiler_47":
+                return self._api_to_injection_dll(item.lower())
+        return ""
+
     def _hdr_launch_options(self, dll: str) -> str:
-        overrides = ["d3dcompiler_47=n"]
+        overrides = []
         for item in str(dll or "dxgi").split(";"):
             item = item.strip()
             if item:
                 overrides.append(f"{item}=n,b")
+        if overrides == ["opengl32=n,b"]:
+            return "PROTON_ENABLE_HDR=1 DXVK_HDR=1 ENABLE_HDR_WSI=1 %command%"
+        if not any(item.startswith("opengl32=") for item in overrides):
+            overrides.insert(0, "d3dcompiler_47=n")
         return f'PROTON_ENABLE_HDR=1 DXVK_HDR=1 ENABLE_HDR_WSI=1 WINEDLLOVERRIDES="{";".join(overrides)}" %command%'
 
     async def list_installed_games(self) -> dict:

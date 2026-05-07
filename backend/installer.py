@@ -108,13 +108,39 @@ class HDRInstaller:
 
     def verify_reshade(self, game_dir):
         """Check if ReShade successfully initialized."""
-        log_path = os.path.join(game_dir, "dxgi.log")
-        if os.path.exists(log_path):
-            with open(log_path, "r", errors="ignore") as f:
-                content = f.read(1024)
-                if "ReShade" in content:
-                    return True, "Verified success via dxgi.log"
-        return False, "ReShade log not found or invalid."
+        required = [
+            "ReShade.ini",
+            "ReShadePreset.ini",
+            "ReShade_shaders",
+        ]
+        missing = [name for name in required if not os.path.exists(os.path.join(game_dir, name))]
+        if missing:
+            return False, f"ReShade install is incomplete. Missing: {', '.join(missing)}"
+
+        dlls = ["dxgi.dll", "d3d11.dll", "d3d12.dll", "d3d9.dll"]
+        if not any(os.path.exists(os.path.join(game_dir, name)) for name in dlls):
+            return False, "ReShade DLL not found in the game directory."
+
+        shader_root = Path(game_dir) / "ReShade_shaders"
+        shader_files = list(shader_root.rglob("*.fx")) + list(shader_root.rglob("*.fxh")) if shader_root.exists() else []
+        if not shader_files:
+            return False, "ReShade shader folder exists, but no HDR shader files were found."
+
+        log_candidates = [
+            os.path.join(game_dir, "ReShade.log"),
+            os.path.join(game_dir, "dxgi.log"),
+            os.path.join(game_dir, "d3d11.log"),
+            os.path.join(game_dir, "d3d12.log"),
+            os.path.join(game_dir, "d3d9.log"),
+        ]
+        for log_path in log_candidates:
+            if os.path.exists(log_path):
+                with open(log_path, "r", errors="ignore") as f:
+                    content = f.read(4096)
+                    if "ReShade" in content:
+                        return True, f"Verified ReShade via {os.path.basename(log_path)}."
+
+        return True, "ReShade files and HDR shaders are installed. Launch the game once to generate ReShade.log for runtime verification."
 
     def uninstall(self, appid):
         """Use manifest to remove HDR."""

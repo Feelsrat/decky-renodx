@@ -467,6 +467,39 @@ class BackendMockTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(plugin._api_from_requirement_text("DirectX: Version 11"), "d3d11")
         self.assertEqual(plugin._api_from_requirement_text("<strong>DirectX:</strong> Version 12"), "d3d12")
 
+    async def test_pcgamingwiki_api_table_maps_graphics_api(self):
+        scraper = self.module.PCGamingWikiScraper()
+
+        result = scraper._parse_api_data({
+            "cargoquery": [{
+                "title": {
+                    "Page": "Example",
+                    "Direct3D versions": "11, 12",
+                    "OpenGL versions": "",
+                    "Vulkan versions": "",
+                }
+            }]
+        })
+
+        self.assertEqual(result["api"], "d3d12")
+        self.assertEqual(result["api_source"], "pcgamingwiki_api_table")
+
+    async def test_pcgamingwiki_api_table_maps_opengl_when_no_direct3d(self):
+        scraper = self.module.PCGamingWikiScraper()
+
+        result = scraper._parse_api_data({
+            "cargoquery": [{
+                "title": {
+                    "Page": "KOTOR2",
+                    "Direct3D versions": "",
+                    "OpenGL versions": "1.4",
+                    "Vulkan versions": "",
+                }
+            }]
+        })
+
+        self.assertEqual(result["api"], "opengl32")
+
     async def test_recommendation_uses_steam_metadata_api_fallback(self):
         plugin = self.module.Plugin()
         async def fake_detect_api(_path, _logger=None):
@@ -743,46 +776,102 @@ class BackendMockTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("dxgi=n,b", result)
         self.assertIn("d3dcompiler_47=n", result)
 
-    async def test_dgvoodoo2_decision_is_dx9_opt_in(self):
+    async def test_hdr_launch_options_for_opengl_do_not_force_d3dcompiler(self):
+        plugin = self.module.Plugin()
+
+        result = plugin._hdr_launch_options("opengl32")
+
+        self.assertNotIn("WINEDLLOVERRIDES", result)
+        self.assertNotIn("d3d9=n,b", result)
+        self.assertNotIn("d3dcompiler_47=n", result)
+
+    async def test_wine_dll_override_is_written_to_compatdata_user_reg(self):
+        plugin = self.module.Plugin()
+        compat = self.home / ".steam" / "steam" / "steamapps" / "compatdata" / "208580"
+
+        result = plugin._set_wine_dll_override("208580", "opengl32")
+
+        user_reg = compat / "pfx" / "user.reg"
+        self.assertEqual(result["wine_dll_overrides"], {"opengl32": "native,builtin"})
+        self.assertIn(str(user_reg), result["modified_files"])
+        self.assertIn('[Software\\\\Wine\\\\DllOverrides]', user_reg.read_text(encoding="utf-8"))
+        self.assertIn('"opengl32"="native,builtin"', user_reg.read_text(encoding="utf-8"))
+
+    async def test_wine_dll_override_backs_up_existing_user_reg_and_cleans_bad_section(self):
+        plugin = self.module.Plugin()
+        user_reg = self.home / ".steam" / "steam" / "steamapps" / "compatdata" / "208580" / "pfx" / "user.reg"
+        user_reg.parent.mkdir(parents=True)
+        user_reg.write_text(
+            'WINE REGISTRY Version 2\n\n[Software\\Wine\\DllOverrides]\n"opengl32"="builtin"\n\n[Other]\n"key"="value"\n',
+            encoding="utf-8",
+        )
+
+        result = plugin._set_wine_dll_override("208580", "opengl32")
+        text = user_reg.read_text(encoding="utf-8")
+
+        self.assertIn(str(user_reg), result["backups"])
+        self.assertTrue(Path(result["backups"][str(user_reg)]).exists())
+        self.assertNotIn("[Software\\Wine\\DllOverrides]", text)
+        self.assertIn('[Software\\\\Wine\\\\DllOverrides]', text)
+        self.assertIn('"opengl32"="native,builtin"', text)
+        self.assertIn("[Other]", text)
+
+    async def test_parse_reshade_selected_api_ignores_d3dcompiler(self):
+        plugin = self.module.Plugin()
+
+        result = plugin._parse_reshade_selected_api(
+            'Use this launch option: WINEDLLOVERRIDES="d3dcompiler_47=n;opengl32=n,b" %command%'
+        )
+
+        self.assertEqual(result, "opengl32")
+
+    async def test_replace_localconfig_launch_options_targets_launch_block(self):
+        plugin = self.module.Plugin()
+        text = '''
+        "208580"
+        {
+            "LastPlayed" "1"
+            "LaunchOptions" "WINEDLLOVERRIDES=\\"d3d9=n,b\\" %command%"
+        }
+        '''
+
+        updated, changed = plugin._replace_localconfig_launch_options(
+            text,
+            "208580",
+            'WINEDLLOVERRIDES=\\"opengl32=n,b\\" %command%',
+        )
+
+        self.assertTrue(changed)
+        self.assertIn("opengl32=n,b", updated)
+        self.assertNotIn("d3d9=n,b", updated)
+
+    async def test_replace_localconfig_launch_options_inserts_missing_key(self):
+        plugin = self.module.Plugin()
+        text = '''
+        "208580"
+        {
+            "LastPlayed" "1"
+        }
+        '''
+
+        updated, changed = plugin._replace_localconfig_launch_options(
+            text,
+            "208580",
+            'WINEDLLOVERRIDES=\\"opengl32=n,b\\" %command%',
+        )
+
+        self.assertTrue(changed)
+        self.assertIn('"LaunchOptions"', updated)
+        self.assertIn("opengl32=n,b", updated)
+
+    async def test_dx9_recommendation_does_not_offer_special_k_wrapper_path(self):
         tree = self.module.DecisionTree()
 
-        disabled = tree.evaluate({"appid": "123", "graphics_api": "d3d9", "anti_cheat": []})
-        enabled = tree.evaluate({"appid": "123", "graphics_api": "d3d9", "anti_cheat": [], "dgvoodoo2_enabled": True})
+        result = tree.evaluate({"appid": "123", "graphics_api": "d3d9", "anti_cheat": []})
+        methods = [item["method"] for item in result]
 
-        self.assertNotIn("dgvoodoo2_special_k", [item["method"] for item in disabled])
-        self.assertIn("dgvoodoo2_special_k", [item["method"] for item in enabled])
-
-    async def test_dgvoodoo2_specialk_uses_32bit_specialk_for_32bit_dx9_game(self):
-        plugin = self.module.Plugin()
-        game_dir = self.home / "Bayonetta"
-        exe = game_dir / "Bayonetta.exe"
-        game_dir.mkdir()
-        exe.write_text("exe", encoding="utf-8")
-        sk32 = self.home / "SpecialK32.dll"
-        sk64 = self.home / "SpecialK64.dll"
-        d3d9 = self.home / "D3D9.dll"
-        sk32.write_text("sk32", encoding="utf-8")
-        sk64.write_text("sk64", encoding="utf-8")
-        d3d9.write_text("dgvoodoo", encoding="utf-8")
-
-        async def fake_detect(_path, _logger=None):
-            return {"status": "success", "api": "d3d9", "architecture": "32"}
-
-        plugin._detect_api_with_cache = fake_detect
-        plugin._clear_steam_compatdata = lambda _appid, _logger=None: {"status": "noop", "message": "", "removed": [], "errors": []}
-        async def fake_ensure_special_k():
-            return None
-        plugin._ensure_special_k_bin = fake_ensure_special_k
-        plugin._ensure_dgvoodoo2_bin = lambda: None
-        plugin._specialk_runtime_source = lambda arch="64": sk32 if arch == "32" else sk64
-        plugin._dgvoodoo2_d3d9_source = lambda arch="64": d3d9
-
-        result = await plugin.install_dgvoodoo2_specialk("460790", "Bayonetta", str(exe))
-
-        self.assertEqual(result["status"], "success")
-        self.assertEqual((game_dir / "dxgi.dll").read_text(encoding="utf-8"), "sk32")
-        self.assertIn("dgVoodoo2 x86", result["message"])
-        self.assertEqual(result["architecture"], "32")
+        self.assertNotIn("special_k", methods)
+        self.assertIn("reshade", methods)
 
     async def test_restart_uses_helper_when_systemd_run_fails(self):
         plugin = self.module.Plugin()

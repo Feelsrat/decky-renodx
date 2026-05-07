@@ -156,6 +156,15 @@ function mergeHdrLaunchOptions(existing: string, hdrOptions: string): string {
   return `${hdrPrefix} ${cleanExisting}`.replace(/\s+/g, " ").trim();
 }
 
+function hdrLaunchOptionsForDll(dll: string): string {
+  const normalized = (dll || "dxgi").toLowerCase();
+  if (normalized === "opengl32") {
+    return "PROTON_ENABLE_HDR=1 DXVK_HDR=1 ENABLE_HDR_WSI=1 %command%";
+  }
+  const compiler = normalized === "opengl32" ? "" : "d3dcompiler_47=n;";
+  return `PROTON_ENABLE_HDR=1 DXVK_HDR=1 ENABLE_HDR_WSI=1 WINEDLLOVERRIDES="${compiler}${normalized}=n,b" %command%`;
+}
+
 async function setMergedHdrLaunchOptions(appid: string, hdrOptions: string) {
   const existing = await getSteamLaunchOptions(appid);
   await SteamClient.Apps.SetAppLaunchOptions(parseInt(appid), mergeHdrLaunchOptions(existing, hdrOptions));
@@ -435,12 +444,12 @@ const SteamGamesSection = () => {
                   setResult(successMessage);
                 } else {
                   // Fallback if we can't extract from output
-                  await setMergedHdrLaunchOptions(selectedGame.appid, `WINEDLLOVERRIDES="d3dcompiler_47=n;${dllValue}=n,b" %command%`);
+                  await setMergedHdrLaunchOptions(selectedGame.appid, hdrLaunchOptionsForDll(dllValue));
                   setResult(`Successfully patched ${selectedGame.name} with ${dllValue.toUpperCase()}.\nPress HOME key in-game to open ReShade overlay.`);
                 }
               } else {
                 // Manual DLL selection
-                await setMergedHdrLaunchOptions(selectedGame.appid, `WINEDLLOVERRIDES="d3dcompiler_47=n;${dllValue}=n,b" %command%`);
+                await setMergedHdrLaunchOptions(selectedGame.appid, hdrLaunchOptionsForDll(dllValue));
                 setResult(`Successfully patched ${selectedGame.name} with ${dllValue.toUpperCase()}.\nPress HOME key in-game to open ReShade overlay.`);
               }
             } else {
@@ -524,7 +533,7 @@ const SteamGamesSection = () => {
 
     const launchOptionsMatch = response.output?.match(/Use this launch option: (.+)/);
     const fallbackDll = selectedDll?.value && selectedDll.value !== "auto" ? selectedDll.value : "dxgi";
-    const launchOptions = response.launch_options || launchOptionsMatch?.[1] || `PROTON_ENABLE_HDR=1 DXVK_HDR=1 ENABLE_HDR_WSI=1 WINEDLLOVERRIDES="d3dcompiler_47=n;${fallbackDll}=n,b" %command%`;
+    const launchOptions = response.launch_options || launchOptionsMatch?.[1] || hdrLaunchOptionsForDll(fallbackDll);
     await setMergedHdrLaunchOptions(selectedGame.appid, launchOptions);
     await refreshHdrStatus();
     setResult(`No RenoDX addon was imported. Installed ${response.method === "specialk" ? "Special K HDR" : "ReShade HDR shader"} fallback for ${selectedGame.name}. Existing launch wrappers such as decky-lsfg-vk were preserved.`);

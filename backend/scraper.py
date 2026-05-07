@@ -8,7 +8,12 @@ class PCGamingWikiScraper:
     API_URL = "https://www.pcgamingwiki.com/w/api.php"
 
     def get_game_data(self, appid: str):
-        """Fetch HDR and Special K data from PCGamingWiki via Cargo API."""
+        """Fetch PCGamingWiki data via MediaWiki/Cargo API only.
+
+        This intentionally never parses rendered HTML pages. Structured fields
+        come from Cargo (`action=cargoquery`) and notes come from the MediaWiki
+        revisions API (`action=query&prop=revisions`).
+        """
         try:
             # Table Video for HDR info
             # Table Middleware for Special K info
@@ -36,10 +41,14 @@ class PCGamingWikiScraper:
             
             hdr_data = self._fetch(hdr_query)
             sk_data = self._fetch(sk_query)
+            api_data = self._fetch_api_data(appid)
             
             result = {
                 "appid": appid,
                 "native_hdr": "unknown",
+                "graphics_api": "unknown",
+                "api_source": "",
+                "api_page": "",
                 "special_k_compatible": False,
                 "special_k_notes": [],
                 "special_k_delay_seconds": "0",
@@ -52,6 +61,10 @@ class PCGamingWikiScraper:
                 
             if sk_data and "cargoquery" in sk_data and sk_data["cargoquery"]:
                 result["special_k_compatible"] = True
+
+            api_info = self._parse_api_data(api_data)
+            if api_info.get("api") and api_info["api"] != "unknown":
+                result.update(api_info)
 
             page_name = ""
             if hdr_data and "cargoquery" in hdr_data and hdr_data["cargoquery"]:
@@ -72,10 +85,60 @@ class PCGamingWikiScraper:
     def _fetch(self, params):
         url = f"{self.API_URL}?{urllib.parse.urlencode(params)}"
         try:
-            with urllib.request.urlopen(url, timeout=10) as response:
+            request = urllib.request.Request(url, headers={"User-Agent": "DeckyRenoDX/0.0.65"})
+            with urllib.request.urlopen(request, timeout=10) as response:
                 return json.loads(response.read().decode())
         except Exception:
             return None
+
+    def _fetch_api_data(self, appid: str):
+        return self._fetch({
+            "action": "cargoquery",
+            "format": "json",
+            "tables": "Infobox_game,API",
+            "fields": "Infobox_game._pageName=Page,API.Direct3D_versions,API.OpenGL_versions,API.Vulkan_versions",
+            "join_on": "Infobox_game._pageName=API._pageName",
+            "where": f'Infobox_game.Steam_AppID HOLDS "{appid}"',
+        })
+
+    def _parse_api_data(self, api_data):
+        rows = (api_data or {}).get("cargoquery") or []
+        if not rows:
+            return {"api": "unknown"}
+        title = rows[0].get("title", {})
+        direct3d = str(title.get("Direct3D versions") or "")
+        opengl = str(title.get("OpenGL versions") or "")
+        vulkan = str(title.get("Vulkan versions") or "")
+        api = self._api_from_pcgw_fields(direct3d, opengl, vulkan)
+        return {
+            "graphics_api": api,
+            "api": api,
+            "api_source": "pcgamingwiki_api_table",
+            "api_page": title.get("Page", ""),
+            "pcgw_direct3d_versions": direct3d,
+            "pcgw_opengl_versions": opengl,
+            "pcgw_vulkan_versions": vulkan,
+        }
+
+    def _api_from_pcgw_fields(self, direct3d: str, opengl: str, vulkan: str) -> str:
+        d3d_versions = [int(match) for match in re.findall(r"\b(?:direct3d\s*)?([0-9]{1,2})\b", direct3d.lower())]
+        if d3d_versions:
+            version = max(d3d_versions)
+            if version >= 12:
+                return "d3d12"
+            if version == 11:
+                return "d3d11"
+            if version == 10:
+                return "dx10"
+            if version == 9:
+                return "d3d9"
+            if version == 8:
+                return "d3d8"
+        if opengl.strip():
+            return "opengl32"
+        if vulkan.strip():
+            return "vulkan"
+        return "unknown"
 
     def _fetch_page_notes(self, page_name):
         params = {
@@ -96,7 +159,7 @@ class PCGamingWikiScraper:
         lines = []
         for line in text.splitlines():
             clean = re.sub(r"<[^>]+>", "", line).strip()
-            if re.search(r"special\s*k|skif|injection|delay|steamapi|dgvoodoo|hdr", clean, re.I):
+            if re.search(r"special\s*k|skif|injection|delay|steamapi|hdr", clean, re.I):
                 clean = re.sub(r"\{\{|\}\}|\[\[|\]\]", "", clean)
                 clean = re.sub(r"\s+", " ", clean)
                 if clean and clean not in lines:

@@ -244,22 +244,45 @@ detect_game_arch_and_api_enhanced() {
         detected_api="dxgi"  # Reset to default
         
         # FIXED: More precise matching to avoid variable contamination
+        local import_strings
+        import_strings=$(strings -a "$best_exe" 2>/dev/null | tr '[:upper:]' '[:lower:]' | head -2000)
+        if echo "$import_strings" | grep -qE 'opengl32|wgl(createcontext|deletecontext|getprocaddress|makecurrent|swapbuffers|choosepixelformat|setpixelformat)'; then
+            detected_api="opengl32"
+            log_message "Detected OpenGL/WGL imports, using OpenGL API"
+        fi
+
         if echo "$file_info" | grep -q "x86-64"; then
             arch="64"
-            detected_api="dxgi"
-            log_message "Detected 64-bit executable (x86-64), using DXGI"
+            if [ "$detected_api" != "opengl32" ]; then
+                detected_api="dxgi"
+                log_message "Detected 64-bit executable (x86-64), using DXGI"
+            else
+                log_message "Detected 64-bit executable (x86-64), keeping OpenGL API"
+            fi
         elif echo "$file_info" | grep -q "PE32+"; then
             arch="64"
-            detected_api="dxgi"
-            log_message "Detected 64-bit executable (PE32+), using DXGI"
+            if [ "$detected_api" != "opengl32" ]; then
+                detected_api="dxgi"
+                log_message "Detected 64-bit executable (PE32+), using DXGI"
+            else
+                log_message "Detected 64-bit executable (PE32+), keeping OpenGL API"
+            fi
         elif echo "$file_info" | grep -q "PE32 executable" && ! echo "$file_info" | grep -q "PE32+"; then
             arch="32"
-            detected_api="d3d9"
-            log_message "Detected 32-bit executable (PE32), using D3D9"
+            if [ "$detected_api" != "opengl32" ]; then
+                detected_api="d3d9"
+                log_message "Detected 32-bit executable (PE32), using D3D9"
+            else
+                log_message "Detected 32-bit executable (PE32), keeping OpenGL API"
+            fi
         elif echo "$file_info" | grep -q "Intel i386"; then
             arch="32"
-            detected_api="d3d9"
-            log_message "Detected 32-bit executable (i386), using D3D9"
+            if [ "$detected_api" != "opengl32" ]; then
+                detected_api="d3d9"
+                log_message "Detected 32-bit executable (i386), using D3D9"
+            else
+                log_message "Detected 32-bit executable (i386), keeping OpenGL API"
+            fi
         else
             log_message "Could not determine architecture from file info, using defaults"
         fi
@@ -351,50 +374,94 @@ setup_game_reshade() {
     # Check d3dcompiler
     local d3dcompiler="$RESHADE_PATH/d3dcompiler_47.dll.${arch}"
 
-    # Create symbolic links
-    log_message "Creating symbolic links..."
+    # Copy files into the game directory. Symlinks are fragile under Proton
+    # and make verification/removal harder when Steam recreates compatdata.
+    log_message "Copying ReShade files into game directory..."
     
-    # Link ReShade DLL
-    log_message "Linking ReShade DLL: $reshade_dll -> $dll_override.dll"
+    log_message "Copying ReShade DLL: $reshade_dll -> $dll_override.dll"
+    if [ -f "$game_path/.decky-renodx-hdr.json" ] || [ -f "$game_path/ReShade.ini" ]; then
+        for stale_dll in dxgi d3d11 d3d12 d3d9 d3d8 ddraw dinput8 opengl32; do
+            if [ "$stale_dll" != "$dll_override" ] && [ -f "$game_path/${stale_dll}.dll" ]; then
+                log_message "Removing stale HDR proxy from previous install: ${stale_dll}.dll"
+                rm -f "$game_path/${stale_dll}.dll"
+            fi
+        done
+    fi
     [ -L "$game_path/$dll_override.dll" ] && unlink "$game_path/$dll_override.dll"
-    if ! ln -sfv "$RESHADE_PATH/latest/$reshade_dll" "$game_path/$dll_override.dll"; then
-        log_message "Failed to create DLL symlink"
+    if ! cp -f "$RESHADE_PATH/latest/$reshade_dll" "$game_path/$dll_override.dll"; then
+        log_message "Failed to copy ReShade DLL"
         return 1
     fi
+    chmod 666 "$game_path/$dll_override.dll" 2>/dev/null || true
     
     if [ -f "$d3dcompiler" ]; then
-        log_message "Linking d3dcompiler: $d3dcompiler"
+        log_message "Copying d3dcompiler: $d3dcompiler"
         [ -L "$game_path/d3dcompiler_47.dll" ] && unlink "$game_path/d3dcompiler_47.dll"
-        if ! ln -sfv "$d3dcompiler" "$game_path/d3dcompiler_47.dll"; then
-            log_message "Failed to create d3dcompiler symlink"
+        if ! cp -f "$d3dcompiler" "$game_path/d3dcompiler_47.dll"; then
+            log_message "Failed to copy d3dcompiler"
             return 1
         fi
+        chmod 666 "$game_path/d3dcompiler_47.dll" 2>/dev/null || true
     else
         log_message "d3dcompiler_47.dll not found; relying on Proton/Wine"
     fi
     
-    # Link shader directory
+    # Copy shader directory
     if [ -d "$MAIN_PATH/ReShade_shaders" ]; then
-        log_message "Linking shader directory"
+        log_message "Copying shader directory"
         [ -L "$game_path/ReShade_shaders" ] && unlink "$game_path/ReShade_shaders"
-        if ! ln -sfv "$MAIN_PATH/ReShade_shaders" "$game_path/"; then
-            log_message "Failed to create shaders symlink"
+        rm -rf "$game_path/ReShade_shaders"
+        if ! cp -a "$MAIN_PATH/ReShade_shaders" "$game_path/ReShade_shaders"; then
+            log_message "Failed to copy shaders"
             return 1
         fi
+        case "$dll_override" in
+            "d3d9"|"d3d8"|"ddraw"|"dinput8"|"opengl32")
+                log_message "Pruning shader pack for API $dll_override; keeping AutoHDR.fx and required common includes only"
+                find "$game_path/ReShade_shaders/Merged/Shaders" -type f \( \
+                    -iname 'AdvancedAutoHDR.fx' -o \
+                    -iname 'ConvertColorSpace.fx' -o \
+                    -iname 'lilium*.fx' -o \
+                    -iname 'lilium*.fxh' \
+                \) -delete 2>/dev/null || true
+                find "$game_path/ReShade_shaders/Merged/Shaders" -type d -iname 'lilium*' -prune -exec rm -rf {} + 2>/dev/null || true
+                ;;
+        esac
+        chmod -R u+rw,go+rw "$game_path/ReShade_shaders" 2>/dev/null || true
     fi
     
-    # Link ReShade.ini
+    # Write a local ReShade.ini with paths relative to the game directory.
     if [ "$GLOBAL_INI" != "0" ] && [ -f "$MAIN_PATH/$GLOBAL_INI" ]; then
-        log_message "Linking ReShade.ini"
-        if grep -qi "^TutorialProgress=" "$MAIN_PATH/$GLOBAL_INI"; then
-            sed -i 's/^TutorialProgress=.*/TutorialProgress=4/I' "$MAIN_PATH/$GLOBAL_INI"
-        else
-            sed -i '/^\[GENERAL\]/a TutorialProgress=4' "$MAIN_PATH/$GLOBAL_INI"
-        fi
+        log_message "Writing local ReShade.ini"
         [ -L "$game_path/ReShade.ini" ] && unlink "$game_path/ReShade.ini"
-        if ! ln -sfv "$MAIN_PATH/$GLOBAL_INI" "$game_path/ReShade.ini"; then
-            log_message "Failed to create ini symlink"
+        if ! cp -f "$MAIN_PATH/$GLOBAL_INI" "$game_path/ReShade.ini"; then
+            log_message "Failed to copy ReShade.ini"
             return 1
+        fi
+        if grep -qi "^TutorialProgress=" "$game_path/ReShade.ini"; then
+            sed -i 's/^TutorialProgress=.*/TutorialProgress=4/I' "$game_path/ReShade.ini"
+        else
+            sed -i '/^\[GENERAL\]/a TutorialProgress=4' "$game_path/ReShade.ini"
+        fi
+        if grep -qi "^EffectSearchPaths=" "$game_path/ReShade.ini"; then
+            sed -i 's#^EffectSearchPaths=.*#EffectSearchPaths=.\\ReShade_shaders\\Merged\\Shaders#I' "$game_path/ReShade.ini"
+        else
+            sed -i '/^\[GENERAL\]/a EffectSearchPaths=.\\ReShade_shaders\\Merged\\Shaders' "$game_path/ReShade.ini"
+        fi
+        if grep -qi "^TextureSearchPaths=" "$game_path/ReShade.ini"; then
+            sed -i 's#^TextureSearchPaths=.*#TextureSearchPaths=.\\ReShade_shaders\\Merged\\Textures#I' "$game_path/ReShade.ini"
+        else
+            sed -i '/^\[GENERAL\]/a TextureSearchPaths=.\\ReShade_shaders\\Merged\\Textures' "$game_path/ReShade.ini"
+        fi
+        if grep -qi "^PresetPath=" "$game_path/ReShade.ini"; then
+            sed -i 's#^PresetPath=.*#PresetPath=.\\ReShadePreset.ini#I' "$game_path/ReShade.ini"
+        else
+            sed -i '/^\[GENERAL\]/a PresetPath=.\\ReShadePreset.ini' "$game_path/ReShade.ini"
+        fi
+        if grep -qi "^SkipLoadingDisabledEffects=" "$game_path/ReShade.ini"; then
+            sed -i 's#^SkipLoadingDisabledEffects=.*#SkipLoadingDisabledEffects=1#I' "$game_path/ReShade.ini"
+        else
+            sed -i '/^\[GENERAL\]/a SkipLoadingDisabledEffects=1' "$game_path/ReShade.ini"
         fi
     fi
     
@@ -442,29 +509,24 @@ setup_game_reshade() {
     if [ ! -f "$preset_file" ]; then
         local game_name=$(basename "$(dirname "$game_path")" 2>/dev/null || basename "$game_path")
         cat > "$preset_file" << EOF
-# ReShade Preset Configuration for $game_name
-# This file will be automatically populated when you save presets in ReShade
-# Press HOME key in-game to open ReShade overlay
-# Go to Settings -> General -> "Reload all shaders" if shaders don't appear
-
-# Example preset configuration:
-# [Preset1]
-# Techniques=SMAA,Clarity,LumaSharpen
-# PreprocessorDefinitions=
-
-# Uncomment and modify the lines below to create a default preset:
-# [Default]
-# Techniques=
-# PreprocessorDefinitions=
+Techniques=AutoHDR
+PreprocessorDefinitions=
 EOF
         
         # Set proper permissions (read/write for all)
         chmod 666 "$preset_file"
         log_message "Created new ReShadePreset.ini with proper permissions"
     else
-        # File exists, just ensure it has proper permissions
+        if grep -qi "^Techniques=" "$preset_file"; then
+            sed -i 's/^Techniques=.*/Techniques=AutoHDR/I' "$preset_file"
+        else
+            printf '\nTechniques=AutoHDR\n' >> "$preset_file"
+        fi
+        if ! grep -qi "^PreprocessorDefinitions=" "$preset_file"; then
+            printf 'PreprocessorDefinitions=\n' >> "$preset_file"
+        fi
         chmod 666 "$preset_file"
-        log_message "ReShadePreset.ini already exists, updated permissions only"
+        log_message "ReShadePreset.ini already exists, ensured AutoHDR is the active technique"
     fi
     
     # Ensure ReShade.ini has proper permissions if it exists
@@ -557,7 +619,7 @@ remove_game_reshade() {
     # Remove ReShade files (excluding ReShadePreset.ini to preserve user settings)
     local extras=("ReShade.ini" "ReShade32.json" "ReShade64.json" 
                  "d3dcompiler_47.dll" "ReShade_shaders" "ReShade_README.txt"
-                 "AutoHDR.addon32" "AutoHDR.addon64")
+                 "AutoHDR32.addon" "AutoHDR64.addon" "AutoHDR.addon32" "AutoHDR.addon64")
     # Note: ReShadePreset.ini is intentionally excluded to preserve user settings
     
     for extra in "${extras[@]}"; do
@@ -745,7 +807,10 @@ main() {
             
             if setup_game_reshade "$game_path" "$dll_override" "$arch" "$appid"; then
                 # Update the WINEDLLOVERRIDES based on detected API
-                local override_cmd="WINEDLLOVERRIDES=\"d3dcompiler_47=n;${dll_override}=n,b\" %command%"
+                local override_cmd="PROTON_ENABLE_HDR=1 DXVK_HDR=1 ENABLE_HDR_WSI=1 WINEDLLOVERRIDES=\"${dll_override}=n,b\" %command%"
+                if [ "$dll_override" != "opengl32" ]; then
+                    override_cmd="PROTON_ENABLE_HDR=1 DXVK_HDR=1 ENABLE_HDR_WSI=1 WINEDLLOVERRIDES=\"d3dcompiler_47=n;${dll_override}=n,b\" %command%"
+                fi
                 echo "Successfully installed ReShade using enhanced detection"
                 
                 # Check if AutoHDR was installed based on API compatibility

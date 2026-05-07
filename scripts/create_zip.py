@@ -7,6 +7,16 @@ from pathlib import Path
 
 PLUGIN_FOLDER = "decky-renodx"
 OUTPUT_FILENAME = "decky-renodx.zip"
+EXCLUDED_DIRS = {"__pycache__", ".pytest_cache", ".mypy_cache"}
+EXCLUDED_SUFFIXES = {".pyc", ".pyo"}
+
+
+def should_package_file(path: Path) -> bool:
+    if any(part in EXCLUDED_DIRS for part in path.parts):
+        return False
+    if path.suffix.lower() in EXCLUDED_SUFFIXES:
+        return False
+    return True
 
 
 def write_plugin_file(zipf: zipfile.ZipFile, source: Path, archive_name: str) -> None:
@@ -24,7 +34,7 @@ def create_plugin_zip(output_filename: str = OUTPUT_FILENAME) -> str:
     root_dir = Path(__file__).resolve().parents[1]
     zip_path = root_dir / output_filename
     root_files = ["plugin.json", "main.py", "package.json", "README.md", "LICENSE"]
-    folders = ["dist", "defaults", "backend"]
+    folders = ["dist", "defaults", "backend", "py_modules"]
 
     if zip_path.exists():
         zip_path.unlink()
@@ -44,7 +54,7 @@ def create_plugin_zip(output_filename: str = OUTPUT_FILENAME) -> str:
 
         for folder in folders:
             for file_path in (root_dir / folder).rglob("*"):
-                if file_path.is_file():
+                if file_path.is_file() and should_package_file(file_path):
                     relative_path = file_path.relative_to(root_dir).as_posix()
                     write_plugin_file(zipf, file_path, f"{PLUGIN_FOLDER}/{relative_path}")
 
