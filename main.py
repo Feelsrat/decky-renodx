@@ -116,7 +116,7 @@ class Plugin:
 
         self.compat_db_path = os.path.join(self.environment['XDG_DATA_HOME'], 'decky-renodx', 'compatibility.json')
         self.compat_db = self._load_compatibility_db()
-        self._compat_update_task = asyncio.create_task(self._update_compatibility_db_loop())
+        self._compat_update_task = None
         
         # Create necessary directories
         os.makedirs(self.main_path, exist_ok=True)
@@ -275,6 +275,7 @@ class Plugin:
         self._cleanup_previous_update_artifacts()
         if AUTO_UPDATE_CHECK_ON_STARTUP and self._should_auto_check():
             self._auto_update_task = asyncio.create_task(self._auto_check_update())
+        self._compat_update_task = asyncio.create_task(self._update_compatibility_db_loop())
         decky.logger.info("Decky RenoDX loaded")
 
     async def _unload(self):
