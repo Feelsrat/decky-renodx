@@ -19,9 +19,10 @@ export const HdrStatusBadge = ({ hdrStatus, hdrInstalled }: HdrStatusBadgeProps)
         lineHeight: 1.25,
         overflowWrap: "anywhere"
       }}>
-        <div style={{ fontWeight: 700 }}>{hdrInstalled ? "HDR Installed" : "HDR Not Installed"}</div>
+        <div style={{ fontWeight: 700 }}>{hdrInstalled ? "HDR Files Present" : "No HDR Injection Found"}</div>
         <div>{hdrStatus.message}</div>
         {hdrStatus.method && <div style={{ opacity: 0.7 }}>Method: {hdrStatus.method}</div>}
+        {hdrInstalled && <div style={{ opacity: 0.62, marginTop: "3px" }}>In-game HDR still needs verification unless this method is marked verified.</div>}
       </div>
     </PanelSectionRow>
   );

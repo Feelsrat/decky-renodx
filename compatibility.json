@@ -9125,8 +9125,12 @@
       "tools": {
         "special_k": {
           "automation": {
+            "hdr": {
+              "avoid": true
+            },
             "preferred_injection": "local",
             "warnings": [
+              "Deck/Proton test result: Special K D3D9 HDR injection reaches a white screen even with ForceD3D9Ex=true; use ReShade AutoHDR instead.",
               "Source note does not specify exact INI key; ForceD3D9Ex=true is inferred for automation and should be verified."
             ]
           },

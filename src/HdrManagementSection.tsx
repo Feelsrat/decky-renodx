@@ -19,11 +19,10 @@ const updateSkConfigValue = callable<[string, string, string, string, string], a
 const setSpecialKVerified = callable<[string, boolean], any>("set_special_k_verified");
 const listInstalledGames = callable<[], any>("list_installed_games");
 const findGameExecutablePath = callable<[string], any>("find_game_executable_path");
-const forceSpecialKSetup = callable<[string, string, string], any>("force_special_k_setup");
 const resetPluginCaches = callable<[], any>("reset_plugin_caches");
 const getPluginProcessHealth = callable<[], any>("get_plugin_process_health");
 const fixPluginProcesses = callable<[], any>("fix_plugin_processes");
-const executeSetupFlow = callable<[string, string, string, boolean?], any>("execute_setup_flow");
+const installSelectedHdrMethod = callable<[string, string, string, string], any>("install_selected_hdr_method");
 const verifyHdrInstallation = callable<[string, string], any>("verify_hdr_installation");
 const getGameHdrStatus = callable<[string, string], any>("get_game_hdr_status");
 const openRenoDxSearch = callable<[string], any>("open_renodx_search");
@@ -88,6 +87,17 @@ interface GameContext {
   special_k_wiki: boolean;
   special_k_notes?: string[];
   special_k_delay_seconds?: string;
+  method_options?: MethodOption[];
+}
+
+interface MethodOption {
+  method: string;
+  label: string;
+  available: boolean;
+  reason: string;
+  badge?: string;
+  score?: number;
+  confidence?: string;
 }
 
 const HdrManagementSection = () => {
@@ -102,6 +112,7 @@ const HdrManagementSection = () => {
   const [exePath, setExePath] = useState("");
   const [processHealth, setProcessHealth] = useState<any>(null);
   const [hdrStatus, setHdrStatus] = useState<any>(null);
+  const [selectedMethod, setSelectedMethod] = useState("recommended");
 
   useEffect(() => {
     // Intentionally no Steam focus tracking:
@@ -126,6 +137,7 @@ const HdrManagementSection = () => {
       setContext(null);
       setExePath("");
       setHdrStatus(null);
+      setSelectedMethod("recommended");
       refreshState();
     } else {
       setRecommendation(null);
@@ -178,22 +190,21 @@ const HdrManagementSection = () => {
     }
   };
 
-  const handleSetup = async () => {
+  const handleInstallSelected = async () => {
     if (!selectedGame) return;
-    if (hdrStatus?.status === "success" && hdrStatus.installed) {
-      await handleUninstall();
-      return;
-    }
     setLoading(true);
     try {
-      const response = await executeSetupFlow(selectedGame.appid, selectedGame.name, exePath);
+      const response = await installSelectedHdrMethod(selectedGame.appid, selectedGame.name, exePath, selectedMethod);
       if (response.status === "success" && response.launch_options) {
         await setMergedHdrLaunchOptions(selectedGame.appid, response.launch_options);
+      }
+      if (selectedMethod === "sdr" || selectedMethod === "native_hdr") {
+        await removeHdrLaunchOptions(selectedGame.appid);
       }
       if (response.manual_download) {
         setManualRenoDx(response);
       }
-      toaster.toast({ title: "HDR Setup", body: response.message });
+      toaster.toast({ title: "HDR Setup", body: response.message || response.output || "Selected HDR method applied." });
       await refreshState();
     } catch (e) {
       toaster.toast({ title: "HDR Setup Failed", body: String(e), duration: 7000 });
@@ -232,28 +243,6 @@ const HdrManagementSection = () => {
     }
   };
 
-  const handleTryNext = async () => {
-    if (!selectedGame) return;
-    setLoading(true);
-    try {
-      await runSurgicalUninstall(selectedGame.appid, exePath);
-      await removeHdrLaunchOptions(selectedGame.appid);
-      const response = await executeSetupFlow(selectedGame.appid, selectedGame.name, exePath, true);
-      if (response.status === "success" && response.launch_options) {
-        await setMergedHdrLaunchOptions(selectedGame.appid, response.launch_options);
-      }
-      if (response.manual_download) {
-        setManualRenoDx(response);
-      }
-      toaster.toast({ title: "HDR Setup", body: response.message });
-      await refreshState();
-    } catch (e) {
-      toaster.toast({ title: "Try Next Failed", body: String(e), duration: 7000 });
-    } finally {
-      setLoading(false);
-    }
-  };
-
   const handleUninstall = async () => {
     if (!selectedGame) return;
     setLoading(true);
@@ -282,23 +271,6 @@ const HdrManagementSection = () => {
     toaster.toast({ title: "Special K", body: response.message });
     await refreshState();
     setLoading(false);
-  };
-
-  const handleForceSpecialK = async () => {
-    if (!selectedGame) return;
-    setLoading(true);
-    try {
-      const response = await forceSpecialKSetup(selectedGame.appid, selectedGame.name, exePath);
-      if (response.status === "success" && response.launch_options) {
-        await setMergedHdrLaunchOptions(selectedGame.appid, response.launch_options);
-      }
-      toaster.toast({ title: "Special K Override", body: response.message });
-      await refreshState();
-    } catch (e) {
-      toaster.toast({ title: "Special K Override Failed", body: String(e), duration: 7000 });
-    } finally {
-      setLoading(false);
-    }
   };
 
   const viewLog = async () => {
@@ -395,6 +367,23 @@ const HdrManagementSection = () => {
 
   const hdrInstalled = hdrStatus?.status === "success" && hdrStatus.installed;
   const setupDisabled = !hdrInstalled && (!!context?.anti_cheat.length || recommendation?.method === "renodx_disabled" || recommendation?.score === 0);
+  const backendMethodOptions = context?.method_options?.length ? context.method_options : [];
+  const installableBackendOptions = backendMethodOptions.filter((item) => ["recommended", "renodx", "special_k", "reshade"].includes(item.method));
+  const methodOptions = (installableBackendOptions.length ? installableBackendOptions : [
+    { method: "recommended", label: `Recommended${methodLabel ? ` (${methodLabel})` : ""}`, available: !setupDisabled, reason: recommendation?.reason || "Use the highest-scored safe method." },
+    { method: "renodx", label: "RenoDX / Luma", available: false, reason: "No RenoDX/Luma status available yet." },
+    { method: "special_k", label: "Special K", available: true, reason: "Manual override. Requires in-game verification." },
+    { method: "reshade", label: "ReShade AutoHDR", available: true, reason: "Fallback AutoHDR shader path." },
+  ]).map((item) => ({
+    data: item.method,
+    label: item.label,
+    method: item.method,
+    available: item.available,
+    reason: item.reason,
+    badge: item.badge,
+  }));
+  const selectedMethodOption = methodOptions.find((item) => item.data === selectedMethod) || methodOptions[0];
+  const selectedInstallDisabled = !selectedMethodOption?.available || (!!context?.anti_cheat.length && !["native_hdr", "sdr"].includes(selectedMethod));
 
   return (
     <PanelSection title="Per-Game HDR Management">
@@ -457,15 +446,53 @@ const HdrManagementSection = () => {
               <HdrStatusBadge hdrStatus={hdrStatus} hdrInstalled={hdrInstalled} />
 
               <PanelSectionRow>
-                <ButtonItem layout="below" onClick={handleSetup} disabled={setupDisabled}>
+                <Field label="HDR Method">
+                  <DropdownItem
+                    rgOptions={methodOptions}
+                    selectedOption={selectedMethodOption}
+                    onChange={(opt) => setSelectedMethod(String(opt.data))}
+                  />
+                </Field>
+              </PanelSectionRow>
+
+              {context?.method_options?.length ? (
+                <PanelSectionRow>
+                  <div style={{ display: "grid", gap: "6px", width: "100%", maxWidth: "100%", boxSizing: "border-box", paddingRight: "2px" }}>
+                  {context.method_options.filter((item) => ["renodx", "special_k", "reshade"].includes(item.method)).map((item) => (
+                      <div key={item.method} style={{
+                        padding: "8px",
+                        borderRadius: "4px",
+                        border: `1px solid ${item.available ? "rgba(76,175,80,0.45)" : "rgba(231,76,60,0.45)"}`,
+                        background: item.available ? "rgba(76,175,80,0.08)" : "rgba(231,76,60,0.08)",
+                        fontSize: "0.8em",
+                        lineHeight: 1.22,
+                        overflowWrap: "anywhere",
+                        boxSizing: "border-box",
+                        maxWidth: "100%",
+                        minWidth: 0
+                      }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", gap: "8px", fontWeight: 700, minWidth: 0 }}>
+                          <span style={{ minWidth: 0, overflowWrap: "anywhere" }}>{item.label}</span>
+                          <span style={{ opacity: 0.76, flexShrink: 0 }}>{item.available ? "Available" : "Blocked"}</span>
+                        </div>
+                        <div style={{ opacity: 0.72, marginTop: "3px" }}>{item.reason}</div>
+                      </div>
+                    ))}
+                  </div>
+                </PanelSectionRow>
+              ) : null}
+
+              <PanelSectionRow>
+                <ButtonItem layout="below" onClick={handleInstallSelected} disabled={selectedInstallDisabled || (selectedMethod === "recommended" && setupDisabled)}>
                   {hdrInstalled
-                    ? "Remove HDR"
-                    : recommendation?.method === "renodx_disabled"
-                    ? "RenoDX Temporarily Disabled"
-                    : recommendation?.score === 0
-                      ? "No safe HDR method"
-                      : `Install Recommended (${methodLabel})`}
+                      ? `Replace With ${selectedMethodOption.label}`
+                      : `Install ${selectedMethodOption.label}`}
                 </ButtonItem>
+                <div style={{ fontSize: "0.78em", opacity: 0.62, padding: "4px 8px 0", lineHeight: 1.25, overflowWrap: "anywhere" }}>
+                  {selectedMethodOption?.available
+                    ? "Removes the current HDR files, clears compat data, then installs the method selected above."
+                    : selectedMethodOption?.reason || "This method is blocked for the selected game."}
+                </div>
               </PanelSectionRow>
 
               {context && !context.anti_cheat.length && recommendation?.method !== "special_k" && (
@@ -476,32 +503,12 @@ const HdrManagementSection = () => {
                 </PanelSectionRow>
               )}
 
-              {context && !context.anti_cheat.length && ["renodx_disabled", "renodx", "luma", "native_hdr"].includes(recommendation?.method || "") && (
-                <PanelSectionRow>
-                  <ButtonItem layout="below" onClick={handleForceSpecialK}>
-                    Use Special K Instead
-                  </ButtonItem>
-                  <div style={{ fontSize: "0.78em", opacity: 0.62, padding: "4px 8px 0", lineHeight: 1.25, overflowWrap: "anywhere" }}>
-                    Installs Special K even though a higher-priority HDR method was recommended. HDR still needs in-game verification.
-                  </div>
-                </PanelSectionRow>
-              )}
-
               <PanelSectionRow>
                 <ButtonItem layout="below" onClick={handleVerify}>
                   Check Installed HDR
                 </ButtonItem>
                 <div style={{ fontSize: "0.78em", opacity: 0.62, padding: "4px 8px 0", lineHeight: 1.25, overflowWrap: "anywhere" }}>
                   Verifies the current install from its manifest and game files. For Special K, this does not prove HDR is working until the in-game HDR menu/setup is available.
-                </div>
-              </PanelSectionRow>
-
-              <PanelSectionRow>
-                <ButtonItem layout="below" onClick={handleTryNext} disabled={!!context?.anti_cheat.length}>
-                  Remove and Try Next Method
-                </ButtonItem>
-                <div style={{ fontSize: "0.78em", opacity: 0.62, padding: "4px 8px 0", lineHeight: 1.25, overflowWrap: "anywhere" }}>
-                  Removes the current HDR method, skips this recommendation, then attempts the next fallback in the priority list.
                 </div>
               </PanelSectionRow>
 

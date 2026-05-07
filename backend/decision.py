@@ -25,8 +25,10 @@ class DecisionTree:
         luma_supported = context.get("luma_supported", False)
         special_k_verified = context.get("special_k_verified", False)
         special_k_wrapper = context.get("special_k_wrapper", False)
+        special_k_avoid_hdr = context.get("special_k_avoid_hdr", False)
         injection_dll = context.get("injection_dll", "auto")
         engine = context.get("engine", "unknown")
+        architecture = str(context.get("architecture", "64"))
         
         recommendations = []
 
@@ -39,6 +41,17 @@ class DecisionTree:
                 "confidence": "high",
                 "blocked": ["renodx", "special_k", "reshade"],
                 "notes": [f"Detected Anti-Cheat: {', '.join(anti_cheat)}" if anti_cheat else "Multiplayer detected."]
+            }]
+            
+        # 1.5. Hard Block for 32-bit Games
+        if architecture == "32":
+            return [{
+                "method": "sdr",
+                "score": 0,
+                "reason": "HDR is not supported for 32-bit games on SteamOS (Proton/Gamescope limitation). The display will remain in SDR.",
+                "confidence": "high",
+                "blocked": ["renodx", "special_k", "reshade"],
+                "notes": ["Even if HDR tools inject successfully, the final output will be crushed to SDR by the system."]
             }]
 
         # 2. Native HDR (Score 100)
@@ -101,7 +114,10 @@ class DecisionTree:
         
         has_special_k_compat = context.get("has_special_k_compat", False)
         
-        if special_k_wiki or special_k_verified or special_k_wrapper or has_special_k_compat:
+        if special_k_avoid_hdr:
+            sk_notes.append("Compatibility database marks Special K HDR as avoid for this game.")
+            sk_eligible = False
+        elif special_k_wiki or special_k_verified or special_k_wrapper or has_special_k_compat:
             if has_special_k_compat:
                 sk_notes.append("Game has verified settings in our compatibility database.")
             if special_k_wiki:

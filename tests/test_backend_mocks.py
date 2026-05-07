@@ -333,6 +333,133 @@ class BackendMockTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("HDR.Enable=true", specialk_ini)
         self.assertIn("Use16BitSwapChain=true", dxgi_ini)
 
+    async def test_specialk_compat_forces_d3d9_from_ini_tweaks(self):
+        plugin = self.module.Plugin()
+        plugin.compat_db = {
+            "games": {
+                "460790": {
+                    "tools": {
+                        "special_k": {
+                            "special_k_ini_tweaks": {
+                                "Render.D3D9": {"ForceD3D9Ex": "true"}
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        game_dir = self.home / "bayonetta"
+        runtime = Path(plugin.main_path) / "SpecialK" / "x86"
+        game_dir.mkdir()
+        runtime.mkdir(parents=True)
+        (runtime / "SpecialK32.dll").write_text("dll", encoding="utf-8")
+
+        dll = plugin._specialk_dll_for_game("460790", {"injection_dll": "dxgi"}, "dxgi")
+        result = plugin._install_specialk_for_game(game_dir, dll, "32", "460790")
+        launch_options = plugin._hdr_launch_options(str(result["dll"]), "460790", "special_k")
+
+        self.assertEqual(dll, "d3d9")
+        self.assertEqual(result["status"], "success")
+        self.assertTrue((game_dir / "d3d9.dll").exists())
+        self.assertFalse((game_dir / "dxgi.dll").exists())
+        self.assertIn("d3d9=n,b", launch_options)
+        self.assertNotIn("dxgi=n,b", launch_options)
+        self.assertIn("ForceD3D9Ex=true", (game_dir / "SpecialK.ini").read_text(encoding="utf-8"))
+
+    async def test_specialk_compat_uses_local_dll_target_and_relative_path(self):
+        plugin = self.module.Plugin()
+        plugin.compat_db = {
+            "games": {
+                "1384160": {
+                    "tools": {
+                        "special_k": {
+                            "automation": {
+                                "local_dll": {
+                                    "relative_path": "RED/Binaries/Win64",
+                                    "target": "dxgi.dll"
+                                }
+                            },
+                            "special_k_ini_tweaks": {}
+                        }
+                    }
+                }
+            }
+        }
+        game_dir = self.home / "strive"
+        runtime = Path(plugin.main_path) / "SpecialK" / "x64"
+        game_dir.mkdir()
+        runtime.mkdir(parents=True)
+        (runtime / "SpecialK64.dll").write_text("dll", encoding="utf-8")
+
+        install_dir = plugin._compat_specialk_install_dir("1384160", game_dir)
+        dll = plugin._specialk_dll_for_game("1384160", {}, "d3d11")
+        result = plugin._install_specialk_for_game(install_dir, dll, "64", "1384160")
+
+        self.assertEqual(dll, "dxgi")
+        self.assertEqual(result["status"], "success")
+        self.assertTrue((game_dir / "RED" / "Binaries" / "Win64" / "dxgi.dll").exists())
+        self.assertFalse((game_dir / "dxgi.dll").exists())
+
+    async def test_specialk_compat_addon_loader_target_and_forced_api(self):
+        plugin = self.module.Plugin()
+        plugin.compat_db = {
+            "games": {
+                "1284210": {
+                    "tools": {
+                        "special_k": {
+                            "automation": {
+                                "addon_loader": {
+                                    "loader_target": "dxgi.dll",
+                                    "special_k_target": "d3d11.dll"
+                                },
+                                "force_render_api": "Direct3D 11"
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        self.assertEqual(plugin._specialk_dll_for_game("1284210", {"injection_dll": "dxgi"}, "dxgi"), "d3d11")
+        self.assertEqual(plugin._compat_specialk_force_render_api("1284210"), "dx11")
+
+    async def test_specialk_global_only_compat_blocks_local_install(self):
+        plugin = self.module.Plugin()
+        plugin.compat_db = {
+            "games": {
+                "1030830": {
+                    "tools": {
+                        "special_k": {
+                            "automation": {
+                                "preferred_injection": "global_delayed",
+                                "avoid_injection_at_launch": True
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        gate = plugin._specialk_local_install_gate("1030830")
+        options = plugin._hdr_method_options("1030830", {"anti_cheat": [], "is_multiplayer": False}, [])
+
+        self.assertFalse(gate["available"])
+        self.assertIn("delayed/global", gate["reason"])
+        self.assertFalse(next(item for item in options if item["method"] == "special_k")["available"])
+
+    async def test_decision_tree_respects_specialk_hdr_avoid(self):
+        recommendations = DecisionTree().evaluate({
+            "appid": "1151340",
+            "title": "Fallout 76",
+            "architecture": "64",
+            "graphics_api": "dx11",
+            "has_special_k_compat": True,
+            "special_k_avoid_hdr": True,
+        })
+
+        self.assertNotIn("special_k", [rec["method"] for rec in recommendations])
+        self.assertEqual(recommendations[0]["method"], "reshade")
+
     async def test_backend_specialk_installer_does_not_disable_steamapi(self):
         plugin = self.module.Plugin()
         game_dir = self.home / "game"
@@ -482,6 +609,112 @@ class BackendMockTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Experimental generic RenoDX engine addon", renodx_rec["reason"])
         self.assertEqual(renodx_rec["renodx_match_type"], "generic_engine")
 
+    async def test_renodx_match_does_not_prefix_match_sequels(self):
+        plugin = self.module.Plugin()
+        mods = [{
+            "name": "Final Fantasy X",
+            "normalized": plugin._normalize_game_title("Final Fantasy X"),
+            "match_type": "specific",
+            "addon_url": "https://example.invalid/renodx-ffx.addon32",
+        }]
+
+        self.assertIsNone(plugin._match_renodx_mod("Final Fantasy XIII", mods, ""))
+
+    async def test_renodx_match_allows_generic_unity_engine_when_no_exact_match(self):
+        plugin = self.module.Plugin()
+        mods = [{
+            "name": "Generic Unity Engine",
+            "normalized": "genericunityengine",
+            "match_type": "generic_engine",
+            "engine_bucket": "unity",
+            "addon_url": "https://example.invalid/renodx-unityengine.addon64",
+        }]
+
+        match = plugin._match_renodx_mod("R.E.P.O.", mods, "Unity")
+
+        self.assertIsNotNone(match)
+        self.assertEqual(match["match_type"], "generic_engine")
+        self.assertTrue(match["experimental"])
+
+    async def test_resolve_renodx_install_match_recovers_generic_engine_from_context(self):
+        plugin = self.module.Plugin()
+        plugin._renodx_mod_list = lambda: [{
+            "name": "Generic Unity Engine",
+            "normalized": "genericunityengine",
+            "match_type": "generic_engine",
+            "engine_bucket": "unity",
+            "addon_url": "https://example.invalid/renodx-unityengine.addon64",
+        }]
+
+        match = await plugin._resolve_renodx_match_for_install(
+            "3241660",
+            "R.E.P.O.",
+            "",
+            {"engine": "Unity", "architecture": "64"},
+        )
+
+        self.assertEqual(match["match_type"], "generic_engine")
+        self.assertEqual(match["engine_bucket"], "unity")
+
+    async def test_resolve_renodx_install_match_uses_builtin_generic_fallback(self):
+        plugin = self.module.Plugin()
+        plugin._renodx_mod_list = lambda: []
+
+        match = await plugin._resolve_renodx_match_for_install(
+            "3241660",
+            "R.E.P.O.",
+            "",
+            {"engine": "Unity", "architecture": "64"},
+        )
+
+        self.assertEqual(match["match_type"], "generic_engine")
+        self.assertEqual(match["source_type"], "generic_fallback")
+        self.assertEqual(match["addon_url"], "https://notvoosh.github.io/renodx-unity/renodx-unityengine.addon64")
+
+    async def test_method_options_allow_experimental_generic_renodx_for_engine(self):
+        plugin = self.module.Plugin()
+
+        options = plugin._hdr_method_options("3241660", {
+            "engine": "Unity",
+            "architecture": "64",
+            "renodx_supported": False,
+            "anti_cheat": [],
+            "is_multiplayer": False,
+        }, [])
+        renodx = next(item for item in options if item["method"] == "renodx")
+
+        self.assertTrue(renodx["available"])
+        self.assertEqual(renodx["badge"], "Experimental")
+        self.assertIn("generic Unity", renodx["reason"])
+
+    async def test_method_options_block_generic_renodx_for_32_bit_engine_game(self):
+        plugin = self.module.Plugin()
+
+        options = plugin._hdr_method_options("460790", {
+            "engine": "Unity",
+            "architecture": "32",
+            "renodx_supported": False,
+            "anti_cheat": [],
+            "is_multiplayer": False,
+        }, [])
+        renodx = next(item for item in options if item["method"] == "renodx")
+
+        self.assertFalse(renodx["available"])
+        self.assertIn("confirmed 64-bit", renodx["reason"])
+
+    async def test_resolve_renodx_install_match_blocks_generic_for_unknown_architecture(self):
+        plugin = self.module.Plugin()
+        plugin._renodx_mod_list = lambda: []
+
+        match = await plugin._resolve_renodx_match_for_install(
+            "3241660",
+            "R.E.P.O.",
+            "",
+            {"engine": "Unity", "architecture": "unknown"},
+        )
+
+        self.assertEqual(match, {})
+
     async def test_decision_tree_injects_manual_steps_and_warnings(self):
         recommendations = DecisionTree([{"name": "Game", "match_type": "listed"}]).evaluate({
             "appid": "123",
@@ -502,6 +735,18 @@ class BackendMockTest(unittest.IsolatedAsyncioTestCase):
         renodx_rec = next(r for r in recommendations if r["method"] == "renodx")
         self.assertIn("Step 1", renodx_rec["notes"])
         self.assertIn("Warning 1", renodx_rec["notes"])
+
+    async def test_decision_tree_blocks_32_bit_architecture(self):
+        recommendations = DecisionTree().evaluate({
+            "appid": "123",
+            "title": "32-bit Game",
+            "architecture": "32",
+            "graphics_api": "dx9"
+        })
+        
+        self.assertEqual(len(recommendations), 1)
+        self.assertEqual(recommendations[0]["method"], "sdr")
+        self.assertIn("32-bit", recommendations[0]["reason"])
 
     async def test_api_detection_scans_unity_player_imports(self):
         plugin = self.module.Plugin()

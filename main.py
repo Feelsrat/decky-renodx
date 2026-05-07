@@ -2083,6 +2083,8 @@ class Plugin:
                 table.append(line)
             elif table:
                 flush_table()
+            elif section == "multi" and generic_engine and "http" in line:
+                generic_links.extend(re.findall(r"https?://[^\s)]+", line))
         flush_table()
         if not mods:
             mods.extend(self._parse_renodx_legacy_rows(markdown))
@@ -2286,8 +2288,6 @@ class Plugin:
             score = 0
             if candidate == query:
                 score = 100
-            elif candidate in query or query in candidate:
-                score = 88 if min(len(candidate), len(query)) >= 6 else 60
             else:
                 overlap = len(set(re.findall(r"[a-z0-9]+", game_name.lower())) & set(re.findall(r"[a-z0-9]+", str(mod.get("name", "")).lower())))
                 score = overlap * 12
@@ -2300,6 +2300,13 @@ class Plugin:
             return result
 
         engine_bucket = self._renodx_engine_bucket(engine or "")
+        generic = self._generic_renodx_mod_for_engine(mods, engine_bucket)
+        if generic:
+            return generic
+        return None
+
+    def _generic_renodx_mod_for_engine(self, mods: list[dict[str, Any]], engine: str) -> dict[str, Any] | None:
+        engine_bucket = self._renodx_engine_bucket(engine or "")
         if engine_bucket in {"unreal", "unity"}:
             for mod in mods:
                 if mod.get("match_type") == "generic_engine" and mod.get("engine_bucket") == engine_bucket:
@@ -2308,6 +2315,86 @@ class Plugin:
                     result["experimental"] = True
                     return result
         return None
+
+    def _fallback_generic_renodx_mod(self, engine: str) -> dict[str, Any]:
+        engine_bucket = self._renodx_engine_bucket(engine or "")
+        urls = {
+            "unreal": "https://clshortfuse.github.io/renodx/renodx-unrealengine.addon64",
+            "unity": "https://notvoosh.github.io/renodx-unity/renodx-unityengine.addon64",
+        }
+        addon_url = urls.get(engine_bucket, "")
+        if not addon_url:
+            return {}
+        return {
+            "name": f"Generic {engine_bucket.title()} Engine",
+            "normalized": f"generic{engine_bucket}engine",
+            "maintainer": "RenoDX",
+            "status": "experimental",
+            "notes": ["Experimental generic engine install. Use only when no exact game entry exists."],
+            "links": [addon_url],
+            "addon_url": addon_url,
+            "snapshotLinks": [addon_url],
+            "pageLinks": [],
+            "manual_url": "",
+            "source_type": "generic_fallback",
+            "bitness": "64",
+            "engine_bucket": engine_bucket,
+            "match_type": "generic_engine",
+            "score": 62,
+            "experimental": True,
+        }
+
+    async def _resolve_renodx_match_for_install(self, appid: str, title: str, exe_path: str, context: dict[str, Any], logger=None) -> dict[str, Any]:
+        mod = context.get("renodx_match") or {}
+        if mod:
+            return mod
+
+        engine = str(context.get("engine") or "")
+        if not engine and exe_path and os.path.exists(exe_path):
+            try:
+                api_info = await self._detect_api_with_cache(exe_path, logger)
+                engine = str(api_info.get("engine") or "")
+            except Exception:
+                engine = ""
+        if not engine:
+            try:
+                wiki_data = await asyncio.to_thread(self.wiki_scraper.get_game_data, appid)
+                engine = str(wiki_data.get("engine") or "")
+            except Exception:
+                engine = ""
+
+        architecture = str(context.get("architecture") or "")
+        if not architecture and exe_path and os.path.exists(exe_path):
+            try:
+                api_info = await self._detect_api_with_cache(exe_path, logger)
+                architecture = str(api_info.get("architecture") or "")
+            except Exception:
+                architecture = ""
+
+        result = await self.check_renodx_support(title, engine)
+        mod = result.get("match", {}) if result.get("supported") else {}
+        if mod:
+            if mod.get("match_type") == "generic_engine" and architecture != "64":
+                if logger:
+                    logger.info("Skipping generic RenoDX %s because architecture is %s, not confirmed 64-bit.", mod.get("name"), architecture or "unknown")
+                return {}
+            return mod
+
+        generic = self._generic_renodx_mod_for_engine(self._renodx_mod_list(), engine)
+        if generic:
+            if architecture != "64":
+                if logger:
+                    logger.info("Skipping generic RenoDX %s because architecture is %s, not confirmed 64-bit.", generic.get("name"), architecture or "unknown")
+                return {}
+            return generic
+        if architecture != "64":
+            if logger:
+                logger.info("Skipping built-in generic RenoDX fallback because architecture is %s, not confirmed 64-bit.", architecture or "unknown")
+            return {}
+        fallback = self._fallback_generic_renodx_mod(engine)
+        if fallback and logger:
+            logger.info("Using built-in generic RenoDX fallback for %s engine: %s", fallback.get("engine_bucket"), fallback.get("addon_url"))
+        return fallback or {}
 
     async def manage_game_reshade(self, appid: str, action: str, dll_override: str = "dxgi", vulkan_mode: str = "", selected_executable_path: str = "") -> dict:
         try:
@@ -2529,7 +2616,9 @@ class Plugin:
                 if detected.get("status") == "success":
                     arch = str(detected.get("architecture") or "64")
 
-            specialk_result = self._install_specialk_for_game(exe_dir, api, arch)
+            exe_dir = self._compat_specialk_install_dir(appid, exe_dir)
+            api = self._specialk_dll_for_game(appid, {"injection_dll": api}, api)
+            specialk_result = self._install_specialk_for_game(exe_dir, api, arch, appid)
             if specialk_result.get("status") == "success":
                 launch_options = self._hdr_launch_options(str(specialk_result["dll"]), appid, "special_k")
                 await self._set_steam_launch_options(appid, launch_options)
@@ -2591,6 +2680,7 @@ class Plugin:
                 "special_k_delay_seconds": "0",
                 "has_renodx_compat": False,
                 "has_special_k_compat": False,
+                "method_options": [],
             }
 
             if hasattr(self, "compat_db") and str(appid) in self.compat_db.get("games", {}):
@@ -2599,7 +2689,20 @@ class Plugin:
                 context["has_renodx_compat"] = "renodx" in tools
                 context["has_special_k_compat"] = "special_k" in tools
                 if "special_k" in tools:
-                    context["special_k_delay_seconds"] = str(tools["special_k"].get("special_k_delay_seconds", 0))
+                    special_k_tool = tools["special_k"]
+                    context["tools"] = context.get("tools", {})
+                    context["tools"]["special_k"] = self._compat_tool_metadata("special_k", special_k_tool)
+                    context["special_k_delay_seconds"] = str(special_k_tool.get("special_k_delay_seconds", 0))
+                    context["special_k_avoid_hdr"] = self._compat_specialk_avoid_hdr(appid)
+                    forced_api = self._compat_specialk_force_render_api(appid)
+                    if forced_api:
+                        context["graphics_api"] = forced_api
+                        context["injection_dll"] = self._api_to_injection_dll(forced_api)
+                        context["api_source"] = "compatibility_json"
+                    special_k_dll = self._compat_specialk_hook_dll(appid)
+                    if special_k_dll:
+                        context["special_k_injection_dll"] = special_k_dll
+                        context["injection_dll"] = special_k_dll
 
             resolved_game_path = game_path
             if not resolved_game_path or not os.path.exists(resolved_game_path):
@@ -2619,10 +2722,12 @@ class Plugin:
                     context["injection_dll"] = self._api_to_injection_dll(context["graphics_api"])
                     context["api_source"] = wiki_data.get("api_source", "pcgamingwiki_api_table")
                     context["api_page"] = wiki_data.get("api_page", "")
+                if wiki_data.get("engine"):
+                    context["engine"] = wiki_data.get("engine")
                 context["special_k_wiki"] = wiki_data.get("special_k_compatible", False)
                 context["special_k_notes"] = wiki_data.get("special_k_notes", [])
                 context["special_k_delay_seconds"] = wiki_data.get("special_k_delay_seconds", "0")
-                logger.info(f"Wiki data fetched: Native HDR={context['native_hdr']}, SK Compatible={context['special_k_wiki']}")
+                logger.info(f"Wiki data fetched: Native HDR={context['native_hdr']}, SK Compatible={context['special_k_wiki']}, Engine={context.get('engine', 'unknown')}")
 
             await self._refresh_renodx_recommendation_context(context, title, logger)
 
@@ -2632,7 +2737,21 @@ class Plugin:
                 context["graphics_api"] = api_info.get("api", "unknown")
                 context["architecture"] = api_info.get("architecture", "unknown")
                 context["injection_dll"] = api_info.get("injection_dll", "auto")
-                context["engine"] = api_info.get("engine", "unknown")
+                forced_api = self._compat_specialk_force_render_api(appid)
+                if forced_api:
+                    context["graphics_api"] = forced_api
+                    context["injection_dll"] = self._api_to_injection_dll(forced_api)
+                    context["api_source"] = "compatibility_json"
+                special_k_dll = self._compat_specialk_hook_dll(appid)
+                if special_k_dll:
+                    context["special_k_injection_dll"] = special_k_dll
+                    context["injection_dll"] = special_k_dll
+                
+                # Only overwrite engine if disk scan actually found one
+                disk_engine = api_info.get("engine", "unknown")
+                if disk_engine != "unknown":
+                    context["engine"] = disk_engine
+                    
                 await self._refresh_renodx_recommendation_context(context, title, logger)
 
                 context["anti_cheat"] = self.ac_detector.detect(str(Path(resolved_game_path).parent))
@@ -2645,14 +2764,16 @@ class Plugin:
 
             # 3. Evaluate recommendations
             recommendations = self.decision_tree.evaluate(context)
+            context["method_options"] = self._hdr_method_options(appid, context, recommendations)
             
             for rec in recommendations:
                 if hasattr(self, "compat_db") and str(appid) in self.compat_db.get("games", {}):
                     tool_data = self.compat_db["games"][str(appid)].get("tools", {}).get(rec["method"], {})
-                    if "warnings" in tool_data:
-                        rec["warnings"] = tool_data["warnings"]
-                    if "manual_steps" in tool_data:
-                        rec["manual_steps"] = tool_data["manual_steps"]
+                    metadata = self._compat_tool_metadata(rec["method"], tool_data)
+                    if "warnings" in metadata:
+                        rec["warnings"] = metadata["warnings"]
+                    if "manual_steps" in metadata:
+                        rec["manual_steps"] = metadata["manual_steps"]
 
             return {
                 "status": "success",
@@ -2964,10 +3085,7 @@ class Plugin:
                         return {"status": "success", "method": "native_hdr", "message": "Game has native HDR support. No injection needed."}
 
                     if method == "renodx":
-                        mod = context.get("renodx_match") or {}
-                        if not mod:
-                            mod_result = await self.check_renodx_support(title, str(context.get("engine", "")))
-                            mod = mod_result.get("match", {}) if mod_result.get("supported") else {}
+                        mod = await self._resolve_renodx_match_for_install(appid, title, exe_path, context, logger)
                         if mod:
                             result = await self._install_renodx_mod_for_game(appid, title, exe_path, mod, logger)
                             if result.get("status") == "success":
@@ -2978,35 +3096,30 @@ class Plugin:
                         continue
 
                     if method == "special_k":
+                        gate = self._specialk_local_install_gate(appid)
+                        if not gate["available"]:
+                            logger.error("Special K blocked by compatibility gate: %s", gate["reason"])
+                            continue
                         await self._ensure_special_k_bin()
                         api_info = await self._detect_api_with_cache(exe_path, logger) if exe_path and os.path.exists(exe_path) else {}
                         arch = str(api_info.get("architecture", "64") or "64")
-                        sk_source = self._specialk_runtime_source(arch)
-                        if not sk_source:
+                        exe_dir = self._compat_specialk_install_dir(appid, Path(exe_path).parent) if exe_path else Path()
+                        sk_dll = self._specialk_dll_for_game(appid, context, str(api_info.get("injection_dll") or api_info.get("api") or "dxgi"))
+                        specialk_result = self._install_specialk_for_game(exe_dir, sk_dll, arch, appid)
+                        if specialk_result.get("status") != "success":
                             logger.error(f"Special K install failed: SpecialK{arch}.dll was not found after runtime setup.")
                             continue
-                        
-                        success, message = self.installer.install_special_k(
-                            appid,
-                            exe_path,
-                            str(sk_source),
-                            delay_seconds=context.get("special_k_delay_seconds", "0"),
-                            notes=context.get("special_k_notes", []),
-                        )
-                        if success:
-                            # Verification check would usually happen AFTER launch, 
-                            # but we return the success state for now.
-                            launch_opts = self._hdr_launch_options("dxgi", appid, "special_k")
-                            await self._set_steam_launch_options(appid, launch_opts)
-                            return {
-                                "status": "success", 
-                                "method": "special_k", 
-                                "message": message,
-                                "launch_options": launch_opts
-                            }
-                        else:
-                            logger.error(f"Special K install failed: {message}")
-                            continue
+
+                        launch_opts = self._hdr_launch_options(str(specialk_result["dll"]), appid, "special_k")
+                        await self._set_steam_launch_options(appid, launch_opts)
+                        self._write_game_hdr_marker(exe_dir, appid, "specialk", str(specialk_result["dll"]), arch)
+                        self._fix_deck_user_ownership(exe_dir)
+                        return {
+                            "status": "success", 
+                            "method": "special_k", 
+                            "message": f"Special K installed as {specialk_result['dll']}.dll. HDR still needs in-game verification.",
+                            "launch_options": launch_opts
+                        }
 
                     if method == "reshade":
                         reshade_dll = str(context.get("injection_dll") or "dxgi")
@@ -3030,6 +3143,89 @@ class Plugin:
                 decky.logger.error(f"Error in execute_setup_flow: {str(e)}")
                 return {"status": "error", "message": str(e)}
 
+    async def install_selected_hdr_method(self, appid: str, title: str, exe_path: str = "", method: str = "recommended") -> dict:
+        """Remove the current HDR install, then install the user-selected method."""
+        method = (method or "recommended").strip().lower()
+        if method == "specialk":
+            method = "special_k"
+        if method == "reshade_autohdr":
+            method = "reshade"
+        valid_methods = {"recommended", "native_hdr", "renodx", "special_k", "reshade", "sdr"}
+        if method not in valid_methods:
+            return {"status": "error", "message": f"Unsupported HDR method: {method}"}
+
+        logger = setup_per_game_logger(appid)
+        logger.info("Installing selected HDR method for %s: %s", title, method)
+        rec_result = await self.get_hdr_recommendation(appid, title, exe_path)
+        context = rec_result.get("context", {}) if rec_result.get("status") == "success" else {}
+        options = {str(item.get("method")): item for item in context.get("method_options", []) if isinstance(item, dict)}
+        option = options.get(method)
+        if option and not option.get("available", True):
+            return {
+                "status": "error",
+                "method": method,
+                "message": f"{option.get('label', method)} is blocked: {option.get('reason', 'Not available for this game.')}",
+                "option": option,
+            }
+
+        uninstall_result = await self.run_surgical_uninstall(appid, exe_path)
+        if uninstall_result.get("status") == "error":
+            return {
+                "status": "error",
+                "message": f"Could not remove current HDR install before applying {method}: {uninstall_result.get('message')}",
+                "uninstall": uninstall_result,
+            }
+
+        if method == "sdr":
+            return {
+                "status": "success",
+                "method": "sdr",
+                "message": "HDR removed. This game is now set to SDR/no injection.",
+                "uninstall": uninstall_result,
+            }
+
+        if method == "native_hdr":
+            return {
+                "status": "success",
+                "method": "native_hdr",
+                "message": "Injection removed. Use the game's native HDR settings.",
+                "uninstall": uninstall_result,
+            }
+
+        if method == "recommended":
+            result = await self.execute_setup_flow(appid, title, exe_path, False)
+            result["uninstall"] = uninstall_result
+            return result
+
+        if method == "renodx":
+            mod = await self._resolve_renodx_match_for_install(appid, title, exe_path, context, logger)
+            if not mod:
+                return {"status": "error", "method": "renodx", "message": "No RenoDX/Luma mod matched this game or detected engine.", "uninstall": uninstall_result}
+            result = await self._install_renodx_mod_for_game(appid, title, exe_path, mod, logger)
+            result["uninstall"] = uninstall_result
+            return result
+
+        if method == "special_k":
+            gate = self._specialk_local_install_gate(appid)
+            if not gate["available"]:
+                return {"status": "error", "method": "special_k", "message": gate["reason"], "uninstall": uninstall_result, "gate": gate}
+            result = await self.force_special_k_setup(appid, title, exe_path)
+            result["uninstall"] = uninstall_result
+            return result
+
+        if method == "reshade":
+            reshade_dll = str(context.get("injection_dll") or "dxgi")
+            if reshade_dll == "auto":
+                reshade_dll = "dxgi"
+            result = await self.manage_game_reshade(appid, "install", reshade_dll, "", exe_path)
+            if result.get("status") == "success":
+                result["method"] = "reshade"
+                result["message"] = result.get("message") or "ReShade AutoHDR installed."
+            result["uninstall"] = uninstall_result
+            return result
+
+        return {"status": "error", "message": f"Unhandled HDR method: {method}", "uninstall": uninstall_result}
+
     async def force_special_k_setup(self, appid: str, title: str, exe_path: str = "") -> dict:
         """Install Special K even when a higher-priority RenoDX/Luma recommendation exists."""
         async with self._install_lock:
@@ -3045,30 +3241,27 @@ class Plugin:
                 await self._ensure_special_k_bin()
                 api_info = await self._detect_api_with_cache(exe_path, logger)
                 arch = str(api_info.get("architecture", "64") or "64")
-                sk_source = self._specialk_runtime_source(arch)
-                if not sk_source:
-                    return {"status": "error", "message": f"SpecialK{arch}.dll was not found after runtime setup."}
 
                 rec_result = await self.get_hdr_recommendation(appid, title, exe_path)
                 context = rec_result.get("context", {}) if rec_result.get("status") == "success" else {}
-                success, message = self.installer.install_special_k(
-                    appid,
-                    exe_path,
-                    str(sk_source),
-                    delay_seconds=context.get("special_k_delay_seconds", "0"),
-                    notes=context.get("special_k_notes", []),
-                )
-                if not success:
+                exe_dir = self._compat_specialk_install_dir(appid, Path(exe_path).parent)
+                gate = self._specialk_local_install_gate(appid)
+                if not gate["available"]:
+                    return {"status": "error", "message": gate["reason"], "gate": gate}
+                sk_dll = self._specialk_dll_for_game(appid, context, str(api_info.get("injection_dll") or api_info.get("api") or "dxgi"))
+                specialk_result = self._install_specialk_for_game(exe_dir, sk_dll, arch, appid)
+                if specialk_result.get("status") != "success":
+                    message = str(specialk_result.get("message") or "Special K install failed.")
                     logger.error(f"Forced Special K install failed: {message}")
                     return {"status": "error", "message": message}
 
-                launch_opts = self._hdr_launch_options("dxgi")
+                launch_opts = self._hdr_launch_options(str(specialk_result["dll"]), appid, "special_k")
                 await self._set_steam_launch_options(appid, launch_opts)
                 logger.info("Forced Special K install completed; HDR still requires in-game verification.")
                 return {
                     "status": "success",
                     "method": "special_k",
-                    "message": f"{message} HDR still needs in-game verification.",
+                    "message": f"Special K installed as {specialk_result['dll']}.dll. HDR still needs in-game verification.",
                     "launch_options": launch_opts,
                 }
             except Exception as e:
@@ -3166,7 +3359,7 @@ class Plugin:
         self._fix_deck_user_ownership(exe_dir)
 
         injection_dll = str(reshade_result.get("injection_dll") or api)
-        launch_options = self._hdr_launch_options(injection_dll)
+        launch_options = self._hdr_launch_options(injection_dll, appid, "renodx")
         await self._set_steam_launch_options(appid, launch_options)
         arch = "64" if addon_name.lower().endswith(".addon64") else "32" if addon_name.lower().endswith(".addon32") else "unknown"
         self._write_game_hdr_marker(
@@ -3428,42 +3621,6 @@ class Plugin:
                 continue
             pos = end
 
-    def _parse_reshade_selected_api(self, output: str) -> str:
-        match = re.search(r"Selected API:\s*([a-z0-9_]+)", output or "", re.I)
-        if match:
-            return self._api_to_injection_dll(match.group(1).lower())
-        matches = re.findall(r"([a-z0-9_]+)=n,b", output or "", re.I)
-        for item in reversed(matches):
-            if item.lower() != "d3dcompiler_47":
-                return self._api_to_injection_dll(item.lower())
-        return ""
-
-    def _hdr_launch_options(self, dll: str, appid: str = "", active_tool: str = "") -> str:
-        overrides = []
-        for item in str(dll or "dxgi").split(";"):
-            item = item.strip()
-            if item:
-                overrides.append(f"{item}=n,b")
-
-        env = "PROTON_LOG=1 PROTON_ENABLE_HDR=1 DXVK_HDR=1 ENABLE_HDR_WSI=1"
-
-        if not any(item.startswith("opengl32=") for item in overrides):
-            overrides.insert(0, "d3dcompiler_47=n")
-
-        dll_overrides = f'WINEDLLOVERRIDES="{";".join(overrides)}"'
-
-        compat_flags = ""
-        if hasattr(self, "compat_db") and str(appid) in self.compat_db.get("games", {}):
-            game_compat = self.compat_db["games"][str(appid)]
-            tool_compat = game_compat.get("tools", {}).get(active_tool, {})
-            if "launch_options" in tool_compat:
-                compat_flags = " " + " ".join(tool_compat["launch_options"])
-                decky.logger.info(f"Applying compatibility launch options for {appid} ({active_tool}): {compat_flags}")
-
-        if overrides == ["opengl32=n,b"]:
-            return f"{env} %command%{compat_flags}"
-
-        return f"{env} {dll_overrides} %command%{compat_flags}"
     async def update_sk_config_value(self, appid: str, exe_path: str, section: str, key: str, value: str) -> dict:
         """Update a specific value in SpecialK.ini."""
         try:
@@ -3810,8 +3967,9 @@ class Plugin:
             elif api == "auto":
                 api = "dxgi"
 
-            dll = self._specialk_hook_dll(api)
-            result = self._install_specialk_for_game(exe_dir, dll, arch)
+            exe_dir = self._compat_specialk_install_dir(appid, exe_dir)
+            dll = self._specialk_dll_for_game(appid, {"injection_dll": api}, api)
+            result = self._install_specialk_for_game(exe_dir, dll, arch, appid)
             if result.get("status") != "success":
                 return result
 
@@ -4238,11 +4396,218 @@ class Plugin:
 
     def _specialk_hook_dll(self, dll_override: str) -> str:
         dll = (dll_override or "dxgi").lower()
+        if dll.endswith(".dll"):
+            dll = dll[:-4]
         if dll == "auto":
             return "dxgi"
         if dll in {"dxgi", "d3d11", "d3d9", "d3d8", "opengl32", "dinput8", "ddraw"}:
             return dll
         return "dxgi"
+
+    def _compat_specialk_tool(self, appid: str) -> dict[str, Any]:
+        if not hasattr(self, "compat_db"):
+            return {}
+        game_compat = self.compat_db.get("games", {}).get(str(appid), {})
+        special_k = game_compat.get("tools", {}).get("special_k", {})
+        return special_k if isinstance(special_k, dict) else {}
+
+    def _compat_tool_metadata(self, method: str, tool_data: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(tool_data, dict):
+            return {}
+        automation = tool_data.get("automation", {}) if isinstance(tool_data.get("automation", {}), dict) else {}
+        warnings = []
+        manual_steps = []
+        for source, target in [
+            (automation.get("warnings"), warnings),
+            (tool_data.get("warnings"), warnings),
+            (automation.get("manual_steps"), manual_steps),
+            (tool_data.get("manual_steps"), manual_steps),
+        ]:
+            if isinstance(source, list):
+                target.extend(str(item) for item in source if str(item).strip())
+            elif isinstance(source, str) and source.strip():
+                target.append(source.strip())
+        metadata: dict[str, Any] = {}
+        if warnings:
+            metadata["warnings"] = list(dict.fromkeys(warnings))
+        if manual_steps:
+            metadata["manual_steps"] = list(dict.fromkeys(manual_steps))
+        if method == "special_k":
+            preferred = automation.get("preferred_injection")
+            if preferred:
+                metadata["preferred_injection"] = str(preferred)
+            if automation.get("hdr", {}).get("avoid") if isinstance(automation.get("hdr"), dict) else False:
+                metadata.setdefault("warnings", []).append("Compatibility database marks Special K HDR as avoid for this game.")
+        return metadata
+
+    def _compat_specialk_hook_dll(self, appid: str) -> str:
+        special_k = self._compat_specialk_tool(appid)
+        if not special_k:
+            return ""
+
+        automation = special_k.get("automation", {}) if isinstance(special_k.get("automation", {}), dict) else {}
+        local_dll = automation.get("local_dll", {}) if isinstance(automation.get("local_dll", {}), dict) else {}
+        candidates = [
+            local_dll.get("target"),
+            automation.get("addon_loader", {}).get("special_k_target") if isinstance(automation.get("addon_loader"), dict) else "",
+            automation.get("special_k_target"),
+            automation.get("target_dll"),
+            automation.get("injection_dll"),
+            special_k.get("special_k_target"),
+            special_k.get("target_dll"),
+            special_k.get("injection_dll"),
+        ]
+        for candidate in candidates:
+            if candidate:
+                return self._specialk_hook_dll(Path(str(candidate)).stem)
+
+        tweaks = special_k.get("special_k_ini_tweaks", {})
+        if isinstance(tweaks, dict):
+            for section in tweaks:
+                section_l = str(section).lower()
+                if "d3d9" in section_l:
+                    return "d3d9"
+                if "d3d11" in section_l:
+                    return "d3d11"
+                if "dxgi" in section_l:
+                    return "dxgi"
+
+        notes = " ".join(str(item) for item in [special_k.get("notes", ""), *automation.get("warnings", [])]).lower()
+        if "d3d9" in notes:
+            return "d3d9"
+        if "d3d11" in notes:
+            return "d3d11"
+        return ""
+
+    def _compat_specialk_install_dir(self, appid: str, exe_dir: Path) -> Path:
+        special_k = self._compat_specialk_tool(appid)
+        automation = special_k.get("automation", {}) if isinstance(special_k.get("automation", {}), dict) else {}
+        local_dll = automation.get("local_dll", {}) if isinstance(automation.get("local_dll", {}), dict) else {}
+        relative = str(local_dll.get("relative_path") or "").strip()
+        if not relative or relative.lower() in {"<path-to-game>", ".", "./"}:
+            return exe_dir
+        relative = relative.replace("\\", "/").strip("/")
+        target = (exe_dir / relative).resolve()
+        try:
+            if not target.is_relative_to(exe_dir.resolve()):
+                return exe_dir
+        except OSError:
+            return exe_dir
+        target.mkdir(parents=True, exist_ok=True)
+        return target
+
+    def _compat_specialk_force_render_api(self, appid: str) -> str:
+        special_k = self._compat_specialk_tool(appid)
+        automation = special_k.get("automation", {}) if isinstance(special_k.get("automation", {}), dict) else {}
+        forced = str(automation.get("force_render_api") or special_k.get("force_render_api") or "").lower()
+        if not forced:
+            return ""
+        if "12" in forced:
+            return "dx12"
+        if "11" in forced:
+            return "dx11"
+        if "10" in forced:
+            return "dx10"
+        if "9" in forced:
+            return "dx9"
+        if "vulkan" in forced:
+            return "vulkan"
+        if "opengl" in forced:
+            return "opengl"
+        return ""
+
+    def _compat_specialk_avoid_hdr(self, appid: str) -> bool:
+        special_k = self._compat_specialk_tool(appid)
+        automation = special_k.get("automation", {}) if isinstance(special_k.get("automation", {}), dict) else {}
+        hdr = automation.get("hdr", {}) if isinstance(automation.get("hdr"), dict) else {}
+        return bool(hdr.get("avoid"))
+
+    def _specialk_local_install_gate(self, appid: str) -> dict[str, Any]:
+        special_k = self._compat_specialk_tool(appid)
+        if not special_k:
+            return {"available": True, "reason": "No compatibility block."}
+        automation = special_k.get("automation", {}) if isinstance(special_k.get("automation", {}), dict) else {}
+        preferred = str(automation.get("preferred_injection") or "").lower()
+        local_dll = automation.get("local_dll", {}) if isinstance(automation.get("local_dll", {}), dict) else {}
+        avoid_modes = [str(item).lower() for item in automation.get("avoid_injection_modes", [])] if isinstance(automation.get("avoid_injection_modes"), list) else []
+        hdr = automation.get("hdr", {}) if isinstance(automation.get("hdr"), dict) else {}
+
+        if hdr.get("avoid"):
+            return {"available": False, "reason": "Compatibility database says to avoid Special K HDR for this game."}
+        if automation.get("hardware_requirement") and str(automation.get("hardware_requirement")).lower() != "steam deck":
+            return {"available": False, "reason": f"Special K compatibility requires {automation.get('hardware_requirement')}, not Steam Deck OLED."}
+        if automation.get("required_wrapper"):
+            return {"available": False, "reason": f"Requires unsupported wrapper: {', '.join(map(str, automation.get('required_wrapper', [])))}."}
+        if automation.get("required_files"):
+            files = ", ".join(str(item.get("file", item)) for item in automation.get("required_files", []))
+            return {"available": False, "reason": f"Requires extra Special K file(s) not installed by this plugin: {files}."}
+        if "local" in avoid_modes:
+            return {"available": False, "reason": "Compatibility database says local Special K injection should be avoided."}
+        if automation.get("avoid_injection_at_launch") and not local_dll:
+            return {"available": False, "reason": "Requires delayed/global injection; this plugin currently only supports local DLL injection."}
+        if preferred.startswith("global") and "local" not in preferred and not local_dll:
+            return {"available": False, "reason": f"Requires {preferred.replace('_', ' ')} injection; local DLL injection is not safe for this entry."}
+        if automation.get("anti_cheat"):
+            return {"available": False, "reason": "Requires anti-cheat/online-service changes before Special K can be considered safe."}
+        return {"available": True, "reason": "Local Special K install is allowed by compatibility data."}
+
+    def _hdr_method_options(self, appid: str, context: dict[str, Any], recommendations: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        rec_methods = {str(rec.get("method")): rec for rec in recommendations}
+        anti_cheat = bool(context.get("anti_cheat")) or bool(context.get("is_multiplayer"))
+        renodx_match = context.get("renodx_match") or {}
+        engine_bucket = self._renodx_engine_bucket(str(context.get("engine") or ""))
+        architecture = str(context.get("architecture") or "unknown")
+        generic_renodx_tryable = engine_bucket in {"unity", "unreal"} and architecture == "64"
+        renodx_available = bool((context.get("renodx_supported") and renodx_match) or generic_renodx_tryable)
+        renodx_reason = "No RenoDX/Luma match found."
+        renodx_badge = ""
+        if renodx_match:
+            match_type = str(renodx_match.get("match_type") or "")
+            if match_type == "generic_engine" and architecture != "64":
+                renodx_available = False
+                renodx_reason = f"Generic RenoDX requires a confirmed 64-bit game. Detected architecture: {architecture}."
+                renodx_badge = ""
+            else:
+                renodx_reason = f"Match found: {renodx_match.get('name', 'RenoDX')}."
+                renodx_badge = "Experimental" if match_type == "generic_engine" else "Best"
+        elif generic_renodx_tryable:
+            renodx_reason = f"No exact RenoDX match, but generic {engine_bucket.title()} RenoDX may work. This is experimental."
+            renodx_badge = "Experimental"
+        elif engine_bucket in {"unity", "unreal"}:
+            renodx_reason = f"Generic {engine_bucket.title()} RenoDX requires confirmed 64-bit architecture. Detected: {architecture}."
+        specialk_gate = self._specialk_local_install_gate(appid)
+        reshade_api = str(context.get("injection_dll") or "auto")
+        if reshade_api in {"", "auto"}:
+            reshade_api = "automatic"
+
+        def option(method: str, label: str, available: bool, reason: str, badge: str = "") -> dict[str, Any]:
+            rec = rec_methods.get(method, {})
+            return {
+                "method": method,
+                "label": label,
+                "available": bool(available),
+                "reason": reason,
+                "badge": badge,
+                "score": rec.get("score"),
+                "confidence": rec.get("confidence", "medium"),
+            }
+
+        return [
+            option("recommended", "Recommended", bool(recommendations and recommendations[0].get("score", 0) > 0), recommendations[0].get("reason", "No safe recommendation.") if recommendations else "No recommendation."),
+            option("renodx", "RenoDX / Luma", renodx_available and not anti_cheat, renodx_reason, renodx_badge),
+            option("special_k", "Special K", specialk_gate["available"] and not anti_cheat, specialk_gate["reason"], "Verified" if context.get("has_special_k_compat") else ""),
+            option("reshade", "ReShade AutoHDR", not anti_cheat, f"Fallback injection using {reshade_api}.", "Fallback"),
+            option("native_hdr", "Native HDR / No Injection", True, f"Native HDR status: {context.get('native_hdr', 'unknown')}."),
+            option("sdr", "SDR / Remove Injection", True, "Remove injected HDR files and launch options."),
+        ]
+
+    def _specialk_dll_for_game(self, appid: str, context: dict[str, Any] | None = None, fallback: str = "dxgi") -> str:
+        context = context or {}
+        compat_dll = self._compat_specialk_hook_dll(appid)
+        if compat_dll:
+            return compat_dll
+        context_dll = str(context.get("special_k_injection_dll") or context.get("injection_dll") or "")
+        return self._specialk_hook_dll(context_dll or fallback)
 
     def _parse_reshade_selected_api(self, output: str) -> str:
         match = re.search(r"Selected API:\s*([a-z0-9_]+)", output or "", re.I)
@@ -4261,7 +4626,7 @@ class Plugin:
             if item:
                 overrides.append(f"{item}=n,b")
 
-        env = "PROTON_LOG=1 PROTON_ENABLE_HDR=1 DXVK_HDR=1 ENABLE_HDR_WSI=1"
+        env = "PROTON_LOG=1 PROTON_ENABLE_HDR=1 DXVK_HDR=1 ENABLE_HDR_WSI=1 ENABLE_GAMESCOPE_WSI=1"
 
         if not any(item.startswith("opengl32=") for item in overrides):
             overrides.insert(0, "d3dcompiler_47=n")

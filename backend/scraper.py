@@ -9,6 +9,9 @@ class PCGamingWikiScraper:
 
     def __init__(self, logger=None):
         self.logger = logger
+        self._page_name_cache = {}
+        self._improvements_cache = {}
+        self._last_fetch_error = ""
         self._ssl_context = None
         try:
             import ssl
@@ -73,6 +76,20 @@ class PCGamingWikiScraper:
             if sk_data and "cargoquery" in sk_data and sk_data["cargoquery"]:
                 result["special_k_compatible"] = True
 
+            # Fetch Engine info
+            engine_query = {
+                "action": "cargoquery",
+                "format": "json",
+                "tables": "Engine",
+                "fields": "Engine",
+                "where": f'_pageName="{page_name}"'
+            }
+            engine_data = self._fetch(engine_query)
+            if engine_data and "cargoquery" in engine_data and engine_data["cargoquery"]:
+                engine_val = engine_data["cargoquery"][0]["title"].get("Engine")
+                if engine_val:
+                    result["engine"] = engine_val
+
             # Fetch API data
             api_data = self._fetch({
                 "action": "cargoquery",
@@ -101,19 +118,26 @@ class PCGamingWikiScraper:
 
     def get_improvements_and_issues(self, appid: str):
         try:
+            cached = self._improvements_cache.get(str(appid))
+            if cached:
+                return cached
             page_name = self._page_name_for_appid(appid)
             if not page_name:
-                return {"status": "error", "message": f"PCGamingWiki page was not found for Steam AppID {appid}."}
+                detail = self._last_fetch_error or "No page mapping was returned by PCGamingWiki."
+                return {"status": "error", "message": f"Could not resolve PCGamingWiki page for Steam AppID {appid}. {detail}"}
             text = self._fetch_page_wikitext(page_name)
             if not text:
-                return {"status": "error", "message": f"Could not fetch wiki content for '{page_name}'."}
-            return {
+                detail = self._last_fetch_error or "The page content response was empty."
+                return {"status": "error", "message": f"Could not fetch wiki content for '{page_name}'. {detail}", "page_name": page_name}
+            result = {
                 "status": "success",
                 "appid": appid,
                 "page_name": page_name,
                 "essential_improvements": self._extract_named_section(text, "Essential improvements"),
                 "issues_fixed": self._extract_named_section(text, "Issues fixed"),
             }
+            self._improvements_cache[str(appid)] = result
+            return result
         except Exception as error:
             if self.logger: self.logger.error(f"PCGW get_improvements_and_issues error: {str(error)}")
             return {"status": "error", "message": str(error)}
@@ -122,6 +146,7 @@ class PCGamingWikiScraper:
         query_string = urllib.parse.urlencode(params)
         url = f"{self.API_URL}?{query_string}"
         try:
+            self._last_fetch_error = ""
             headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) DeckyRenoDX/1.0"}
             request = urllib.request.Request(url, headers=headers)
             
@@ -132,6 +157,7 @@ class PCGamingWikiScraper:
             with urllib.request.urlopen(request, **kwargs) as response:
                 return json.loads(response.read().decode("utf-8", "ignore"))
         except Exception as e:
+            self._last_fetch_error = str(e)
             if self.logger: self.logger.warning(f"PCGW fetch failed for {url}: {str(e)}")
             return None
 
@@ -147,6 +173,9 @@ class PCGamingWikiScraper:
         })
 
     def _page_name_for_appid(self, appid: str):
+        appid = str(appid)
+        if appid in self._page_name_cache:
+            return self._page_name_cache[appid]
         data = self._fetch({
             "action": "cargoquery",
             "format": "json",
@@ -158,7 +187,10 @@ class PCGamingWikiScraper:
         rows = (data or {}).get("cargoquery") or []
         if not rows:
             return ""
-        return rows[0].get("title", {}).get("Page", "")
+        page_name = rows[0].get("title", {}).get("Page", "")
+        if page_name:
+            self._page_name_cache[appid] = page_name
+        return page_name
 
     def _parse_api_data(self, api_data):
         rows = (api_data or {}).get("cargoquery") or []
