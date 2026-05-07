@@ -291,7 +291,9 @@ detect_game_arch_and_api_enhanced() {
         local exe_dir
         exe_dir=$(dirname "$best_exe")
         
-        if [ -f "$exe_dir/d3d9.dll" ]; then
+        if [ -f "$exe_dir/.decky-renodx-hdr.json" ] || [ -f "$exe_dir/ReShade.ini" ]; then
+            log_message "Existing Decky HDR/ReShade install detected; ignoring local proxy DLLs for API detection"
+        elif [ -f "$exe_dir/d3d9.dll" ]; then
             detected_api="d3d9"
             log_message "Found d3d9.dll, using D3D9 API"
         elif [ -f "$exe_dir/d3d11.dll" ]; then

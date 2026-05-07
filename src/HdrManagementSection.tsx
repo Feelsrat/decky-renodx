@@ -14,6 +14,7 @@ import { callable, toaster } from "@decky/api";
 const getHdrRecommendation = callable<[string, string, string], any>("get_hdr_recommendation");
 const runSurgicalUninstall = callable<[string, string], any>("run_surgical_uninstall");
 const getPerGameLog = callable<[string], any>("get_per_game_log");
+const getPcgwImprovementsIssues = callable<[string], any>("get_pcgw_improvements_issues");
 const updateSkConfigValue = callable<[string, string, string, string, string], any>("update_sk_config_value");
 const setSpecialKVerified = callable<[string, boolean], any>("set_special_k_verified");
 const listInstalledGames = callable<[], any>("list_installed_games");
@@ -28,8 +29,13 @@ const getGameHdrStatus = callable<[string, string], any>("get_game_hdr_status");
 const openRenoDxSearch = callable<[string], any>("open_renodx_search");
 const importRenoDxForGame = callable<[string, string, string], any>("import_renodx_for_game");
 
-const FullscreenLogModal = ({ title, content, closeModal }: { title: string; content: string; closeModal?: () => void }) => {
+type FullscreenTab = { title: string; content: string };
+
+const FullscreenLogModal = ({ title, content, tabs, closeModal }: { title: string; content?: string; tabs?: FullscreenTab[]; closeModal?: () => void }) => {
   const bWasPressed = useRef(false);
+  const [activeTab, setActiveTab] = useState(0);
+  const visibleTabs = tabs && tabs.length ? tabs : [{ title: "Log", content: content || "" }];
+  const activeContent = visibleTabs[Math.min(activeTab, visibleTabs.length - 1)]?.content || "";
 
   useEffect(() => {
     const close = () => closeModal?.();
@@ -65,7 +71,14 @@ const FullscreenLogModal = ({ title, content, closeModal }: { title: string; con
         <div style={{ fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", paddingRight: "12px" }}>{title}</div>
         <button style={{ width: "36px", height: "36px", borderRadius: "4px", border: "1px solid rgba(255,255,255,0.22)", background: "rgba(255,255,255,0.08)", color: "white", fontSize: "18px" }} onClick={closeModal}>x</button>
       </div>
-      <pre style={{ flex: 1, margin: 0, padding: "14px 16px", overflow: "auto", whiteSpace: "pre-wrap", overflowWrap: "anywhere", fontSize: "12px", lineHeight: 1.35, fontFamily: "monospace", boxSizing: "border-box" }}>{content}</pre>
+      {visibleTabs.length > 1 && (
+        <div style={{ display: "flex", gap: "8px", padding: "8px 16px", borderBottom: "1px solid rgba(255,255,255,0.12)", background: "#14161a" }}>
+          {visibleTabs.map((tab, index) => (
+            <button key={tab.title} onClick={() => setActiveTab(index)} style={{ padding: "6px 10px", borderRadius: "4px", border: "1px solid rgba(255,255,255,0.18)", background: activeTab === index ? "rgba(255,255,255,0.18)" : "rgba(255,255,255,0.06)", color: "white" }}>{tab.title}</button>
+          ))}
+        </div>
+      )}
+      <pre style={{ flex: 1, minHeight: 0, margin: 0, padding: "14px 16px 72px", overflow: "auto", whiteSpace: "pre-wrap", overflowWrap: "anywhere", fontSize: "12px", lineHeight: 1.35, fontFamily: "monospace", boxSizing: "border-box" }}>{activeContent}</pre>
     </div>
   );
 };
@@ -85,6 +98,7 @@ function stripHdrLaunchTokens(options: string): string {
     .replace(/\bDXVK_HDR=\S+\s*/g, "")
     .replace(/\bENABLE_HDR_WSI=\S+\s*/g, "")
     .replace(/\bENABLE_GAMESCOPE_WSI=\S+\s*/g, "")
+    .replace(/\bPROTON_LOG=\S+\s*/g, "")
     .replace(/\bWINEDLLOVERRIDES="[^"]*(?:d3dcompiler_47|dxgi|d3d11|d3d12|d3d9|d3d8|ddraw|dinput8|opengl32)[^"]*"\s*/g, "")
     .replace(/\bWINEDLLOVERRIDES=[^\s]*?(?:d3dcompiler_47|dxgi|d3d11|d3d12|d3d9|d3d8|ddraw|dinput8|opengl32)[^\s]*\s*/g, "")
     .replace(/\s+/g, " ")
@@ -317,8 +331,14 @@ const HdrManagementSection = () => {
     if (!selectedGame) return;
     setLoading(true);
     try {
+      setHdrStatus({ status: "success", installed: false, message: "Removing HDR..." });
       const response = await runSurgicalUninstall(selectedGame.appid, exePath);
       await removeHdrLaunchOptions(selectedGame.appid);
+      if (response?.status_after) {
+        setHdrStatus(response.status_after);
+      } else {
+        setHdrStatus({ status: "success", installed: false, message: response.message || "HDR removed." });
+      }
       toaster.toast({ title: "HDR Removal", body: response.message });
       await refreshState();
     } catch (e) {
@@ -358,9 +378,32 @@ const HdrManagementSection = () => {
     if (!selectedGame) return;
     const response = await getPerGameLog(selectedGame.appid);
     if (response.status === "success") {
-      showModal(<FullscreenLogModal title={`HDR Plugin Log: ${selectedGame?.name || selectedGame.appid}`} content={response.log} />);
+      const tabs = [
+        { title: "Plugin", content: response.plugin_log || response.log || "" },
+        { title: "Proton", content: response.proton_log || `No Proton log found yet. Launch the game once after setup.\nExpected path: ~/steam-${selectedGame.appid}.log` },
+      ];
+      showModal(<FullscreenLogModal title={`HDR Logs: ${selectedGame?.name || selectedGame.appid}`} tabs={tabs} />);
     } else {
       toaster.toast({ title: "Log Unavailable", body: response.message || "No log found." });
+    }
+  };
+
+  const viewWikiFixes = async () => {
+    if (!selectedGame) return;
+    setLoading(true);
+    try {
+      const response = await getPcgwImprovementsIssues(selectedGame.appid);
+      if (response.status !== "success") {
+        toaster.toast({ title: "PCGamingWiki", body: response.message || "No wiki fixes found." });
+        return;
+      }
+      const format = (items: string[]) => items?.length ? items.map((item) => `- ${item}`).join("\n") : "No entries found.";
+      showModal(<FullscreenLogModal title={`PCGamingWiki: ${response.page_name || selectedGame.name}`} tabs={[
+        { title: "Essential", content: format(response.essential_improvements) },
+        { title: "Issues Fixed", content: format(response.issues_fixed) },
+      ]} />);
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -596,6 +639,12 @@ const HdrManagementSection = () => {
               <PanelSectionRow>
                 <ButtonItem layout="below" onClick={viewLog}>
                   View Logs
+                </ButtonItem>
+              </PanelSectionRow>
+
+              <PanelSectionRow>
+                <ButtonItem layout="below" onClick={viewWikiFixes}>
+                  View PCGamingWiki Fixes
                 </ButtonItem>
               </PanelSectionRow>
 

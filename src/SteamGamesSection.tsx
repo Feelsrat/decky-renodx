@@ -12,6 +12,7 @@ import { callable, toaster } from "@decky/api";
 // Import the callable functions
 const manageGameReShade = callable<[string, string, string, string, string], ReShadeResponse>("manage_game_reshade");
 const installHdrFallback = callable<[string, string, string], ReShadeResponse & { launch_options?: string; method?: string }>("install_hdr_fallback");
+const runSurgicalUninstall = callable<[string, string], ReShadeResponse & { status_after?: GameHdrStatusResponse }>("run_surgical_uninstall");
 const getGameHdrStatus = callable<[string, string], GameHdrStatusResponse>("get_game_hdr_status");
 const checkReShadePath = callable<[], PathCheckResponse>("check_reshade_path");
 const listInstalledGames = callable<[], GameListResponse>("list_installed_games");
@@ -139,6 +140,7 @@ function stripHdrLaunchTokens(options: string): string {
     .replace(/\bDXVK_HDR=\S+\s*/g, "")
     .replace(/\bENABLE_HDR_WSI=\S+\s*/g, "")
     .replace(/\bENABLE_GAMESCOPE_WSI=\S+\s*/g, "")
+    .replace(/\bPROTON_LOG=\S+\s*/g, "")
     .replace(/\bWINEDLLOVERRIDES="[^"]*(?:d3dcompiler_47|dxgi|d3d11|d3d12|d3d9|d3d8|ddraw|dinput8|opengl32)[^"]*"\s*/g, "")
     .replace(/\s+/g, " ")
     .trim();
@@ -159,10 +161,10 @@ function mergeHdrLaunchOptions(existing: string, hdrOptions: string): string {
 function hdrLaunchOptionsForDll(dll: string): string {
   const normalized = (dll || "dxgi").toLowerCase();
   if (normalized === "opengl32") {
-    return "PROTON_ENABLE_HDR=1 DXVK_HDR=1 ENABLE_HDR_WSI=1 %command%";
+    return "PROTON_LOG=1 PROTON_ENABLE_HDR=1 DXVK_HDR=1 ENABLE_HDR_WSI=1 %command%";
   }
   const compiler = normalized === "opengl32" ? "" : "d3dcompiler_47=n;";
-  return `PROTON_ENABLE_HDR=1 DXVK_HDR=1 ENABLE_HDR_WSI=1 WINEDLLOVERRIDES="${compiler}${normalized}=n,b" %command%`;
+  return `PROTON_LOG=1 PROTON_ENABLE_HDR=1 DXVK_HDR=1 ENABLE_HDR_WSI=1 WINEDLLOVERRIDES="${compiler}${normalized}=n,b" %command%`;
 }
 
 async function setMergedHdrLaunchOptions(appid: string, hdrOptions: string) {
@@ -487,16 +489,14 @@ const SteamGamesSection = () => {
           strOKButtonText="Remove"
           strCancelButtonText="Cancel"
           onOK={async () => {
-            const response = await manageGameReShade(
-              selectedGame.appid,
-              "uninstall",
-              selectedDll?.value || 'dxgi',
-              "",
-              selectedExecutablePath
-            );
+            setHdrStatus({ status: "success", installed: false, message: "Removing HDR..." });
+            const response = await runSurgicalUninstall(selectedGame.appid, selectedExecutablePath);
 
             if (response.status === "success") {
               await removeHdrLaunchOptions(selectedGame.appid);
+              if (response.status_after) {
+                setHdrStatus(response.status_after);
+              }
               await refreshHdrStatus();
               setResult(`Successfully removed ReShade from ${selectedGame.name}`);
             } else {

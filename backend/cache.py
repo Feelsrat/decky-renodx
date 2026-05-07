@@ -3,7 +3,8 @@ import json
 import time
 from datetime import datetime, timedelta
 
-METADATA_SCHEMA_VERSION = 2
+METADATA_SCHEMA_VERSION = 3
+API_SCHEMA_VERSION = 2
 
 class PersistentCache:
     def __init__(self, cache_file: str):
@@ -71,13 +72,20 @@ class PersistentCache:
             return None
         mtime = os.path.getmtime(exe_path)
         key = f"api_{exe_path}_{mtime}"
-        return self.get(key, expiry_days=30)
+        info = self.get(key, expiry_days=30)
+        if not isinstance(info, dict):
+            return None
+        if info.get("schema_version") != API_SCHEMA_VERSION:
+            return None
+        return info
 
     def set_api_info(self, exe_path: str, info: dict):
         if info.get("api") == "unknown":
             return
         mtime = os.path.getmtime(exe_path)
         key = f"api_{exe_path}_{mtime}"
+        info = dict(info)
+        info["schema_version"] = API_SCHEMA_VERSION
         self.set(key, info)
 
     def clear(self):

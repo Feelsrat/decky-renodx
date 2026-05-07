@@ -825,7 +825,7 @@ class BackendMockTest(unittest.IsolatedAsyncioTestCase):
             return {"status": "success", "injection_dll": "dxgi", "launch_options": "opts"}
         plugin._resolve_game_executable_for_recommendation = fake_resolve
         plugin.manage_game_reshade = fake_manage
-        plugin._download_url = lambda _url, target: target.write_text("addon", encoding="utf-8")
+        plugin._download_url = lambda _url, target: target.write_bytes(b"a" * 2048)
         async def fake_set_launch(_appid, _opts):
             return None
         plugin._set_steam_launch_options = fake_set_launch
@@ -855,6 +855,51 @@ class BackendMockTest(unittest.IsolatedAsyncioTestCase):
         ini = (exe_dir / "ReShade.ini").read_text(encoding="utf-8")
         self.assertIn("EffectSearchPaths=", ini)
         self.assertIn("LoadFromDllMain=renodx-unrealengine.addon64", ini)
+
+    async def test_ini_upsert_handles_backslashes_in_values(self):
+        plugin = self.module.Plugin()
+
+        result = plugin._upsert_ini_section_values("[GENERAL]\nPresetPath=old\n", "GENERAL", {"PresetPath": ".\\ReShadePreset.ini"})
+
+        self.assertIn("PresetPath=.\\ReShadePreset.ini", result)
+
+    async def test_renodx_addon_filename_decodes_and_sanitizes_snapshot_url(self):
+        plugin = self.module.Plugin()
+
+        name = plugin._renodx_addon_filename("https://example.com/releases/download/snapshot/R%2Fbad addon.addon64", "Bad Game")
+
+        self.assertEqual(name, "bad_addon.addon64")
+
+    async def test_failed_renodx_download_rolls_back_reshade_host(self):
+        plugin = self.module.Plugin()
+        base = self.home / ".local" / "share" / "Steam" / "steamapps" / "common" / "SANDLAND"
+        exe_dir = base / "SANDLAND" / "Binaries" / "Win64"
+        exe_dir.mkdir(parents=True)
+        exe = exe_dir / "SANDLAND-Win64-Shipping.exe"
+        exe.write_bytes(b"MZ")
+
+        async def fake_manage(_appid, _action, _api, _vulkan, _selected_executable_path):
+            for name in ["dxgi.dll", "ReShade.ini", "ReShadePreset.ini", ".decky-renodx-hdr.json"]:
+                (exe_dir / name).write_text("partial", encoding="utf-8")
+            (exe_dir / "ReShade_shaders").mkdir()
+            plugin.manifest_manager.write_manifest("1979440", {
+                "appid": "1979440",
+                "method": "reshade",
+                "installed_files": [str(exe_dir / "dxgi.dll"), str(exe_dir / "ReShade.ini")],
+                "backups": {},
+            })
+            return {"status": "success", "injection_dll": "dxgi"}
+
+        plugin.manage_game_reshade = fake_manage
+        plugin._download_url = lambda _url, _target: (_ for _ in ()).throw(RuntimeError("bad position R/"))
+
+        result = await plugin._install_renodx_mod_for_game("1979440", "SAND LAND", str(exe), {"name": "Sand Land", "addon_url": "https://example.com/renodx.addon64"})
+
+        self.assertEqual(result["status"], "error")
+        self.assertFalse((exe_dir / "dxgi.dll").exists())
+        self.assertFalse((exe_dir / "ReShade.ini").exists())
+        self.assertFalse((exe_dir / ".decky-renodx-hdr.json").exists())
+        self.assertIsNone(plugin.manifest_manager.read_manifest("1979440"))
 
     async def test_renodx_support_is_blocked_while_flow_disabled(self):
         tree = self.module.DecisionTree()
@@ -909,6 +954,49 @@ class BackendMockTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["status"], "error")
         self.assertIn("invalid appid", result["message"])
+
+    async def test_uninstall_succeeds_when_only_compatdata_or_cache_is_removed(self):
+        plugin = self.module.Plugin()
+        compat = self.home / ".local" / "share" / "Steam" / "steamapps" / "compatdata" / "123"
+        (compat / "pfx").mkdir(parents=True)
+        plugin.persistent_cache.set_game_metadata_value("123", "graphics_api", "d3d11")
+
+        result = await plugin.run_surgical_uninstall("123", "")
+
+        self.assertEqual(result["status"], "success")
+        self.assertFalse(compat.exists())
+        self.assertEqual(plugin.persistent_cache.data, {})
+
+    async def test_fallback_cleanup_finds_nested_renodx_install_without_selected_exe(self):
+        plugin = self.module.Plugin()
+        base = self.home / ".local" / "share" / "Steam" / "steamapps" / "common" / "Batman"
+        nested = base / "Binaries" / "Win64"
+        nested.mkdir(parents=True)
+        (nested / "dxgi.dll").write_text("dll", encoding="utf-8")
+        (nested / "ReShade.ini").write_text("[GENERAL]\n", encoding="utf-8")
+        (nested / "renodx-batmanak.addon64").write_text("addon", encoding="utf-8")
+        plugin._find_game_path = lambda _appid: str(base)
+
+        result = plugin._cleanup_hdr_files_without_manifest("123", "")
+
+        self.assertEqual(result["status"], "success")
+        self.assertFalse((nested / "dxgi.dll").exists())
+        self.assertFalse((nested / "renodx-batmanak.addon64").exists())
+
+    async def test_hdr_status_scans_nested_renodx_dirs(self):
+        plugin = self.module.Plugin()
+        base = self.home / ".local" / "share" / "Steam" / "steamapps" / "common" / "Batman"
+        nested = base / "Binaries" / "Win64"
+        nested.mkdir(parents=True)
+        (nested / "renodx-batmanak.addon64").write_text("addon", encoding="utf-8")
+        plugin._find_game_path = lambda _appid: str(base)
+        plugin._steam_launch_options = lambda _appid: ""
+
+        result = await plugin.get_game_hdr_status("123", "")
+
+        self.assertEqual(result["status"], "success")
+        self.assertTrue(result["installed"])
+        self.assertEqual(result["method"], "renodx")
 
     async def test_hdr_launch_options_support_multiple_native_overrides(self):
         plugin = self.module.Plugin()

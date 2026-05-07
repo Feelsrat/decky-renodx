@@ -1587,7 +1587,11 @@ class Plugin:
             else:
                 latest_link.unlink()
         latest_link.symlink_to(target_dir, target_is_directory=True)
-        (reshade_path / "LVERS").write_text(f"{version}{version_suffix}", encoding="utf-8")
+        version_file = bin_dir / ("reshade_last_addon.version" if version == "last" else "reshade_latest_addon.version")
+        version_label = version
+        if version_file.exists():
+            version_label = version_file.read_text(encoding="utf-8", errors="ignore").strip() or version
+        (reshade_path / "LVERS").write_text(f"{version_label}{version_suffix}", encoding="utf-8")
         (target_dir / "addon_version").touch()
 
         self._install_optional_d3dcompiler(bin_dir, reshade_path)
@@ -2123,11 +2127,18 @@ class Plugin:
     def _renodx_links(self, value: str) -> dict[str, Any]:
         links = [url.rstrip(".,") for url in re.findall(r"https?://[^\s)]+", value or "")]
         addon_links = [url for url in links if re.search(r"\.addon(?:32|64)?(?:$|[?#])", url.lower())]
+        snapshot_links = [
+            url.rstrip(".,")
+            for _badge, url in re.findall(r"\[!\[([^\]]+)\]\([^)]+\)\]\((https?://[^)]+)\)", value or "", re.I)
+            if "snapshot" in _badge.lower() and re.search(r"\.addon(?:32|64)?(?:$|[?#])", url.lower())
+        ]
+        if snapshot_links:
+            addon_links = snapshot_links + [url for url in addon_links if url not in snapshot_links]
         page_links = [url for url in links if url not in addon_links]
         return {
             "links": links,
             "addon_url": addon_links[0] if addon_links else "",
-            "snapshotLinks": addon_links,
+            "snapshotLinks": snapshot_links or addon_links,
             "pageLinks": page_links,
             "manual_url": page_links[0] if page_links and not addon_links else "",
         }
@@ -2237,6 +2248,10 @@ class Plugin:
     async def manage_game_reshade(self, appid: str, action: str, dll_override: str = "dxgi", vulkan_mode: str = "", selected_executable_path: str = "") -> dict:
         try:
             logger = setup_per_game_logger(appid)
+            if action == "install":
+                runtime_result = await asyncio.to_thread(self._ensure_latest_reshade_runtime_sync)
+                if runtime_result.get("status") != "success":
+                    return runtime_result
             if action in {"install", "uninstall", "remove"}:
                 compat_result = self._clear_steam_compatdata(appid, logger)
                 if compat_result["status"] == "error":
@@ -2404,6 +2419,26 @@ class Plugin:
             decky.logger.error(str(e))
             return {"status": "error", "message": str(e)}
 
+    def _ensure_latest_reshade_runtime_sync(self) -> dict[str, Any]:
+        try:
+            asset_result = self._ensure_runtime_assets()
+            if not asset_result["ok"]:
+                return {"status": "error", "message": asset_result["message"]}
+            version_file = Path(self.bin_cache_path) / "reshade_latest_addon.version"
+            wanted_version = version_file.read_text(encoding="utf-8", errors="ignore").strip() if version_file.exists() else ""
+            lvers = Path(self.main_path) / "reshade" / "LVERS"
+            installed_version = lvers.read_text(encoding="utf-8", errors="ignore").strip() if lvers.exists() else ""
+            latest_dir = Path(self.main_path) / "reshade" / "latest"
+            latest64 = latest_dir / "ReShade64.dll"
+            if wanted_version and wanted_version not in installed_version:
+                self._install_hdr_runtime_python("latest")
+            elif not latest64.exists() or latest64.stat().st_size < 1024 * 1024:
+                self._install_hdr_runtime_python("latest")
+            return {"status": "success"}
+        except Exception as error:
+            decky.logger.exception("Failed to refresh latest ReShade runtime")
+            return {"status": "error", "message": f"Could not refresh latest ReShade runtime: {error}"}
+
     async def install_hdr_fallback(self, appid: str, dll_override: str = "auto", selected_executable_path: str = "") -> dict:
         """Install the best automatic non-RenoDX HDR fallback for a Steam game."""
         try:
@@ -2465,7 +2500,7 @@ class Plugin:
             return {"status": "error", "message": str(e)}
 
     async def get_hdr_recommendation(self, appid: str, title: str, game_path: str = "") -> dict:
-        """Fetch recommendations for a game based on the decision tree, with caching."""
+        """Fetch recommendations for a game based on the decision tree."""
         try:
             # 1. Setup per-game logger
             logger = setup_per_game_logger(appid)
@@ -2492,76 +2527,47 @@ class Plugin:
                 "special_k_delay_seconds": "0",
             }
 
-            # Try to load metadata from cache
-            cached_metadata = self.persistent_cache.get_game_metadata(appid)
             resolved_game_path = game_path
             if not resolved_game_path or not os.path.exists(resolved_game_path):
                 resolved_game_path = await self._resolve_game_executable_for_recommendation(appid, logger)
-            if cached_metadata:
-                logger.info(f"Using cached metadata for {appid}")
-                context.update(cached_metadata)
-                await self._refresh_renodx_recommendation_context(context, title, logger)
-                if resolved_game_path and os.path.exists(resolved_game_path):
-                    api_info = await self._detect_api_with_cache(resolved_game_path, logger)
-                    if api_info.get("status") == "success":
-                        context["graphics_api"] = api_info.get("api", "unknown")
-                        context["architecture"] = api_info.get("architecture", context.get("architecture", "unknown"))
-                        context["injection_dll"] = api_info.get("injection_dll", context.get("injection_dll", "auto"))
-                        context["engine"] = api_info.get("engine", context.get("engine", "unknown"))
-                        await self._refresh_renodx_recommendation_context(context, title, logger)
-                if context["graphics_api"] == "unknown":
-                    await self._apply_steam_metadata_api_fallback(context, appid, logger)
-                    await self._refresh_renodx_recommendation_context(context, title, logger)
-            else:
-                # Fetch PCGamingWiki data
-                wiki_data = self.wiki_scraper.get_game_data(appid)
-                if "status" not in wiki_data:
-                    context["native_hdr"] = wiki_data.get("native_hdr", "unknown")
-                    if wiki_data.get("graphics_api") and wiki_data.get("graphics_api") != "unknown":
-                        context["graphics_api"] = wiki_data.get("graphics_api", "unknown")
-                        context["injection_dll"] = self._api_to_injection_dll(context["graphics_api"])
-                        context["api_source"] = wiki_data.get("api_source", "pcgamingwiki_api_table")
-                        context["api_page"] = wiki_data.get("api_page", "")
-                    context["special_k_wiki"] = wiki_data.get("special_k_compatible", False)
-                    context["special_k_notes"] = wiki_data.get("special_k_notes", [])
-                    context["special_k_delay_seconds"] = wiki_data.get("special_k_delay_seconds", "0")
-                    logger.info(f"Wiki data fetched: Native HDR={context['native_hdr']}, SK Compatible={context['special_k_wiki']}")
+            special_k_override = self.persistent_cache.get(f"specialk_verified_{appid}", expiry_days=3650)
+            if isinstance(special_k_override, bool):
+                context["special_k_verified"] = special_k_override
 
+            # Fetch PCGamingWiki data. The scraper may cache remote responses, but
+            # local game API/state is intentionally recomputed every refresh.
+            wiki_data = self.wiki_scraper.get_game_data(appid)
+            if "status" not in wiki_data:
+                context["native_hdr"] = wiki_data.get("native_hdr", "unknown")
+                context["pcgw_page_name"] = wiki_data.get("page_name", "")
+                if wiki_data.get("graphics_api") and wiki_data.get("graphics_api") != "unknown":
+                    context["graphics_api"] = wiki_data.get("graphics_api", "unknown")
+                    context["injection_dll"] = self._api_to_injection_dll(context["graphics_api"])
+                    context["api_source"] = wiki_data.get("api_source", "pcgamingwiki_api_table")
+                    context["api_page"] = wiki_data.get("api_page", "")
+                context["special_k_wiki"] = wiki_data.get("special_k_compatible", False)
+                context["special_k_notes"] = wiki_data.get("special_k_notes", [])
+                context["special_k_delay_seconds"] = wiki_data.get("special_k_delay_seconds", "0")
+                logger.info(f"Wiki data fetched: Native HDR={context['native_hdr']}, SK Compatible={context['special_k_wiki']}")
+
+            await self._refresh_renodx_recommendation_context(context, title, logger)
+
+            # Detect API and anti-cheat from current disk state on every refresh.
+            if resolved_game_path and os.path.exists(resolved_game_path):
+                api_info = await self._detect_api_with_cache(resolved_game_path, logger)
+                context["graphics_api"] = api_info.get("api", "unknown")
+                context["architecture"] = api_info.get("architecture", "unknown")
+                context["injection_dll"] = api_info.get("injection_dll", "auto")
+                context["engine"] = api_info.get("engine", "unknown")
                 await self._refresh_renodx_recommendation_context(context, title, logger)
-                
-                # Detect API and Anti-cheat (if path exists)
-                if resolved_game_path and os.path.exists(resolved_game_path):
-                    api_info = await self._detect_api_with_cache(resolved_game_path, logger)
-                    context["graphics_api"] = api_info.get("api", "unknown")
-                    context["architecture"] = api_info.get("architecture", "unknown")
-                    context["injection_dll"] = api_info.get("injection_dll", "auto")
-                    context["engine"] = api_info.get("engine", "unknown")
-                    await self._refresh_renodx_recommendation_context(context, title, logger)
-                    
-                    context["anti_cheat"] = self.ac_detector.detect(str(Path(resolved_game_path).parent))
-                if context["graphics_api"] == "unknown":
-                    await self._apply_pcgw_api_fallback(context, appid, logger)
-                    await self._refresh_renodx_recommendation_context(context, title, logger)
-                if context["graphics_api"] == "unknown":
-                    await self._apply_steam_metadata_api_fallback(context, appid, logger)
-                    await self._refresh_renodx_recommendation_context(context, title, logger)
-                
-                # Save to cache
-                self.persistent_cache.set_game_metadata(appid, {
-                    "native_hdr": context["native_hdr"],
-                    "special_k_wiki": context["special_k_wiki"],
-                    "graphics_api": context["graphics_api"],
-                    "architecture": context["architecture"],
-                    "anti_cheat": context["anti_cheat"],
-                    "renodx_supported": context["renodx_supported"],
-                    "luma_supported": context["luma_supported"],
-                    "special_k_verified": context["special_k_verified"],
-                    "special_k_wrapper": context["special_k_wrapper"],
-                    "injection_dll": context["injection_dll"],
-                    "engine": context["engine"],
-                    "special_k_notes": context["special_k_notes"],
-                    "special_k_delay_seconds": context["special_k_delay_seconds"],
-                })
+
+                context["anti_cheat"] = self.ac_detector.detect(str(Path(resolved_game_path).parent))
+            if context["graphics_api"] == "unknown":
+                await self._apply_pcgw_api_fallback(context, appid, logger)
+                await self._refresh_renodx_recommendation_context(context, title, logger)
+            if context["graphics_api"] == "unknown":
+                await self._apply_steam_metadata_api_fallback(context, appid, logger)
+                await self._refresh_renodx_recommendation_context(context, title, logger)
 
             # 3. Evaluate recommendations
             recommendations = self.decision_tree.evaluate(context)
@@ -2687,25 +2693,15 @@ class Plugin:
         return "unknown"
 
     async def _detect_api_with_cache(self, game_path: str, logger=None) -> dict[str, Any]:
-        cached_api = self.persistent_cache.get_api_info(game_path)
-        if cached_api and cached_api.get("api") != "unknown":
-            if logger:
-                logger.info(f"Using cached API info: {cached_api.get('api')}")
-            return cached_api
-
         api_info = await self._detect_api_for_path(game_path)
         api = api_info.get("api", "unknown")
-        if api != "unknown":
-            self.persistent_cache.set_api_info(game_path, api_info)
-            if logger:
-                logger.info(f"Detected and cached API: {api}")
-        elif logger:
-            logger.info("API detection returned unknown; not caching transient result.")
+        if logger:
+            logger.info(f"Detected API without persistent cache: {api}")
         return api_info
 
     async def set_special_k_verified(self, appid: str, verified: bool = True) -> dict:
         try:
-            self.persistent_cache.set_game_metadata_value(appid, "special_k_verified", bool(verified))
+            self.persistent_cache.set(f"specialk_verified_{appid}", bool(verified))
             logger = setup_per_game_logger(appid)
             logger.info(f"User override: special_k_verified={bool(verified)}")
             return {
@@ -2816,14 +2812,39 @@ class Plugin:
         """Read and return the content of the per-game log."""
         try:
             log_path = get_game_log_path(appid)
+            plugin_log = ""
             if os.path.exists(log_path):
                 with open(log_path, "r") as f:
-                    # Return last 200 lines
-                    lines = f.readlines()
-                    return {"status": "success", "log": "".join(lines[-300:]), "path": log_path}
-            return {"status": "error", "message": "Log file not found."}
+                    plugin_log = f.read()[-120000:]
+            proton = self._read_proton_log(appid)
+            if not plugin_log and not proton.get("log"):
+                return {"status": "error", "message": "Log file not found."}
+            return {
+                "status": "success",
+                "log": plugin_log[-30000:],
+                "plugin_log": plugin_log,
+                "proton_log": proton.get("log", ""),
+                "proton_log_path": proton.get("path", ""),
+                "path": log_path,
+            }
         except Exception as e:
             return {"status": "error", "message": str(e)}
+
+    async def get_pcgw_improvements_issues(self, appid: str) -> dict:
+        return await asyncio.to_thread(self.wiki_scraper.get_improvements_and_issues, appid)
+
+    def _read_proton_log(self, appid: str) -> dict[str, str]:
+        candidates = [
+            self._deck_user_home() / f"steam-{appid}.log",
+            self._deck_user_home() / ".local" / "share" / "Steam" / f"steam-{appid}.log",
+        ]
+        found = [path for path in candidates if path.exists()]
+        if not found:
+            found = sorted(self._deck_user_home().glob(f"steam-{appid}.log"), key=lambda path: path.stat().st_mtime, reverse=True)
+        if not found:
+            return {"path": "", "log": ""}
+        path = found[0]
+        return {"path": str(path), "log": path.read_text(encoding="utf-8", errors="ignore")[-180000:]}
 
     async def execute_setup_flow(self, appid: str, title: str, exe_path: str = "", skip_current: bool = False) -> dict:
         """Execute the automated setup flow based on the decision tree."""
@@ -2996,6 +3017,15 @@ class Plugin:
             }
 
         exe_dir = self._resolve_game_exe_dir(appid, exe_path)
+        if (exe_dir / ".decky-renodx-hdr.json").exists() or (exe_dir / "ReShade.ini").exists():
+            for stale_dll in ["dxgi", "d3d11", "d3d12", "d3d9", "d3d8", "ddraw", "dinput8", "opengl32"]:
+                stale_path = exe_dir / f"{stale_dll}.dll"
+                if stale_path.exists() or stale_path.is_symlink():
+                    try:
+                        stale_path.unlink()
+                    except OSError as error:
+                        if logger:
+                            logger.warning("Could not remove stale RenoDX proxy before API detection: %s (%s)", stale_path, error)
         api = "dxgi"
         try:
             detected = await self._detect_api_for_path(str(exe_dir))
@@ -3005,9 +3035,12 @@ class Plugin:
             pass
         if api in {"auto", "unknown", "vulkan"}:
             api = "dxgi"
+        if str(mod.get("bitness", "")).strip() == "64":
+            api = "dxgi"
 
         reshade_result = await self.manage_game_reshade(appid, "install", api, "", exe_path)
         if reshade_result.get("status") != "success":
+            self._rollback_failed_hdr_install(appid, exe_dir, logger)
             return {
                 "status": "error",
                 "method": "renodx",
@@ -3017,12 +3050,36 @@ class Plugin:
 
         addon_cache = Path(self.renodx_import_path) / "downloads"
         addon_cache.mkdir(parents=True, exist_ok=True)
-        addon_name = Path(urllib.parse.urlparse(addon_url).path).name or f"renodx-{self._normalize_game_title(title)}.addon64"
+        addon_name = self._renodx_addon_filename(addon_url, title)
         target_cache = addon_cache / addon_name
-        self._download_url(addon_url, target_cache)
+        try:
+            self._download_url(addon_url, target_cache)
+            if not target_cache.exists() or target_cache.stat().st_size < 1024:
+                raise RuntimeError(f"Downloaded addon is missing or too small: {target_cache}")
+        except Exception as error:
+            if logger:
+                logger.error("RenoDX addon download failed for %s -> %s: %s", addon_url, target_cache, error)
+            self._rollback_failed_hdr_install(appid, exe_dir, logger)
+            return {
+                "status": "error",
+                "method": "renodx",
+                "message": f"RenoDX snapshot download failed: {addon_url} ({error})",
+                "match": mod,
+            }
 
         target = exe_dir / addon_name
-        shutil.copy2(target_cache, target)
+        try:
+            shutil.copy2(target_cache, target)
+        except Exception as error:
+            if logger:
+                logger.error("RenoDX addon copy failed from %s to %s: %s", target_cache, target, error)
+            self._rollback_failed_hdr_install(appid, exe_dir, logger)
+            return {
+                "status": "error",
+                "method": "renodx",
+                "message": f"RenoDX addon copy failed: {target_cache} -> {target} ({error})",
+                "match": mod,
+            }
         removed_effects = self._configure_renodx_only_install(exe_dir, addon_name, logger)
         self._fix_deck_user_ownership(exe_dir)
 
@@ -3066,6 +3123,42 @@ class Plugin:
             "launch_options": launch_options,
             "match": mod,
         }
+
+    def _renodx_addon_filename(self, addon_url: str, title: str) -> str:
+        parsed = urllib.parse.urlparse(addon_url)
+        name = Path(urllib.parse.unquote(parsed.path)).name
+        if not re.search(r"\.addon(?:32|64)?$", name.lower()):
+            bitness = "64" if "64" in addon_url else "32" if "32" in addon_url else "64"
+            name = f"renodx-{self._normalize_game_title(title)}.addon{bitness}"
+        return re.sub(r"[^A-Za-z0-9._-]+", "_", name)
+
+    def _rollback_failed_hdr_install(self, appid: str, exe_dir: Path, logger=None) -> None:
+        try:
+            self.manifest_manager.remove_hdr(appid, logger)
+        except Exception as error:
+            if logger:
+                logger.warning("Manifest rollback failed for %s: %s", appid, error)
+        for name in [".decky-renodx-hdr.json", "ReShade.ini", "ReShadePreset.ini", "dxgi.dll", "d3d11.dll", "d3d12.dll", "d3d9.dll"]:
+            path = exe_dir / name
+            try:
+                if path.exists():
+                    path.unlink()
+            except OSError as error:
+                if logger:
+                    logger.warning("Rollback could not remove %s: %s", path, error)
+        for path in [exe_dir / "ReShade_shaders", *exe_dir.glob("*.addon*")]:
+            try:
+                if path.is_dir():
+                    shutil.rmtree(path)
+                elif path.exists():
+                    path.unlink()
+            except OSError as error:
+                if logger:
+                    logger.warning("Rollback could not remove %s: %s", path, error)
+        cleanup = self._cleanup_hdr_files_without_manifest(appid, "", logger)
+        self._reset_game_cached_state(appid)
+        if logger:
+            logger.info("Rolled back failed HDR install for %s: %s", appid, cleanup.get("message"))
 
     def _configure_renodx_only_install(self, exe_dir: Path, addon_name: str, logger=None) -> set[str]:
         """Remove fallback shader effects from a RenoDX install.
@@ -3152,6 +3245,25 @@ class Plugin:
     async def _set_steam_launch_options(self, appid: str, options: str):
         """Best-effort backend launch option writer for Steam games."""
         await asyncio.to_thread(self._set_steam_launch_options_sync, appid, options)
+
+    def _clear_hdr_launch_options_sync(self, appid: str) -> dict[str, Any]:
+        try:
+            existing = self._steam_launch_options(appid)
+            cleaned = self._strip_hdr_launch_tokens(existing)
+            if cleaned == existing:
+                return {"status": "noop", "message": "No HDR launch options were present.", "before": existing, "after": cleaned}
+            self._set_steam_launch_options_sync(appid, cleaned)
+            return {"status": "success", "message": "Removed HDR launch options.", "before": existing, "after": cleaned}
+        except Exception as error:
+            decky.logger.warning("Could not clear HDR launch options for %s: %s", appid, error)
+            return {"status": "error", "message": f"Could not clear HDR launch options: {error}", "before": "", "after": ""}
+
+    def _strip_hdr_launch_tokens(self, options: str) -> str:
+        text = options or ""
+        text = re.sub(r"\b(?:PROTON_ENABLE_HDR|DXVK_HDR|ENABLE_HDR_WSI|ENABLE_GAMESCOPE_WSI|PROTON_LOG)=\S+\s*", "", text)
+        text = re.sub(r'\bWINEDLLOVERRIDES="[^"]*(?:d3dcompiler_47|dxgi|d3d11|d3d12|d3d9|d3d8|ddraw|dinput8|opengl32)[^"]*"\s*', "", text)
+        text = re.sub(r"\bWINEDLLOVERRIDES=\S*(?:d3dcompiler_47|dxgi|d3d11|d3d12|d3d9|d3d8|ddraw|dinput8|opengl32)\S*\s*", "", text)
+        return re.sub(r"\s+", " ", text).strip()
 
     def _set_steam_launch_options_sync(self, appid: str, options: str) -> None:
         if not re.fullmatch(r"\d+", str(appid or "")):
@@ -3251,10 +3363,10 @@ class Plugin:
             if item:
                 overrides.append(f"{item}=n,b")
         if overrides == ["opengl32=n,b"]:
-            return "PROTON_ENABLE_HDR=1 DXVK_HDR=1 ENABLE_HDR_WSI=1 %command%"
+            return "PROTON_LOG=1 PROTON_ENABLE_HDR=1 DXVK_HDR=1 ENABLE_HDR_WSI=1 %command%"
         if not any(item.startswith("opengl32=") for item in overrides):
             overrides.insert(0, "d3dcompiler_47=n")
-        return f'PROTON_ENABLE_HDR=1 DXVK_HDR=1 ENABLE_HDR_WSI=1 WINEDLLOVERRIDES="{";".join(overrides)}" %command%'
+        return f'PROTON_LOG=1 PROTON_ENABLE_HDR=1 DXVK_HDR=1 ENABLE_HDR_WSI=1 WINEDLLOVERRIDES="{";".join(overrides)}" %command%'
 
     async def update_sk_config_value(self, appid: str, exe_path: str, section: str, key: str, value: str) -> dict:
         """Update a specific value in SpecialK.ini."""
@@ -3277,15 +3389,36 @@ class Plugin:
             logger = setup_per_game_logger(appid)
             success, message = self.manifest_manager.remove_hdr(appid, logger)
             fallback = self._cleanup_hdr_files_without_manifest(appid, exe_path, logger)
+            launch_result = self._clear_hdr_launch_options_sync(appid)
             compat_result = self._clear_steam_compatdata(appid, logger)
+            self._reset_game_cached_state(appid)
+            status_after = await self.get_game_hdr_status(appid, exe_path)
             compat_message = compat_result.get("message", "")
+            launch_message = launch_result.get("message", "")
             if success and fallback["status"] != "error":
-                return {"status": "success", "message": f"{message} {fallback.get('message', '')} {compat_message}".strip(), **fallback, "compatdata": compat_result}
+                return {"status": "success", "message": f"{message} {fallback.get('message', '')} {launch_message} {compat_message}".strip(), **fallback, "launch_options": launch_result, "compatdata": compat_result, "status_after": status_after}
             if not success and fallback["status"] == "success":
-                return {**fallback, "message": f"{fallback.get('message', '')} {compat_message}".strip(), "compatdata": compat_result}
-            return {"status": "error", "message": f"{message} {fallback.get('message', '')} {compat_message}".strip(), **fallback, "compatdata": compat_result}
+                return {**fallback, "message": f"{fallback.get('message', '')} {launch_message} {compat_message}".strip(), "launch_options": launch_result, "compatdata": compat_result, "status_after": status_after}
+            if compat_result.get("status") in {"success", "noop"} and fallback["status"] != "error":
+                return {
+                    **fallback,
+                    "status": "success",
+                    "message": f"{message} {fallback.get('message', '')} {launch_message} {compat_message} Cached state reset.".strip(),
+                    "launch_options": launch_result,
+                    "compatdata": compat_result,
+                    "status_after": status_after,
+                }
+            return {"status": "error", "message": f"{message} {fallback.get('message', '')} {launch_message} {compat_message}".strip(), **fallback, "launch_options": launch_result, "compatdata": compat_result, "status_after": status_after}
         except Exception as e:
             return {"status": "error", "message": str(e)}
+
+    def _reset_game_cached_state(self, appid: str) -> None:
+        suffix = str(appid)
+        for key in list(self.persistent_cache.data.keys()):
+            if key.endswith(f"_{suffix}") or f"_{suffix}_" in key:
+                self.persistent_cache.data.pop(key, None)
+        self.persistent_cache._save()
+        self.executable_cache.clear()
 
     def _clear_steam_compatdata(self, appid: str, logger=None) -> dict:
         if not re.fullmatch(r"\d+", str(appid or "")):
@@ -3394,32 +3527,34 @@ class Plugin:
 
     def _cleanup_hdr_files_without_manifest(self, appid: str, exe_path: str = "", logger=None) -> dict:
         try:
-            exe_dir = Path(exe_path).parent if exe_path and os.path.exists(exe_path) else self._resolve_game_exe_dir(appid, "")
-            if not exe_dir or not Path(exe_dir).exists():
+            exe_dirs = self._hdr_cleanup_dirs(appid, exe_path)
+            if not exe_dirs:
                 return {"status": "noop", "message": "No game directory resolved for fallback cleanup."}
-            exe_dir = Path(exe_dir)
             candidates: list[Path] = []
-            marker = self._read_game_hdr_marker(exe_dir)
-            marker_dll = str(marker.get("dll", "")).strip()
-            if marker_dll:
-                candidates.append(exe_dir / (marker_dll if marker_dll.endswith(".dll") else f"{marker_dll}.dll"))
-                candidates.append(exe_dir / f"{Path(marker_dll).stem}.ini")
-            for name in [
-                "SpecialK.ini", "dxgi.ini", "d3d11.ini", "d3d9.ini", "D3D9.ini", "dinput8.ini", "DINPUT8.ini", "ddraw.ini",
-                "ReShade.ini", "ReShadePreset.ini", "ReShade.log", "dxgi.log", "d3d9.log", "dinput8.log",
-                ".decky-renodx-hdr.json",
-                "AutoHDR32.addon", "AutoHDR64.addon", "AutoHDR.addon32", "AutoHDR.addon64",
-            ]:
-                candidates.append(exe_dir / name)
-            for dll in ["dxgi.dll", "d3d11.dll", "d3d9.dll", "D3D9.dll", "dinput8.dll", "DINPUT8.dll", "ddraw.dll", "DDraw.dll"]:
-                ini = exe_dir / f"{Path(dll).stem}.ini"
-                path = exe_dir / dll
-                if ini.exists() or marker:
-                    candidates.append(path)
-            for pattern in ["reshade-shaders", "reshade-presets", "ReShade_shaders", "Shaders", "Textures"]:
-                path = exe_dir / pattern
-                if path.exists():
-                    candidates.append(path)
+            for exe_dir in exe_dirs:
+                marker = self._read_game_hdr_marker(exe_dir)
+                marker_dll = str(marker.get("dll", "")).strip()
+                if marker_dll:
+                    candidates.append(exe_dir / (marker_dll if marker_dll.endswith(".dll") else f"{marker_dll}.dll"))
+                    candidates.append(exe_dir / f"{Path(marker_dll).stem}.ini")
+                for name in [
+                    "SpecialK.ini", "dxgi.ini", "d3d11.ini", "d3d12.ini", "d3d9.ini", "D3D9.ini", "dinput8.ini", "DINPUT8.ini", "ddraw.ini",
+                    "ReShade.ini", "ReShadePreset.ini", "ReShade.log", "dxgi.log", "d3d11.log", "d3d12.log", "d3d9.log", "dinput8.log",
+                    ".decky-renodx-hdr.json",
+                    "AutoHDR32.addon", "AutoHDR64.addon", "AutoHDR.addon32", "AutoHDR.addon64",
+                ]:
+                    candidates.append(exe_dir / name)
+                for pattern in ["*.addon", "*.addon32", "*.addon64", "renodx*.addon*", "lilium*.fx", "lilium*.fxh", "AdvancedAutoHDR.fx", "ConvertColorSpace.fx"]:
+                    candidates.extend(exe_dir.glob(pattern))
+                for dll in ["dxgi.dll", "d3d11.dll", "d3d12.dll", "d3d9.dll", "D3D9.dll", "dinput8.dll", "DINPUT8.dll", "ddraw.dll", "DDraw.dll", "opengl32.dll"]:
+                    ini = exe_dir / f"{Path(dll).stem}.ini"
+                    path = exe_dir / dll
+                    if ini.exists() or marker or (exe_dir / "ReShade.ini").exists() or any(exe_dir.glob("*.addon*")):
+                        candidates.append(path)
+                for pattern in ["reshade-shaders", "reshade-presets", "ReShade_shaders", "Shaders", "Textures"]:
+                    path = exe_dir / pattern
+                    if path.exists():
+                        candidates.append(path)
 
             removed = []
             errors = []
@@ -3445,6 +3580,34 @@ class Plugin:
             return {"status": "noop", "message": "No HDR component files were found to remove.", "removed": []}
         except Exception as error:
             return {"status": "error", "message": f"Fallback cleanup failed: {error}"}
+
+    def _hdr_cleanup_dirs(self, appid: str, exe_path: str = "") -> list[Path]:
+        dirs: list[Path] = []
+        def add(path: Path):
+            if path.exists() and path.is_dir() and path not in dirs:
+                dirs.append(path)
+        if exe_path and os.path.exists(exe_path):
+            add(Path(exe_path).parent)
+        manifest = self.manifest_manager.read_manifest(appid)
+        if manifest:
+            for key in ["installed_files", "modified_files"]:
+                for item in manifest.get(key, []) or []:
+                    path = Path(item)
+                    add(path if path.is_dir() else path.parent)
+        try:
+            base = Path(self._find_game_path(appid))
+            add(base)
+            for marker in base.rglob(".decky-renodx-hdr.json"):
+                add(marker.parent)
+            for ini in base.rglob("ReShade.ini"):
+                add(ini.parent)
+            for addon in base.rglob("*.addon*"):
+                add(addon.parent)
+            for ini in base.rglob("SpecialK.ini"):
+                add(ini.parent)
+        except Exception:
+            pass
+        return dirs
 
     async def verify_hdr_installation(self, appid: str, exe_path: str) -> dict:
         """Manually verify if the installed HDR method is actually working."""
@@ -3475,9 +3638,20 @@ class Plugin:
 
     async def get_game_hdr_status(self, appid: str, selected_executable_path: str = "") -> dict:
         try:
-            exe_dir = self._resolve_game_exe_dir(appid, selected_executable_path)
-            marker = self._read_game_hdr_marker(exe_dir)
-            files = self._detect_game_hdr_files(exe_dir)
+            primary_dir = self._resolve_game_exe_dir(appid, selected_executable_path)
+            scan_dirs = self._hdr_status_dirs(appid, selected_executable_path, primary_dir)
+            marker = {}
+            files = {"renodx": [], "specialk": [], "reshade": [], "marker": []}
+            detected_dir = primary_dir
+            for exe_dir in scan_dirs:
+                local_marker = self._read_game_hdr_marker(exe_dir)
+                local_files = self._detect_game_hdr_files(exe_dir)
+                if local_marker and not marker:
+                    marker = local_marker
+                for key in files:
+                    files[key].extend([item for item in local_files.get(key, []) if item not in files[key]])
+                if any(local_files.get(key) for key in ["renodx", "specialk", "reshade", "marker"]):
+                    detected_dir = exe_dir
             launch_options = self._steam_launch_options(appid)
             launch_has_hdr = self._launch_options_have_hdr(launch_options)
             current_version = self._current_version()
@@ -3510,13 +3684,21 @@ class Plugin:
                 "installed_version": installed_version,
                 "launch_has_hdr": launch_has_hdr,
                 "launch_options": launch_options,
-                "exe_dir": str(exe_dir),
+                "exe_dir": str(detected_dir),
+                "scan_dirs": [str(path) for path in scan_dirs],
                 "files": files,
                 "message": " ".join(messages),
             }
         except Exception as e:
             decky.logger.exception("Game HDR status check failed")
             return {"status": "error", "installed": False, "needs_update": False, "message": str(e)}
+
+    def _hdr_status_dirs(self, appid: str, selected_executable_path: str, primary_dir: Path) -> list[Path]:
+        dirs = [primary_dir]
+        for path in self._hdr_cleanup_dirs(appid, selected_executable_path):
+            if path not in dirs:
+                dirs.append(path)
+        return dirs
 
     async def repair_specialk_hdr_widget(self, appid: str, dll_override: str = "auto", selected_executable_path: str = "") -> dict:
         """Reset Special K UI/widget state and re-apply HDR defaults for the selected game."""
@@ -3640,14 +3822,15 @@ class Plugin:
     async def _detect_api_for_path(self, path: str) -> dict:
         try:
             game_path = Path(path)
+            search_root = game_path if game_path.is_dir() else game_path.parent
+            has_hdr_install_marker = (search_root / ".decky-renodx-hdr.json").exists() or (search_root / "ReShade.ini").exists()
             script_result = self._detect_api_with_letmereshade_script(game_path)
-            if script_result.get("status") == "success" and script_result.get("api") != "dxgi":
+            if script_result.get("status") == "success" and script_result.get("api") != "dxgi" and not has_hdr_install_marker:
                 return self._apply_engine_api_hints(game_path, script_result)
 
             detected_api = "unknown"
             arch = str(script_result.get("architecture", "64")) if script_result.get("status") == "success" else "64"
             exe_files = []
-            search_root = game_path if game_path.is_dir() else game_path.parent
             for exe in search_root.rglob("*.exe"):
                 name = exe.name.lower()
                 if any(skip in name for skip in ["unins", "launcher", "crash", "setup", "config", "redist"]):
@@ -3672,6 +3855,8 @@ class Plugin:
                     pass
 
                 detected_api = self._detect_api_from_binary_imports(exe)
+                if detected_api == "d3d9" and arch == "64" and script_result.get("api") == "dxgi":
+                    detected_api = "dxgi"
                 if detected_api != "unknown":
                     result = {"status": "success", "api": detected_api, "architecture": arch, "injection_dll": self._api_to_injection_dll(detected_api)}
                     if script_result.get("status") == "success":
@@ -3682,9 +3867,12 @@ class Plugin:
             dll_candidates = []
             for pattern in ["*.dll", "*.DLL"]:
                 dll_candidates.extend(search_root.glob(pattern))
+            hdr_proxy_names = {"dxgi.dll", "d3d11.dll", "d3d12.dll", "d3d9.dll", "d3d8.dll", "ddraw.dll", "dinput8.dll", "opengl32.dll"}
             priority_names = ["unityplayer.dll", "gameassembly.dll", "mono.dll", "mono-2.0-bdwgc.dll"]
             dll_candidates.sort(key=lambda item: (0 if item.name.lower() in priority_names else 1, item.name.lower()))
             for dll in dll_candidates[:12]:
+                if has_hdr_install_marker and dll.name.lower() in hdr_proxy_names:
+                    continue
                 detected_api = self._detect_api_from_binary_imports(dll)
                 if detected_api != "unknown":
                     result = {"status": "success", "api": detected_api, "architecture": arch, "injection_dll": self._api_to_injection_dll(detected_api)}
@@ -3863,9 +4051,6 @@ class Plugin:
             "SpecialK.System": {
                 "UsingWINE": "true",
             },
-            "Render.DXGI": {
-                "UseFlipDiscard": "true",
-            },
             "Render.OSD": {
                 "HDRLuminance": "9.375",
             },
@@ -3926,7 +4111,7 @@ class Plugin:
         for key, value in values.items():
             line = f"{key}={value}"
             if re.search(rf"(?im)^{re.escape(key)}\s*=", body):
-                body = re.sub(rf"(?im)^{re.escape(key)}\s*=.*$", line, body)
+                body = re.sub(rf"(?im)^{re.escape(key)}\s*=.*$", lambda _match, line=line: line, body)
             else:
                 body = body.rstrip() + ("\n" if body.strip() else "") + line + "\n"
         replacement = f"[{section}]\n{body.strip()}\n\n"
@@ -3959,10 +4144,10 @@ class Plugin:
             if item:
                 overrides.append(f"{item}=n,b")
         if overrides == ["opengl32=n,b"]:
-            return "PROTON_ENABLE_HDR=1 DXVK_HDR=1 ENABLE_HDR_WSI=1 %command%"
+            return "PROTON_LOG=1 PROTON_ENABLE_HDR=1 DXVK_HDR=1 ENABLE_HDR_WSI=1 %command%"
         if not any(item.startswith("opengl32=") for item in overrides):
             overrides.insert(0, "d3dcompiler_47=n")
-        return f'PROTON_ENABLE_HDR=1 DXVK_HDR=1 ENABLE_HDR_WSI=1 WINEDLLOVERRIDES="{";".join(overrides)}" %command%'
+        return f'PROTON_LOG=1 PROTON_ENABLE_HDR=1 DXVK_HDR=1 ENABLE_HDR_WSI=1 WINEDLLOVERRIDES="{";".join(overrides)}" %command%'
 
     async def list_installed_games(self) -> dict:
         try:

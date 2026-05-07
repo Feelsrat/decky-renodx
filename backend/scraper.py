@@ -45,6 +45,7 @@ class PCGamingWikiScraper:
             
             result = {
                 "appid": appid,
+                "page_name": "",
                 "native_hdr": "unknown",
                 "graphics_api": "unknown",
                 "api_source": "",
@@ -72,6 +73,7 @@ class PCGamingWikiScraper:
             elif sk_data and "cargoquery" in sk_data and sk_data["cargoquery"]:
                 page_name = sk_data["cargoquery"][0]["title"].get("Page", "")
             if page_name:
+                result["page_name"] = page_name
                 notes = self._fetch_page_notes(page_name)
                 result["special_k_notes"] = notes[:8]
                 delay = self._extract_special_k_delay(notes)
@@ -81,6 +83,22 @@ class PCGamingWikiScraper:
             return result
         except Exception as e:
             return {"status": "error", "message": str(e)}
+
+    def get_improvements_and_issues(self, appid: str):
+        try:
+            page_name = self._page_name_for_appid(appid)
+            if not page_name:
+                return {"status": "error", "message": "PCGamingWiki page was not found for this Steam AppID."}
+            text = self._fetch_page_wikitext(page_name)
+            return {
+                "status": "success",
+                "appid": appid,
+                "page_name": page_name,
+                "essential_improvements": self._extract_named_section(text, "Essential improvements"),
+                "issues_fixed": self._extract_named_section(text, "Issues fixed"),
+            }
+        except Exception as error:
+            return {"status": "error", "message": str(error)}
 
     def _fetch(self, params):
         url = f"{self.API_URL}?{urllib.parse.urlencode(params)}"
@@ -100,6 +118,20 @@ class PCGamingWikiScraper:
             "join_on": "Infobox_game._pageName=API._pageName",
             "where": f'Infobox_game.Steam_AppID HOLDS "{appid}"',
         })
+
+    def _page_name_for_appid(self, appid: str):
+        data = self._fetch({
+            "action": "cargoquery",
+            "format": "json",
+            "tables": "Infobox_game",
+            "fields": "Infobox_game._pageName=Page",
+            "where": f'Infobox_game.Steam_AppID HOLDS "{appid}"',
+            "limit": "1",
+        })
+        rows = (data or {}).get("cargoquery") or []
+        if not rows:
+            return ""
+        return rows[0].get("title", {}).get("Page", "")
 
     def _parse_api_data(self, api_data):
         rows = (api_data or {}).get("cargoquery") or []
@@ -141,6 +173,18 @@ class PCGamingWikiScraper:
         return "unknown"
 
     def _fetch_page_notes(self, page_name):
+        text = self._fetch_page_wikitext(page_name)
+        lines = []
+        for line in text.splitlines():
+            clean = re.sub(r"<[^>]+>", "", line).strip()
+            if re.search(r"special\s*k|skif|injection|delay|steamapi|hdr", clean, re.I):
+                clean = re.sub(r"\{\{|\}\}|\[\[|\]\]", "", clean)
+                clean = re.sub(r"\s+", " ", clean)
+                if clean and clean not in lines:
+                    lines.append(clean[:260])
+        return lines
+
+    def _fetch_page_wikitext(self, page_name):
         params = {
             "action": "query",
             "format": "json",
@@ -153,17 +197,43 @@ class PCGamingWikiScraper:
         try:
             pages = data.get("query", {}).get("pages", {})
             page = next(iter(pages.values()))
-            text = page.get("revisions", [{}])[0].get("slots", {}).get("main", {}).get("*", "")
+            return page.get("revisions", [{}])[0].get("slots", {}).get("main", {}).get("*", "")
         except Exception:
+            return ""
+
+    def _extract_named_section(self, text: str, section_name: str):
+        if not text:
             return []
+        heading = re.search(rf"(?im)^(=+)\s*{re.escape(section_name)}\s*\1\s*$", text)
+        if not heading:
+            return []
+        level = len(heading.group(1))
+        next_heading = re.search(rf"(?im)^={{1,{level}}}\s*[^=\n].*={{1,{level}}}\s*$", text[heading.end():])
+        body = text[heading.end(): heading.end() + next_heading.start()] if next_heading else text[heading.end():]
+        return self._summarize_wiki_section(body)
+
+    def _summarize_wiki_section(self, body: str):
         lines = []
-        for line in text.splitlines():
-            clean = re.sub(r"<[^>]+>", "", line).strip()
-            if re.search(r"special\s*k|skif|injection|delay|steamapi|hdr", clean, re.I):
-                clean = re.sub(r"\{\{|\}\}|\[\[|\]\]", "", clean)
-                clean = re.sub(r"\s+", " ", clean)
-                if clean and clean not in lines:
-                    lines.append(clean[:260])
+        for raw in body.splitlines():
+            line = raw.strip()
+            if not line or line.startswith("{{ii}}") or line.startswith("{{ii "):
+                continue
+            if line.startswith("==="):
+                clean = line.strip("= ").strip()
+            elif line.startswith(("*", "#", ";", ":")):
+                clean = line.lstrip("*#;: ").strip()
+            elif "{{Fixbox" in line or "{{ii" in line:
+                clean = line
+            else:
+                continue
+            clean = re.sub(r"\{\{([^|{}]+)\|([^{}]+)\}\}", r"\2", clean)
+            clean = re.sub(r"\{\{|\}\}|\[\[|\]\]", "", clean)
+            clean = re.sub(r"<[^>]+>", "", clean)
+            clean = re.sub(r"\s+", " ", clean).strip()
+            if clean and clean not in lines:
+                lines.append(clean[:320])
+            if len(lines) >= 80:
+                break
         return lines
 
     def _extract_special_k_delay(self, notes):
