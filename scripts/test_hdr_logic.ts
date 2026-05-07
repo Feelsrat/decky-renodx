@@ -64,13 +64,13 @@ assertEqual(
 // 3. hdrLaunchOptionsForDll Tests
 assertEqual(
   hdrLaunchOptionsForDll("dxgi"),
-  `PROTON_LOG=1 PROTON_ENABLE_HDR=1 DXVK_HDR=1 ENABLE_HDR_WSI=1 WINEDLLOVERRIDES="d3dcompiler_47=n;dxgi=n,b" %command%`,
+  `PROTON_LOG=1 PROTON_ENABLE_HDR=1 DXVK_HDR=1 ENABLE_HDR_WSI=1 ENABLE_GAMESCOPE_WSI=1 WINEDLLOVERRIDES="d3dcompiler_47=n;dxgi=n,b" %command%`,
   "Generates correct options for DXGI"
 );
 
 assertEqual(
   hdrLaunchOptionsForDll("opengl32"),
-  `PROTON_LOG=1 PROTON_ENABLE_HDR=1 DXVK_HDR=1 ENABLE_HDR_WSI=1 %command%`,
+  `PROTON_LOG=1 PROTON_ENABLE_HDR=1 DXVK_HDR=1 ENABLE_HDR_WSI=1 ENABLE_GAMESCOPE_WSI=1 %command%`,
   "Generates correct options for OpenGL32 (no DLL override)"
 );
 
