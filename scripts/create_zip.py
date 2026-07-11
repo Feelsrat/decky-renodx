@@ -33,7 +33,7 @@ def write_plugin_file(zipf: zipfile.ZipFile, source: Path, archive_name: str) ->
 def create_plugin_zip(output_filename: str = OUTPUT_FILENAME) -> str:
     root_dir = Path(__file__).resolve().parents[1]
     zip_path = root_dir / output_filename
-    root_files = ["plugin.json", "main.py", "package.json", "README.md", "LICENSE", "compatibility.json"]
+    root_files = ["plugin.json", "main.py", "package.json", "README.md", "compatibility.json"]
     folders = ["dist", "defaults", "backend", "py_modules"]
 
     if zip_path.exists():
