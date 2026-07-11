@@ -117,7 +117,7 @@ class BackendMockTest(unittest.IsolatedAsyncioTestCase):
 
         plugin._validate_extracted_plugin(plugin_dir)
 
-    async def test_import_renodx_copies_addon_to_selected_executable_dir(self):
+    async def test_import_renodx_runs_full_install_pipeline(self):
         plugin = self.module.Plugin()
         game_dir = self.home / "Game"
         game_dir.mkdir()
@@ -126,11 +126,52 @@ class BackendMockTest(unittest.IsolatedAsyncioTestCase):
         addon = self.home / "renodx-test.addon64"
         addon.write_text("addon", encoding="utf-8")
 
+        async def fake_manage(_appid, _action, _api, _vulkan, _selected_executable_path):
+            (game_dir / "dxgi.dll").write_text("dll", encoding="utf-8")
+            return {"status": "success", "injection_dll": "dxgi", "launch_options": "opts"}
+        plugin.manage_game_reshade = fake_manage
+        plugin._download_url = lambda _url, target: target.write_bytes(b"a" * 2048)
+        async def fake_set_launch(_appid, _opts):
+            return None
+        plugin._set_steam_launch_options = fake_set_launch
+
         result = await plugin.import_renodx_for_game("123", str(addon), str(exe))
 
         self.assertEqual(result["status"], "success")
         self.assertTrue((game_dir / "renodx-test.addon64").exists())
         self.assertIn("DXVK_HDR=1", result["launch_options"])
+        # Imports are first-class installs: marker + manifest + Display Commander.
+        self.assertTrue((game_dir / ".decky-renodx-hdr.json").exists())
+        self.assertTrue((game_dir / "zzz_display_commander.addon64").exists())
+        manifest = plugin.manifest_manager.read_manifest("123")
+        self.assertEqual(manifest["method"], "renodx")
+        self.assertIn(str(game_dir / "renodx-test.addon64"), manifest["installed_files"])
+
+    async def test_import_renodx_extracts_zip_archives(self):
+        plugin = self.module.Plugin()
+        game_dir = self.home / "ZipGame"
+        game_dir.mkdir()
+        exe = game_dir / "Game.exe"
+        exe.write_text("", encoding="utf-8")
+        archive_path = self.home / "Downloads" / "renodx-mod.zip"
+        archive_path.parent.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(archive_path, "w") as archive:
+            archive.writestr("nested/renodx-game.addon64", "addon-bytes")
+            archive.writestr("readme.txt", "hello")
+
+        async def fake_manage(_appid, _action, _api, _vulkan, _selected_executable_path):
+            (game_dir / "dxgi.dll").write_text("dll", encoding="utf-8")
+            return {"status": "success", "injection_dll": "dxgi", "launch_options": "opts"}
+        plugin.manage_game_reshade = fake_manage
+        plugin._download_url = lambda _url, target: target.write_bytes(b"a" * 2048)
+        async def fake_set_launch(_appid, _opts):
+            return None
+        plugin._set_steam_launch_options = fake_set_launch
+
+        result = await plugin.import_renodx_for_game("124", str(archive_path), str(exe))
+
+        self.assertEqual(result["status"], "success")
+        self.assertTrue((game_dir / "renodx-game.addon64").exists())
 
     async def test_renodx_mod_parser_and_matcher(self):
         plugin = self.module.Plugin()

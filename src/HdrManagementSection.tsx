@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import {
+  Navigation,
   PanelSection,
   PanelSectionRow,
   ButtonItem,
@@ -31,6 +32,7 @@ const verifyHdrInstallation = callable<[string, string], any>("verify_hdr_instal
 const getGameHdrStatus = callable<[string, string], any>("get_game_hdr_status");
 const openRenoDxSearch = callable<[string], any>("open_renodx_search");
 const importRenoDxForGame = callable<[string, string, string], any>("import_renodx_for_game");
+const findRecentRenoDxDownloads = callable<[], any>("find_recent_renodx_downloads");
 
 async function getSteamLaunchOptions(appid: string): Promise<string> {
   const apps = (SteamClient.Apps as any);
@@ -117,6 +119,8 @@ const HdrManagementSection = () => {
   const [processHealth, setProcessHealth] = useState<any>(null);
   const [hdrStatus, setHdrStatus] = useState<any>(null);
   const [selectedMethod, setSelectedMethod] = useState("recommended");
+  const [downloadFiles, setDownloadFiles] = useState<any[]>([]);
+  const [selectedDownload, setSelectedDownload] = useState("");
   const refreshToken = useRef(0);
 
   useEffect(() => {
@@ -321,15 +325,43 @@ const HdrManagementSection = () => {
 
   const handleOpenManualRenoDx = async () => {
     if (!manualRenoDx?.url) return;
-    const response = await openRenoDxSearch(manualRenoDx.url);
-    toaster.toast({ title: "RenoDX Download", body: response.message || "Opened browser." });
+    // Gaming Mode: Steam's built-in browser. Falls back to xdg-open on desktop.
+    try {
+      Navigation.NavigateToExternalWeb(manualRenoDx.url);
+      toaster.toast({ title: "RenoDX Download", body: "Opened in Steam browser. Nexus downloads need a Desktop Mode browser; save the file to ~/Downloads." });
+    } catch {
+      const response = await openRenoDxSearch(manualRenoDx.url);
+      toaster.toast({ title: "RenoDX Download", body: response.message || "Opened browser." });
+    }
   };
+
+  const refreshDownloadList = async () => {
+    try {
+      const response = await findRecentRenoDxDownloads();
+      const files = response.status === "success" ? response.files || [] : [];
+      setDownloadFiles(files);
+      if (files.length && !files.some((f: any) => f.path === selectedDownload)) {
+        setSelectedDownload(files[0].path);
+      }
+    } catch (e) {
+      toaster.toast({ title: "Download scan failed", body: String(e) });
+    }
+  };
+
+  useEffect(() => {
+    if (manualRenoDx) {
+      refreshDownloadList();
+    } else {
+      setDownloadFiles([]);
+      setSelectedDownload("");
+    }
+  }, [manualRenoDx]);
 
   const handleImportManualRenoDx = async () => {
     if (!selectedGame) return;
     setLoading(true);
     try {
-      const response = await importRenoDxForGame(selectedGame.appid, "", exePath);
+      const response = await importRenoDxForGame(selectedGame.appid, selectedDownload, exePath);
       if (response.status === "success" && response.launch_options) {
         await setMergedHdrLaunchOptions(selectedGame.appid, response.launch_options);
         setManualRenoDx(null);
@@ -542,19 +574,43 @@ const HdrManagementSection = () => {
 
       {manualRenoDx && (
         <ModalRoot closeModal={() => setManualRenoDx(null)}>
-          <div style={{ display: "flex", flexDirection: "column", gap: "10px", minHeight: "220px" }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: "10px", minHeight: "260px" }}>
             <div style={{ fontWeight: 700 }}>Manual RenoDX Download</div>
             <div style={{ fontSize: "0.85em", opacity: 0.82 }}>{manualRenoDx.message}</div>
+            <div style={{ fontSize: "0.78em", opacity: 0.65, lineHeight: 1.3 }}>
+              Steam's Gaming Mode browser cannot save files. For Nexus/Discord downloads, switch to
+              Desktop Mode, download to ~/Downloads, then come back here and import.
+            </div>
             <ButtonItem layout="below" onClick={handleOpenManualRenoDx}>
-              Open Download Page In Browser
+              Open Download Page In Steam Browser
+            </ButtonItem>
+
+            {downloadFiles.length ? (
+              <DropdownItem
+                label="Downloaded file"
+                rgOptions={downloadFiles.map((file: any) => ({
+                  data: file.path,
+                  label: `${file.name} (${new Date(file.modified * 1000).toLocaleDateString()})`,
+                }))}
+                selectedOption={selectedDownload}
+                onChange={(opt) => setSelectedDownload(String(opt.data))}
+              />
+            ) : (
+              <div style={{ fontSize: "0.8em", opacity: 0.6 }}>
+                No RenoDX addon or archive found in ~/Downloads yet.
+              </div>
+            )}
+
+            <ButtonItem layout="below" onClick={refreshDownloadList} disabled={loading}>
+              Rescan Downloads
             </ButtonItem>
             <ButtonItem
               layout="below"
               onClick={handleImportManualRenoDx}
-              disabled={loading}
-              description="After downloading the addon file, press this to detect and import it for the selected game."
+              disabled={loading || !downloadFiles.length}
+              description="Installs the selected file with the full RenoDX setup (ReShade host, Display Commander, launch options)."
             >
-              Detect Download And Import
+              {loading ? "Importing…" : "Import Selected File"}
             </ButtonItem>
           </div>
         </ModalRoot>

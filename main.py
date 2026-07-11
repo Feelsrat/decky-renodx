@@ -3111,6 +3111,44 @@ class Plugin:
                 "match": mod,
             }
 
+        # Download to the cache before touching the game directory, so a failed
+        # download never needs a rollback of a half-finished install.
+        addon_cache = Path(self.renodx_import_path) / "downloads"
+        addon_cache.mkdir(parents=True, exist_ok=True)
+        addon_name = self._renodx_addon_filename(addon_url, title)
+        target_cache = addon_cache / addon_name
+        download_error: Exception | None = None
+        for candidate_url in self._renodx_addon_url_candidates(addon_url):
+            try:
+                await asyncio.to_thread(self._download_url, candidate_url, target_cache)
+                if not target_cache.exists() or target_cache.stat().st_size < 1024:
+                    raise RuntimeError(f"Downloaded addon is missing or too small: {target_cache}")
+                download_error = None
+                if candidate_url != addon_url and logger:
+                    logger.info("RenoDX addon downloaded from fallback mirror: %s", candidate_url)
+                break
+            except Exception as error:
+                download_error = error
+                if logger:
+                    logger.warning("RenoDX addon download failed for %s -> %s: %s", candidate_url, target_cache, error)
+        if download_error is not None:
+            return {
+                "status": "error",
+                "method": "renodx",
+                "message": f"RenoDX snapshot download failed: {addon_url} ({download_error})",
+                "match": mod,
+            }
+
+        return await self._install_renodx_addon_from_file(appid, title, exe_path, target_cache, mod, logger)
+
+    async def _install_renodx_addon_from_file(self, appid: str, title: str, exe_path: str, addon_file: Path, mod: dict[str, Any], logger=None) -> dict:
+        """Install a RenoDX addon file as a full-featured install.
+
+        Shared by the automatic (wiki download) and manual (user import) paths:
+        installs the ReShade addon host, copies the addon, adds Display
+        Commander, and records the marker/manifest so status checks and
+        Remove HDR treat both identically.
+        """
         if not exe_path or not os.path.exists(exe_path):
             exe_path = await self._resolve_game_executable_for_recommendation(appid, logger)
         if not exe_path or not os.path.exists(exe_path):
@@ -3153,44 +3191,18 @@ class Plugin:
                 "match": mod,
             }
 
-        addon_cache = Path(self.renodx_import_path) / "downloads"
-        addon_cache.mkdir(parents=True, exist_ok=True)
-        addon_name = self._renodx_addon_filename(addon_url, title)
-        target_cache = addon_cache / addon_name
-        download_error: Exception | None = None
-        for candidate_url in self._renodx_addon_url_candidates(addon_url):
-            try:
-                await asyncio.to_thread(self._download_url, candidate_url, target_cache)
-                if not target_cache.exists() or target_cache.stat().st_size < 1024:
-                    raise RuntimeError(f"Downloaded addon is missing or too small: {target_cache}")
-                download_error = None
-                if candidate_url != addon_url and logger:
-                    logger.info("RenoDX addon downloaded from fallback mirror: %s", candidate_url)
-                break
-            except Exception as error:
-                download_error = error
-                if logger:
-                    logger.warning("RenoDX addon download failed for %s -> %s: %s", candidate_url, target_cache, error)
-        if download_error is not None:
-            self._rollback_failed_hdr_install(appid, exe_dir, logger)
-            return {
-                "status": "error",
-                "method": "renodx",
-                "message": f"RenoDX snapshot download failed: {addon_url} ({download_error})",
-                "match": mod,
-            }
-
+        addon_name = addon_file.name
         target = exe_dir / addon_name
         try:
-            shutil.copy2(target_cache, target)
+            shutil.copy2(addon_file, target)
         except Exception as error:
             if logger:
-                logger.error("RenoDX addon copy failed from %s to %s: %s", target_cache, target, error)
+                logger.error("RenoDX addon copy failed from %s to %s: %s", addon_file, target, error)
             self._rollback_failed_hdr_install(appid, exe_dir, logger)
             return {
                 "status": "error",
                 "method": "renodx",
-                "message": f"RenoDX addon copy failed: {target_cache} -> {target} ({error})",
+                "message": f"RenoDX addon copy failed: {addon_file} -> {target} ({error})",
                 "match": mod,
             }
         removed_effects = self._configure_renodx_only_install(exe_dir, addon_name, logger)
@@ -3250,7 +3262,7 @@ class Plugin:
         })
         self.manifest_manager.write_manifest(appid, manifest)
         if logger:
-            logger.info("Installed RenoDX addon %s for %s from %s", target, appid, addon_url)
+            logger.info("Installed RenoDX addon %s for %s from %s", target, appid, addon_file)
         copied = [str(target)]
         if display_commander_target:
             copied.append(display_commander_target)
@@ -5527,13 +5539,15 @@ rm -f "{helper_path}"
             else:
                 query = f"{game_name} RenoDX NexusMods".strip() if game_name else "RenoDX NexusMods"
                 url = "https://www.google.com/search?q=" + query.replace(" ", "+")
+            # Desktop Mode fallback only; in Gaming Mode the frontend opens the
+            # URL through Steam's built-in browser (Navigation.NavigateToExternalWeb).
             clean_env = {**os.environ, **self.environment}
             clean_env["LD_LIBRARY_PATH"] = ""
             subprocess.Popen(["xdg-open", url], env=clean_env)
             return {
                 "status": "success",
                 "url": url,
-                "message": "Browser opened. Download the RenoDX addon/archive, then return here and import it.",
+                "message": "Browser opened. Download the RenoDX addon/archive to ~/Downloads, then return here and import it.",
             }
         except Exception as e:
             decky.logger.error(f"Failed to open browser: {str(e)}")
@@ -5571,68 +5585,63 @@ rm -f "{helper_path}"
             return {"status": "error", "message": str(e)}
 
     async def import_renodx_for_game(self, appid: str, selected_file: str = "", selected_executable_path: str = "") -> dict:
-        """Copy a user-downloaded RenoDX addon into the detected game executable directory."""
-        try:
-            if selected_executable_path and os.path.exists(selected_executable_path):
-                game_path = os.path.dirname(selected_executable_path)
-            else:
-                detection = await self.find_game_executable_path(appid)
-                if detection.get("status") == "success":
-                    steam_result = detection.get("steam_logs_result", {})
-                    enhanced_result = detection.get("enhanced_detection_result", {})
-                    exe_path = steam_result.get("executable_path") or enhanced_result.get("executable_path")
-                    if exe_path:
-                        game_path = os.path.dirname(exe_path)
-                    else:
-                        game_path = self._find_game_path(appid)
-                else:
-                    game_path = self._find_game_path(appid)
+        """Install a user-downloaded RenoDX addon/archive as a full RenoDX setup.
 
+        Goes through the same pipeline as the automatic install (ReShade addon
+        host, Display Commander, marker, manifest) so imported mods verify and
+        uninstall exactly like wiki-downloaded ones.
+        """
+        try:
+            logger = setup_per_game_logger(appid)
             source = Path(selected_file) if selected_file else None
             if not source or not source.exists():
                 recent = await self.find_recent_renodx_downloads()
                 files = recent.get("files", [])
                 if not files:
-                    return {"status": "error", "message": "No RenoDX addon/archive found in Downloads."}
+                    return {
+                        "status": "error",
+                        "message": "No RenoDX addon/archive found in Downloads. Download the mod first (use a Desktop Mode browser for Nexus), then retry.",
+                    }
                 source = Path(files[0]["path"])
 
-            copied = []
-            target_dir = Path(game_path)
-            if source.suffix.lower() in [".addon64", ".addon32"]:
-                target = target_dir / source.name
-                shutil.copy2(source, target)
-                copied.append(str(target))
-            elif source.suffix.lower() == ".zip":
-                with zipfile.ZipFile(source) as archive:
-                    members = [
-                        name for name in archive.namelist()
-                        if name.lower().endswith((".addon64", ".addon32", ".ini", ".fx", ".fxh"))
-                    ]
-                    if not members:
-                        return {"status": "error", "message": "Archive did not contain RenoDX/ReShade addon files."}
-                    extract_dir = Path(self.renodx_import_path) / source.stem
-                    if extract_dir.exists():
-                        shutil.rmtree(extract_dir)
-                    archive.extractall(extract_dir)
-                    for member in members:
-                        extracted = extract_dir / member
-                        if extracted.is_file() and extracted.suffix.lower() in [".addon64", ".addon32"]:
-                            target = target_dir / extracted.name
-                            shutil.copy2(extracted, target)
-                            copied.append(str(target))
+            suffix = source.suffix.lower()
+            if suffix in {".addon64", ".addon32"}:
+                addon_file = source
+            elif suffix in {".zip", ".7z", ".rar"}:
+                extract_dir = Path(self.renodx_import_path) / source.stem
+                if extract_dir.exists():
+                    shutil.rmtree(extract_dir)
+                extract_dir.mkdir(parents=True, exist_ok=True)
+                if suffix == ".zip":
+                    with zipfile.ZipFile(source) as archive:
+                        self._safe_extract(archive, extract_dir)
+                else:
+                    if not (Path(self.bin_cache_path) / "7zz").exists():
+                        await asyncio.to_thread(self._download_7zip_binary, Path(self.bin_cache_path))
+                    await asyncio.to_thread(self._extract_with_7zip, source, extract_dir)
+                addons = sorted(
+                    path for path in extract_dir.rglob("*")
+                    if path.is_file() and path.suffix.lower() in {".addon64", ".addon32"}
+                )
+                if not addons:
+                    return {"status": "error", "message": f"No .addon64/.addon32 file found inside {source.name}."}
+                addon_file = addons[0]
+                if len(addons) > 1 and logger:
+                    logger.info("Archive %s contained %d addon files; importing %s", source.name, len(addons), addon_file.name)
             else:
-                return {"status": "error", "message": "Only .addon64, .addon32, and .zip imports are supported right now."}
+                return {"status": "error", "message": "Only .addon64, .addon32, .zip, .7z, and .rar imports are supported."}
 
-            if not copied:
-                return {"status": "error", "message": "No RenoDX addon file was copied."}
-
-            self._fix_deck_user_ownership(target_dir)
-            return {
-                "status": "success",
-                "output": f"Imported RenoDX files to {game_path}",
-                "copied": copied,
-                "launch_options": self._hdr_launch_options("dxgi", appid, "renodx"),
+            mod = {
+                "name": addon_file.name,
+                "source_type": "manual_import",
+                "match_type": "manual",
+                "bitness": "64" if addon_file.suffix.lower() == ".addon64" else "32",
+                "imported_from": str(source),
             }
+            result = await self._install_renodx_addon_from_file(appid, addon_file.stem, selected_executable_path, addon_file, mod, logger)
+            if result.get("status") == "success":
+                result["output"] = result.get("message", "")
+            return result
         except Exception as e:
             decky.logger.error(f"RenoDX import failed: {str(e)}")
             return {"status": "error", "message": str(e)}
