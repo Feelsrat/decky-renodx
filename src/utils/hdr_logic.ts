@@ -5,6 +5,10 @@ export function stripHdrLaunchTokens(options: string): string {
     .replace(/\bENABLE_HDR_WSI=\S+\s*/g, "")
     .replace(/\bENABLE_GAMESCOPE_WSI=\S+\s*/g, "")
     .replace(/\bPROTON_LOG=\S+\s*/g, "")
+    // Special K delayed/global injection wrapper and its compat-path prefix.
+    .replace(/\bSTEAM_COMPAT_DATA_PATH="[^"]*"\s*/g, "")
+    .replace(/\bSTEAM_COMPAT_DATA_PATH=\S+\s*/g, "")
+    .replace(/\bbash\s+"[^"]*specialk-delayed-launch\.sh"(?:\s+"[^"]*")*\s*/g, "")
     .replace(/\bWINEDLLOVERRIDES="[^"]*(?:d3dcompiler_47|dxgi|d3d11|d3d12|d3d9|d3d8|ddraw|dinput8|opengl32)[^"]*"\s*/g, "")
     .replace(/\bWINEDLLOVERRIDES=[^\s]*?(?:d3dcompiler_47|dxgi|d3d11|d3d12|d3d9|d3d8|ddraw|dinput8|opengl32)[^\s]*\s*/g, "")
     .replace(/\s+/g, " ")

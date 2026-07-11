@@ -15,6 +15,9 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class FakeLogger:
+    def debug(self, *args, **kwargs):
+        pass
+
     def info(self, *args, **kwargs):
         pass
 
@@ -645,6 +648,50 @@ class BackendMockTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsNone(plugin._match_renodx_mod("Final Fantasy XIII", mods, ""))
 
+    async def test_renodx_match_strips_diacritics(self):
+        plugin = self.module.Plugin()
+        mods = [{
+            "name": "God of War Ragnarok",
+            "normalized": plugin._normalize_game_title("God of War Ragnarok"),
+            "match_type": "specific",
+            "addon_url": "https://example.invalid/renodx-gowr.addon64",
+        }]
+
+        match = plugin._match_renodx_mod("God of War Ragnarök", mods, "")
+
+        self.assertIsNotNone(match)
+        self.assertEqual(match["score"], 100)
+
+    async def test_renodx_match_supports_edition_containment(self):
+        plugin = self.module.Plugin()
+        mods = [{
+            "name": "Code Vein",
+            "normalized": plugin._normalize_game_title("Code Vein"),
+            "match_type": "specific",
+            "addon_url": "https://example.invalid/renodx-codevein.addon64",
+        }]
+
+        match = plugin._match_renodx_mod("Code Vein GOTY Edition", mods, "")
+
+        self.assertIsNotNone(match)
+        self.assertEqual(match["name"], "Code Vein")
+        # A numbered sequel must not match the base game entry.
+        self.assertIsNone(plugin._match_renodx_mod("Code Vein 2", mods, ""))
+
+    async def test_renodx_addon_url_candidates_add_snapshot_mirrors(self):
+        plugin = self.module.Plugin()
+
+        unity = plugin._renodx_addon_url_candidates("https://notvoosh.github.io/renodx-unity/renodx-unityengine.addon64")
+        self.assertIn("https://clshortfuse.github.io/renodx/renodx-unityengine.addon64", unity)
+        self.assertIn("https://github.com/clshortfuse/renodx/releases/download/snapshot/renodx-unityengine.addon64", unity)
+        self.assertEqual(unity[0], "https://notvoosh.github.io/renodx-unity/renodx-unityengine.addon64")
+
+        specific = plugin._renodx_addon_url_candidates("https://clshortfuse.github.io/renodx/renodx-bayonetta.addon32")
+        self.assertIn("https://github.com/clshortfuse/renodx/releases/download/snapshot/renodx-bayonetta.addon32", specific)
+
+        release = plugin._renodx_addon_url_candidates("https://github.com/mqhaji/renodx/releases/download/snapshot/renodx-alienisolation.addon32")
+        self.assertEqual(release, ["https://github.com/mqhaji/renodx/releases/download/snapshot/renodx-alienisolation.addon32"])
+
     async def test_renodx_match_allows_generic_unity_engine_when_no_exact_match(self):
         plugin = self.module.Plugin()
         mods = [{
@@ -1172,6 +1219,106 @@ class BackendMockTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["status"], "success")
         self.assertEqual(called["selected_executable_path"], str(exe))
         self.assertTrue((exe_dir / "renodx-unrealengine.addon64").exists())
+
+    async def test_strip_hdr_launch_tokens_removes_specialk_delayed_wrapper(self):
+        plugin = self.module.Plugin()
+        options = (
+            'STEAM_COMPAT_DATA_PATH="/home/deck/.local/share/Steam/steamapps/compatdata/123" '
+            "PROTON_LOG=1 PROTON_ENABLE_HDR=1 DXVK_HDR=1 ENABLE_HDR_WSI=1 ENABLE_GAMESCOPE_WSI=1 "
+            'bash "/home/deck/homebrew/plugins/decky-renodx/assets/specialk-delayed-launch.sh" "123" "5" "/x/SKIF.exe" %command%'
+        )
+
+        self.assertEqual(plugin._strip_hdr_launch_tokens(options), "%command%")
+
+    async def test_enhanced_detection_skips_engine_dir_and_prefers_shipping_exe(self):
+        plugin = self.module.Plugin()
+        steam_root = self.home / ".steam" / "steam"
+        steamapps = steam_root / "steamapps"
+        steamapps.mkdir(parents=True)
+        (steamapps / "libraryfolders.vdf").write_text(
+            '"libraryfolders"\n{\n\t"0"\n\t{\n\t\t"path"\t\t"' + str(steam_root).replace("\\", "\\\\") + '"\n\t}\n}\n',
+            encoding="utf-8",
+        )
+        (steamapps / "appmanifest_777.acf").write_text(
+            '"AppState"\n{\n\t"appid"\t\t"777"\n\t"name"\t\t"UEGame"\n\t"installdir"\t\t"UEGame"\n}\n',
+            encoding="utf-8",
+        )
+        game_root = steamapps / "common" / "UEGame"
+        engine_bin = game_root / "Engine" / "Binaries" / "Win64"
+        engine_bin.mkdir(parents=True)
+        (engine_bin / "CrashReportClient.exe").write_bytes(b"MZ" * 2048)
+        (engine_bin / "EpicWebHelper.exe").write_bytes(b"MZ" * 2048)
+        game_bin = game_root / "UEGame" / "Binaries" / "Win64"
+        game_bin.mkdir(parents=True)
+        shipping = game_bin / "UEGame-Win64-Shipping.exe"
+        shipping.write_bytes(b"MZ" * 4096)
+
+        result = await plugin.find_game_executable_enhanced("777")
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["executable_path"], str(shipping))
+        self.assertEqual(result["directory_path"], str(game_bin))
+
+    async def test_renodx_install_adds_display_commander_for_64bit(self):
+        plugin = self.module.Plugin()
+        exe_dir = self.home / "Game" / "Binaries" / "Win64"
+        exe_dir.mkdir(parents=True)
+        exe = exe_dir / "Game-Win64-Shipping.exe"
+        exe.write_bytes(b"MZ")
+
+        async def fake_manage(_appid, _action, _api, _vulkan, _selected_executable_path):
+            (exe_dir / "dxgi.dll").write_text("dll", encoding="utf-8")
+            return {"status": "success", "injection_dll": "dxgi", "launch_options": "opts"}
+        plugin.manage_game_reshade = fake_manage
+        plugin._download_url = lambda _url, target: target.write_bytes(b"a" * 2048)
+        async def fake_set_launch(_appid, _opts):
+            return None
+        plugin._set_steam_launch_options = fake_set_launch
+
+        result = await plugin._install_renodx_mod_for_game("321", "Game", str(exe), {"name": "Game", "addon_url": "https://example.com/renodx-game.addon64"})
+
+        self.assertEqual(result["status"], "success")
+        self.assertTrue((exe_dir / "zzz_display_commander.addon64").exists())
+        manifest = plugin.manifest_manager.read_manifest("321")
+        self.assertIn(str(exe_dir / "zzz_display_commander.addon64"), manifest["installed_files"])
+        self.assertIn("Display Commander", result["message"])
+
+    async def test_renodx_install_skips_display_commander_for_32bit(self):
+        plugin = self.module.Plugin()
+        exe_dir = self.home / "Game32"
+        exe_dir.mkdir(parents=True)
+        exe = exe_dir / "Game.exe"
+        exe.write_bytes(b"MZ")
+
+        async def fake_manage(_appid, _action, _api, _vulkan, _selected_executable_path):
+            (exe_dir / "dxgi.dll").write_text("dll", encoding="utf-8")
+            return {"status": "success", "injection_dll": "dxgi", "launch_options": "opts"}
+        plugin.manage_game_reshade = fake_manage
+        plugin._download_url = lambda _url, target: target.write_bytes(b"a" * 2048)
+        async def fake_set_launch(_appid, _opts):
+            return None
+        plugin._set_steam_launch_options = fake_set_launch
+
+        result = await plugin._install_renodx_mod_for_game("322", "Game", str(exe), {"name": "Game", "addon_url": "https://example.com/renodx-game.addon32"})
+
+        self.assertEqual(result["status"], "success")
+        self.assertFalse((exe_dir / "zzz_display_commander.addon64").exists())
+
+    async def test_display_commander_cache_survives_failed_refresh(self):
+        plugin = self.module.Plugin()
+        from pathlib import Path as _Path
+        cached = _Path(plugin.bin_cache_path) / "zzz_display_commander.addon64"
+        cached.write_bytes(b"b" * 2048)
+        import os as _os
+        old = 10 * 86400
+        stat = cached.stat()
+        _os.utime(cached, (stat.st_atime - old, stat.st_mtime - old))
+        plugin._download_url = lambda _url, _target: (_ for _ in ()).throw(RuntimeError("offline"))
+
+        result = plugin._ensure_display_commander_cached()
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result, cached)
 
     async def test_renodx_install_removes_fallback_effects(self):
         plugin = self.module.Plugin()

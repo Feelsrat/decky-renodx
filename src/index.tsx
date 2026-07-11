@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   ButtonItem,
   DropdownItem,
@@ -82,45 +82,42 @@ const versionOptions: VersionOption[] = [
 function HdrRuntimeSection() {
   const [installing, setInstalling] = useState(false);
   const [uninstalling, setUninstalling] = useState(false);
-  const [installResult, setInstallResult] = useState<InstallResult | null>(null);
-  const [uninstallResult, setUninstallResult] = useState<InstallResult | null>(null);
   const [pathExists, setPathExists] = useState<boolean | null>(null);
   const [selectedVersion, setSelectedVersion] = useState<VersionOption>(versionOptions[0]);
   const [currentVersionInfo, setCurrentVersionInfo] = useState<{ version: string; addon: boolean } | null>(null);
   const [deckModel, setDeckModel] = useState<DeckModelResponse | null>(null);
-  const [modelLoading, setModelLoading] = useState(true);
   const [installedConfig, setInstalledConfig] = useState<any>(null);
-  const [configChanged, setConfigChanged] = useState(false);
+  const versionInitialized = useRef(false);
+
+  const checkPath = async () => {
+    try {
+      const result = await checkReShadePath();
+      setPathExists(result.exists);
+      setCurrentVersionInfo(result.version_info ?? null);
+      // Only sync the dropdown to the installed version once; afterwards the
+      // user's selection must not be overridden by background refreshes.
+      if (!versionInitialized.current && result.version_info?.version) {
+        versionInitialized.current = true;
+        setSelectedVersion(versionOptions.find((version) => version.value === result.version_info?.version) ?? versionOptions[0]);
+      }
+    } catch (error) {
+      await logError(`checkReShadePath: ${String(error)}`);
+    }
+  };
 
   useEffect(() => {
-    const checkPath = async () => {
-      try {
-        const result = await checkReShadePath();
-        setPathExists(result.exists);
-        setCurrentVersionInfo(result.version_info ?? null);
-        if (result.version_info?.version) {
-          setSelectedVersion(versionOptions.find((version) => version.value === result.version_info?.version) ?? versionOptions[0]);
-        }
-      } catch (error) {
-        await logError(`checkReShadePath: ${String(error)}`);
-      }
-    };
-
     checkPath();
-    const intervalId = setInterval(checkPath, 3000);
+    const intervalId = setInterval(checkPath, 20000);
     return () => clearInterval(intervalId);
   }, []);
 
   useEffect(() => {
     const loadModelAndPrefs = async () => {
       try {
-        setModelLoading(true);
         setDeckModel(await detectSteamDeckModel());
         await loadAutoHdrPreference();
       } catch (error) {
         await logError(`runtime init: ${String(error)}`);
-      } finally {
-        setModelLoading(false);
       }
     };
 
@@ -140,18 +137,13 @@ function HdrRuntimeSection() {
     loadConfig();
   }, [pathExists]);
 
-  useEffect(() => {
-    if (!installedConfig || !pathExists) {
-      setConfigChanged(false);
-      return;
-    }
-
-    setConfigChanged(
+  const configChanged = Boolean(
+    installedConfig && pathExists && (
       true !== installedConfig.with_addon ||
       selectedVersion.value !== installedConfig.version ||
       true !== installedConfig.with_autohdr
-    );
-  }, [installedConfig, pathExists, selectedVersion]);
+    )
+  );
 
   const installHdrRuntime = async () => {
     try {
@@ -162,14 +154,16 @@ function HdrRuntimeSection() {
         390000,
         "HDR component install did not return after 6.5 minutes. Check the plugin log; a download or extraction may still be stuck."
       );
-      setInstallResult(result);
       if (result.status === "success") {
+        toaster.toast({ title: "HDR Runtime", body: "Runtime installed." });
         const config = await loadInstalledConfiguration();
         setInstalledConfig(config.status === "success" ? config.config : null);
-        setConfigChanged(false);
+        await checkPath();
+      } else {
+        toaster.toast({ title: "HDR Runtime Install Failed", body: result.message || "Install failed.", duration: 7000 });
       }
     } catch (error) {
-      setInstallResult({ status: "error", message: String(error) });
+      toaster.toast({ title: "HDR Runtime Install Failed", body: String(error), duration: 7000 });
       await logError(`installHdrRuntime: ${String(error)}`);
     } finally {
       setInstalling(false);
@@ -180,108 +174,71 @@ function HdrRuntimeSection() {
     try {
       setUninstalling(true);
       const result = await runUninstallReShade();
-      setUninstallResult(result);
       if (result.status === "success") {
         setInstalledConfig(null);
-        setConfigChanged(false);
+        toaster.toast({ title: "HDR Runtime", body: "Runtime uninstalled." });
+        await checkPath();
+      } else {
+        toaster.toast({ title: "HDR Runtime Uninstall Failed", body: result.message || "Uninstall failed.", duration: 7000 });
       }
     } catch (error) {
-      setUninstallResult({ status: "error", message: String(error) });
+      toaster.toast({ title: "HDR Runtime Uninstall Failed", body: String(error), duration: 7000 });
       await logError(`uninstallHdrRuntime: ${String(error)}`);
     } finally {
       setUninstalling(false);
     }
   };
 
-  const installButtonText = installing
-    ? "Installing..."
-    : `Install ${selectedVersion.label} with HDR only`;
+  const busy = installing || uninstalling;
+  const statusText = pathExists === null ? "Checking…" : pathExists ? "Installed" : "Not installed";
+  const statusColor = pathExists === null ? "rgba(255,255,255,0.6)" : pathExists ? "#2ecc71" : "#e74c3c";
+  const descriptionParts: string[] = [];
+  if (currentVersionInfo) {
+    descriptionParts.push(`v${currentVersionInfo.version}${currentVersionInfo.addon ? " (addon support)" : ""}`);
+  }
+  if (deckModel?.status === "success") {
+    descriptionParts.push(deckModel.model === "Not Steam Deck" ? "Non-Steam Deck device" : `Steam Deck ${deckModel.model}`);
+  }
 
   return (
-    <PanelSection title="HDR Runtime Setup">
-      {pathExists !== null && (
-        <PanelSectionRow>
-          <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
-            <div style={{ fontSize: "1.1em", fontWeight: "bold", color: pathExists ? "#2ecc71" : "#e74c3c" }}>
-              {pathExists ? "Runtime Installed" : "Runtime Not Installed"}
-            </div>
-            {currentVersionInfo && (
-              <div style={{ fontSize: "0.8em", opacity: 0.6 }}>
-                v{currentVersionInfo.version} {currentVersionInfo.addon ? "(Addon Support)" : ""}
-              </div>
-            )}
-          </div>
-        </PanelSectionRow>
-      )}
-
-      {!modelLoading && deckModel?.status === "success" && (
-        <PanelSectionRow>
-          <div style={{ fontSize: "0.9em", color: deckModel.is_oled ? "#2ecc71" : "#f39c12" }}>
-            {deckModel.model === "Not Steam Deck" ? "⚠️ Non-Steam Deck device" : `Steam Deck ${deckModel.model} detected`}
-          </div>
-        </PanelSectionRow>
-      )}
-
+    <PanelSection title="HDR Runtime">
       <PanelSectionRow>
-        <div style={{ fontSize: "0.9em", opacity: 0.8 }}>
-          HDR runtime setup is automatic and isolated. RenoDX install/import is temporarily disabled; fallback setup uses Special K and HDR shader packs.
-        </div>
-      </PanelSectionRow>
-
-      <PanelSectionRow>
-        <DropdownItem
-          rgOptions={versionOptions.map((version) => ({ data: version.value, label: version.label }))}
-          selectedOption={selectedVersion.value}
-          onChange={(option) => {
-            setSelectedVersion(versionOptions.find((version) => version.value === option.data) ?? versionOptions[0]);
-          }}
-          strDefaultLabel="Select ReShade version..."
-        />
-      </PanelSectionRow>
-
-      <PanelSectionRow>
-        <Field focusable label="HDR Components" description="Fallback components are selected automatically per game. RenoDX is disabled until its flow is rebuilt.">
-          <div style={{ color: "#2ecc71", fontWeight: 700 }}>Automatic</div>
+        <Field focusable label="Runtime" description={descriptionParts.join(" • ") || "Shared ReShade runtime with AutoHDR shader packs."}>
+          <div style={{ fontWeight: 700, color: statusColor }}>{statusText}</div>
         </Field>
       </PanelSectionRow>
 
-      {pathExists && configChanged && (
+      {(pathExists === false || configChanged) && (
         <PanelSectionRow>
-          <div style={{ padding: "12px", backgroundColor: "#ffa726", borderRadius: "4px", color: "white" }}>
-            Configuration changed - reinstall to apply.
-          </div>
+          <DropdownItem
+            label="ReShade Version"
+            rgOptions={versionOptions.map((version) => ({ data: version.value, label: version.label }))}
+            selectedOption={selectedVersion.value}
+            onChange={(option) => {
+              setSelectedVersion(versionOptions.find((version) => version.value === option.data) ?? versionOptions[0]);
+            }}
+          />
         </PanelSectionRow>
       )}
 
-      {selectedVersion && (!pathExists || configChanged) && (
+      {(pathExists === false || configChanged) && (
         <PanelSectionRow>
-          <ButtonItem layout="below" disabled={installing} onClick={installHdrRuntime}>
-            {installButtonText}
+          <ButtonItem
+            layout="below"
+            disabled={busy}
+            onClick={installHdrRuntime}
+            description={configChanged ? "Configuration changed — reinstall to apply." : "Downloads ReShade, Special K, and HDR shader packs. Runs once for all games."}
+          >
+            {installing ? "Installing…" : configChanged ? "Reinstall HDR Runtime" : "Install HDR Runtime"}
           </ButtonItem>
         </PanelSectionRow>
       )}
 
-      {pathExists && (
+      {pathExists && !configChanged && (
         <PanelSectionRow>
-          <ButtonItem layout="below" disabled={uninstalling} onClick={uninstallHdrRuntime}>
-            {uninstalling ? "Uninstalling..." : "Uninstall HDR Runtime"}
+          <ButtonItem layout="below" disabled={busy} onClick={uninstallHdrRuntime}>
+            {uninstalling ? "Uninstalling…" : "Uninstall HDR Runtime"}
           </ButtonItem>
-        </PanelSectionRow>
-      )}
-
-      {installResult && (
-        <PanelSectionRow>
-          <div style={{ padding: "12px", backgroundColor: "var(--decky-selected-ui-bg)", borderRadius: "4px", color: installResult.status === "success" ? "green" : "red" }}>
-            {installResult.status === "success" ? installResult.output || "Installed." : installResult.message || "Install failed."}
-          </div>
-        </PanelSectionRow>
-      )}
-
-      {uninstallResult && (
-        <PanelSectionRow>
-          <div style={{ padding: "12px", backgroundColor: "var(--decky-selected-ui-bg)", borderRadius: "4px", color: uninstallResult.status === "success" ? "green" : "red" }}>
-            {uninstallResult.status === "success" ? "HDR runtime uninstalled." : uninstallResult.message || "Uninstall failed."}
-          </div>
         </PanelSectionRow>
       )}
     </PanelSection>
@@ -333,59 +290,29 @@ function UpdatesSection() {
     }
   };
 
+  const hasInstallableUpdate = Boolean(status?.hasUpdate && status?.canInstall);
+  const versionText = status?.current || "Unknown";
+  const description = status?.requiresRestart
+    ? "Restart pending"
+    : status?.elevated === false
+      ? "Root permissions missing — self-update unavailable."
+      : status?.hasUpdate
+        ? `Update available: ${status?.latest}`
+        : status?.message || "Up to date";
+
   return (
-    <PanelSection title="Updates">
+    <PanelSection title="Plugin">
       <PanelSectionRow>
-        <Field
-          focusable
-          label="Installed Version"
-          description={status?.requiresRestart ? "Restart pending" : status?.hasUpdate ? "Update available" : "Ready"}
-        >
-          <div style={{ fontSize: "16px" }}>{status?.current || "Unknown"}</div>
+        <Field focusable label="Version" description={description}>
+          <div style={{ fontWeight: 700, color: hasInstallableUpdate ? "#2ecc71" : "inherit" }}>{versionText}</div>
         </Field>
       </PanelSectionRow>
 
-      {status?.latest && (
-        <PanelSectionRow>
-          <Field focusable label="Latest Release" description={status.releaseUrl || ""}>
-            <div style={{ color: status.hasUpdate ? "#2ecc71" : "rgba(255,255,255,0.75)", fontSize: "16px" }}>
-              {status.latest}
-            </div>
-          </Field>
-        </PanelSectionRow>
-      )}
-
-      {status?.elevated === false && (
-        <PanelSectionRow>
-          <Field focusable label="Update Permissions" description="Decky root permissions are required for self-update.">
-            <div style={{ color: "#ff8a3d", fontWeight: 700 }}>Missing</div>
-          </Field>
-        </PanelSectionRow>
-      )}
-
-      {status?.message && (
-        <PanelSectionRow>
-          <Field focusable label="Status" description={status.message}>
-            <div style={{ color: status.ok ? "#2ecc71" : "#ff8a3d", fontWeight: 700 }}>
-              {status.ok ? "OK" : "Issue"}
-            </div>
-          </Field>
-        </PanelSectionRow>
-      )}
-
       <PanelSectionRow>
-        <ButtonItem layout="below" disabled={busy} onClick={refresh}>
-          {busy ? "Checking..." : "Check for Update"}
+        <ButtonItem layout="below" disabled={busy} onClick={hasInstallableUpdate ? install : refresh}>
+          {busy ? "Working…" : hasInstallableUpdate ? `Install Update ${status?.latest}` : "Check for Update"}
         </ButtonItem>
       </PanelSectionRow>
-
-      {status?.canInstall && (
-        <PanelSectionRow>
-          <ButtonItem layout="below" disabled={busy} onClick={install}>
-            {busy ? "Installing..." : status.hasUpdate ? "Install Update" : "Reinstall Current Release"}
-          </ButtonItem>
-        </PanelSectionRow>
-      )}
     </PanelSection>
   );
 }
@@ -396,8 +323,8 @@ export default definePlugin(() => ({
   alwaysRender: true,
   content: (
     <>
-      <HdrRuntimeSection />
       <HdrManagementSection />
+      <HdrRuntimeSection />
       <UpdatesSection />
     </>
   ),

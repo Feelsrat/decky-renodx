@@ -42,6 +42,12 @@ assertEqual(
   "Leaves unrelated launch options intact"
 );
 
+assertEqual(
+  stripHdrLaunchTokens(`STEAM_COMPAT_DATA_PATH="/home/deck/.local/share/Steam/steamapps/compatdata/123" PROTON_LOG=1 PROTON_ENABLE_HDR=1 DXVK_HDR=1 ENABLE_HDR_WSI=1 ENABLE_GAMESCOPE_WSI=1 bash "/home/deck/homebrew/plugins/decky-renodx/assets/specialk-delayed-launch.sh" "123" "5" "/path/SKIF.exe" %command%`),
+  "%command%",
+  "Strips Special K delayed wrapper and compat path"
+);
+
 // 2. mergeHdrLaunchOptions Tests
 assertEqual(
   mergeHdrLaunchOptions("gamemoderun %command% -vulkan", "PROTON_ENABLE_HDR=1 DXVK_HDR=1"),
