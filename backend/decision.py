@@ -183,7 +183,9 @@ class DecisionTree:
         # Sort by score descending
         recommendations.sort(key=lambda x: x["score"], reverse=True)
         
-        # Inject tool-specific metadata from context.tools if present
+        # Inject tool-specific metadata from context.tools if present.
+        # Warnings and manual steps stay in their own fields so the UI can
+        # render them distinctly instead of burying them in notes.
         tools_meta = context.get("tools", {})
         for rec in recommendations:
             method = rec["method"]
@@ -191,11 +193,9 @@ class DecisionTree:
                 meta = tools_meta[method]
                 if "manual_steps" in meta:
                     rec["manual_steps"] = meta["manual_steps"]
-                    rec.setdefault("notes", []).extend(meta["manual_steps"])
                 if "warnings" in meta:
                     rec["warnings"] = meta["warnings"]
-                    rec.setdefault("notes", []).extend(meta["warnings"])
-                    
+
         return recommendations
 
     def _is_renodx_supported(self, title, appid):

@@ -12,12 +12,19 @@ class PCGamingWikiScraper:
         self._page_name_cache = {}
         self._improvements_cache = {}
         self._last_fetch_error = ""
-        self._ssl_context = None
+        # Verified TLS first; unverified only as a fallback for devices whose
+        # sandbox lacks a usable CA store.
+        self._ssl_contexts = []
         try:
             import ssl
-            self._ssl_context = ssl.create_default_context()
-            self._ssl_context.check_hostname = False
-            self._ssl_context.verify_mode = ssl.CERT_NONE
+            try:
+                self._ssl_contexts.append(ssl.create_default_context())
+            except Exception:
+                pass
+            insecure = ssl.create_default_context()
+            insecure.check_hostname = False
+            insecure.verify_mode = ssl.CERT_NONE
+            self._ssl_contexts.append(insecure)
         except Exception:
             pass
 
@@ -145,21 +152,20 @@ class PCGamingWikiScraper:
     def _fetch(self, params):
         query_string = urllib.parse.urlencode(params)
         url = f"{self.API_URL}?{query_string}"
-        try:
-            self._last_fetch_error = ""
-            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) DeckyRenoDX/1.0"}
-            request = urllib.request.Request(url, headers=headers)
-            
-            kwargs = {"timeout": 15}
-            if self._ssl_context:
-                kwargs["context"] = self._ssl_context
-                
-            with urllib.request.urlopen(request, **kwargs) as response:
-                return json.loads(response.read().decode("utf-8", "ignore"))
-        except Exception as e:
-            self._last_fetch_error = str(e)
-            if self.logger: self.logger.warning(f"PCGW fetch failed for {url}: {str(e)}")
-            return None
+        self._last_fetch_error = ""
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) DeckyRenoDX/1.0"}
+        request = urllib.request.Request(url, headers=headers)
+        for context in self._ssl_contexts or [None]:
+            try:
+                kwargs = {"timeout": 15}
+                if context is not None:
+                    kwargs["context"] = context
+                with urllib.request.urlopen(request, **kwargs) as response:
+                    return json.loads(response.read().decode("utf-8", "ignore"))
+            except Exception as e:
+                self._last_fetch_error = str(e)
+                if self.logger: self.logger.warning(f"PCGW fetch failed for {url}: {str(e)}")
+        return None
 
 
     def _fetch_api_data(self, appid: str):

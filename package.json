@@ -9,6 +9,9 @@
     "test": "node scripts/test.js",
     "test:backend": "python -m unittest tests.test_backend_mocks",
     "test:types": "tsc --noEmit --skipLibCheck",
+    "compat:validate": "python scripts/compat_db.py validate",
+    "compat:report": "python scripts/compat_db.py report",
+    "compat:sync": "python scripts/compat_db.py sync-renodx",
     "package": "python scripts/create_zip.py",
     "release": "node scripts/release.js"
   },

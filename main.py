@@ -58,7 +58,7 @@ PLUGIN_PACKAGE = "decky-renodx"
 GITHUB_RELEASES_URL = "https://api.github.com/repos/Feelsrat/decky-renodx/releases"
 RENODX_MODS_URL = "https://raw.githubusercontent.com/wiki/clshortfuse/renodx/Mods.md"
 RESHADE_FXH_URL = "https://raw.githubusercontent.com/crosire/reshade-shaders/slim/Shaders/ReShade.fxh"
-RESHAPE_MIN_RENODX_VERSION = (6, 7, 3)
+RESHADE_MIN_RENODX_VERSION = (6, 7, 3)
 SPECIALK_RELEASES_URL = "https://api.github.com/repos/SpecialKO/SpecialK/releases/latest"
 LILIUM_HDR_RELEASES_URL = "https://api.github.com/repos/EndlesslyFlowering/ReShade_HDR_shaders/releases/latest"
 PUMBO_AUTOHDR_ZIP_URL = "https://github.com/Filoppi/PumboAutoHDR/archive/refs/heads/master.zip"
@@ -166,25 +166,18 @@ class Plugin:
         url = "https://raw.githubusercontent.com/Feelsrat/decky-renodx/main/compatibility.json"
         while True:
             try:
-                # Basic fetch without heavy dependencies
-                request = urllib.request.Request(url, headers={"User-Agent": "DeckyRenoDX/Updater"})
-                
-                def _download():
-                    import ssl
-                    ctx = ssl.create_default_context()
-                    ctx.check_hostname = False
-                    ctx.verify_mode = ssl.CERT_NONE
-                    with urllib.request.urlopen(request, timeout=15, context=ctx) as response:
-                        return response.read().decode("utf-8", "ignore")
-                        
-                content = await asyncio.to_thread(_download)
+                content = await asyncio.to_thread(self._fetch_text, url)
                 if content:
                     parsed = json.loads(content)
-                    if isinstance(parsed, dict):
+                    # Only accept a payload that looks like a real compat DB so a
+                    # bad deploy or truncated response cannot wipe the local copy.
+                    if isinstance(parsed, dict) and isinstance(parsed.get("games"), dict) and parsed["games"]:
                         Path(self.compat_db_path).parent.mkdir(parents=True, exist_ok=True)
                         Path(self.compat_db_path).write_text(content, "utf-8")
                         self.compat_db.update(parsed)
-                        decky.logger.info("Successfully updated compatibility.json from GitHub")
+                        decky.logger.info("Successfully updated compatibility.json from GitHub (%d games)", len(parsed["games"]))
+                    else:
+                        decky.logger.warning("Remote compatibility.json payload failed sanity check; keeping local copy.")
             except Exception as e:
                 decky.logger.warning(f"Failed to update compatibility.json from GitHub: {e}")
             await asyncio.sleep(86400) # Check once a day
@@ -1610,7 +1603,7 @@ class Plugin:
                 version = (0, 0, 0)
         if version == (0, 0, 0):
             version = self._reshade_version_from_name(installer.name)
-        return version >= RESHAPE_MIN_RENODX_VERSION
+        return version >= RESHADE_MIN_RENODX_VERSION
 
     def _reshade_version_from_name(self, name: str) -> tuple[int, int, int]:
         match = re.search(r"ReShade_Setup_([0-9]+)\.([0-9]+)\.([0-9]+)", name, re.I)
@@ -1685,25 +1678,45 @@ class Plugin:
         shutil.copy2(candidate, target)
         target.chmod(0o755)
 
+    def _ssl_context_candidates(self) -> list[tuple[Any, str]]:
+        """TLS contexts to try in order: verified first, unverified last resort.
+
+        Some SteamOS/Decky sandboxes ship without a usable CA bundle; the
+        unverified fallback keeps downloads working there, but is only used
+        after verified TLS fails and its use is logged.
+        """
+        if not SSL_AVAILABLE:
+            return []
+        candidates: list[tuple[Any, str]] = []
+        try:
+            candidates.append((ssl.create_default_context(), "verified"))
+        except Exception:
+            pass
+        insecure = ssl.create_default_context()
+        insecure.check_hostname = False
+        insecure.verify_mode = ssl.CERT_NONE
+        candidates.append((insecure, "unverified"))
+        return candidates
+
     def _fetch_text(self, url: str) -> str:
         request = urllib.request.Request(url, headers={
             "User-Agent": "Mozilla/5.0 DeckyRenoDX/1.0",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         })
-        try:
-            kwargs = {"timeout": 15}
-            if SSL_AVAILABLE:
-                ssl_context = ssl.create_default_context()
-                ssl_context.check_hostname = False
-                ssl_context.verify_mode = ssl.CERT_NONE
-                kwargs["context"] = ssl_context
-            with urllib.request.urlopen(request, **kwargs) as response:
-                return response.read().decode("utf-8", "ignore")
-        except Exception as error:
-            decky.logger.warning("Python text fetch failed for %s, trying curl: %s", url, error)
+        for context, label in self._ssl_context_candidates() or [(None, "no-ssl-module")]:
+            try:
+                kwargs: dict[str, Any] = {"timeout": 15}
+                if context is not None:
+                    kwargs["context"] = context
+                with urllib.request.urlopen(request, **kwargs) as response:
+                    if label == "unverified":
+                        decky.logger.warning("Fetched %s without TLS verification (no usable CA store).", url)
+                    return response.read().decode("utf-8", "ignore")
+            except Exception as error:
+                decky.logger.warning("Python text fetch failed for %s (%s TLS): %s", url, label, error)
         try:
             result = subprocess.run(
-                ["curl", "-fsSL", "-k", "-A", "Mozilla/5.0 DeckyRenoDX/1.0", url],
+                ["curl", "-fsSL", "-A", "Mozilla/5.0 DeckyRenoDX/1.0", url],
                 check=False,
                 capture_output=True,
                 text=True,
@@ -5200,24 +5213,23 @@ class Plugin:
         return None
 
     def _fetch_json(self, url: str) -> Any | None:
-        if SSL_AVAILABLE:
+        request = urllib.request.Request(
+            url,
+            headers={"Accept": "application/vnd.github+json", "User-Agent": PLUGIN_PACKAGE},
+        )
+        for context, label in self._ssl_context_candidates():
             try:
-                ssl_context = ssl.create_default_context()
-                ssl_context.check_hostname = False
-                ssl_context.verify_mode = ssl.CERT_NONE
-                request = urllib.request.Request(
-                    url,
-                    headers={"Accept": "application/vnd.github+json", "User-Agent": PLUGIN_PACKAGE},
-                )
-                with urllib.request.urlopen(request, timeout=10, context=ssl_context) as response:
+                with urllib.request.urlopen(request, timeout=10, context=context) as response:
+                    if label == "unverified":
+                        decky.logger.warning("Fetched %s without TLS verification (no usable CA store).", url)
                     return json.loads(response.read().decode("utf-8"))
             except (OSError, json.JSONDecodeError, urllib.error.URLError) as error:
-                self._last_update_error = f"Python fetch failed: {error}"
+                self._last_update_error = f"Python fetch failed ({label} TLS): {error}"
 
         try:
             clean_env = self._clean_subprocess_env()
             result = subprocess.run(
-                ["curl", "-fsSL", "-k", "-H", "Accept: application/vnd.github+json", "-A", PLUGIN_PACKAGE, url],
+                ["curl", "-fsSL", "-H", "Accept: application/vnd.github+json", "-A", PLUGIN_PACKAGE, url],
                 check=False,
                 capture_output=True,
                 text=True,
@@ -5427,19 +5439,18 @@ deck_user={shlex.quote(deck_user)}
         archive.extractall(target)
 
     def _download_file(self, request: urllib.request.Request, target: Path) -> None:
-        if SSL_AVAILABLE:
+        for context, label in self._ssl_context_candidates():
             try:
-                ssl_context = ssl.create_default_context()
-                ssl_context.check_hostname = False
-                ssl_context.verify_mode = ssl.CERT_NONE
-                with urllib.request.urlopen(request, timeout=45, context=ssl_context) as response:
+                with urllib.request.urlopen(request, timeout=45, context=context) as response:
                     target.write_bytes(response.read())
+                    if label == "unverified":
+                        decky.logger.warning("Downloaded %s without TLS verification (no usable CA store).", request.full_url)
                     return
             except (OSError, urllib.error.URLError) as error:
-                decky.logger.warning("Python download failed, trying curl: %s", error)
+                decky.logger.warning("Python download failed (%s TLS): %s", label, error)
 
         result = subprocess.run(
-            ["curl", "-fL", "-k", "--retry", "2", "--connect-timeout", "20", "-A", "Mozilla/5.0 DeckyRenoDX/1.0", "-o", str(target), request.full_url],
+            ["curl", "-fL", "--retry", "2", "--connect-timeout", "20", "-A", "Mozilla/5.0 DeckyRenoDX/1.0", "-o", str(target), request.full_url],
             check=False,
             capture_output=True,
             text=True,

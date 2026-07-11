@@ -44,6 +44,8 @@ function main() {
     checkJson();
     run("python", ["-m", "py_compile", "main.py"]);
     console.log("OK: Python syntax");
+    run("python", ["scripts/compat_db.py", "validate"]);
+    console.log("OK: compatibility.json schema");
     run("python", ["-m", "unittest", "tests.test_backend_mocks"]);
     console.log("OK: backend tests");
     run(process.execPath, ["--experimental-strip-types", "scripts/test_hdr_logic.ts"]);

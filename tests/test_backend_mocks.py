@@ -805,8 +805,8 @@ class BackendMockTest(unittest.IsolatedAsyncioTestCase):
         })
         
         renodx_rec = next(r for r in recommendations if r["method"] == "renodx")
-        self.assertIn("Step 1", renodx_rec["notes"])
-        self.assertIn("Warning 1", renodx_rec["notes"])
+        self.assertIn("Step 1", renodx_rec["manual_steps"])
+        self.assertIn("Warning 1", renodx_rec["warnings"])
 
     async def test_decision_tree_blocks_32_bit_architecture(self):
         recommendations = DecisionTree().evaluate({

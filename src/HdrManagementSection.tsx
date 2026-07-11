@@ -66,6 +66,8 @@ interface Recommendation {
   confidence: string;
   blocked?: string[];
   notes?: string[];
+  warnings?: string[];
+  manual_steps?: string[];
   requires_verification?: boolean;
   renodx_status?: string;
   renodx_match_type?: string;

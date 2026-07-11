@@ -86,6 +86,42 @@ export const GameStatusCard = ({ loading, recommendation, context, hdrStatus, hd
           </div>
         ) : null}
 
+        {recommendation?.warnings?.length ? (
+          <div style={{
+            marginTop: "8px",
+            padding: "8px",
+            backgroundColor: "rgba(230, 126, 34, 0.14)",
+            borderRadius: "4px",
+            border: "1px solid rgba(230,126,34,0.55)",
+            fontSize: "0.78em",
+            color: "#f5b041",
+            lineHeight: 1.3,
+          }}>
+            <div style={{ fontWeight: 700, marginBottom: "2px" }}>Known issues for this game</div>
+            {recommendation.warnings.map((warning: string, i: number) => (
+              <div key={i} style={{ marginTop: "2px" }}>• {warning}</div>
+            ))}
+          </div>
+        ) : null}
+
+        {recommendation?.manual_steps?.length ? (
+          <div style={{
+            marginTop: "8px",
+            padding: "8px",
+            backgroundColor: "rgba(52, 152, 219, 0.12)",
+            borderRadius: "4px",
+            border: "1px solid rgba(52,152,219,0.5)",
+            fontSize: "0.78em",
+            color: "#aed6f1",
+            lineHeight: 1.3,
+          }}>
+            <div style={{ fontWeight: 700, marginBottom: "2px" }}>Manual steps after install</div>
+            {recommendation.manual_steps.map((step: string, i: number) => (
+              <div key={i} style={{ marginTop: "2px" }}>{i + 1}. {step}</div>
+            ))}
+          </div>
+        ) : null}
+
         {recommendation?.notes?.slice(0, 3).map((note: string, i: number) => (
           <div key={i} style={{ fontSize: "0.74em", opacity: 0.55, marginTop: "3px", fontStyle: "italic" }}>
             {note}
