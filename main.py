@@ -149,19 +149,6 @@ class Plugin:
                 
         return db
 
-    async def get_game_compatibility_info(self, appid: str) -> dict:
-        try:
-            if not hasattr(self, "compat_db") or str(appid) not in self.compat_db.get("games", {}):
-                return {"status": "success", "has_compat_data": False, "data": {}}
-            
-            return {
-                "status": "success",
-                "has_compat_data": True,
-                "data": self.compat_db["games"][str(appid)]
-            }
-        except Exception as e:
-            return {"status": "error", "message": str(e)}
-
     async def _update_compatibility_db_loop(self):
         url = "https://raw.githubusercontent.com/Feelsrat/decky-renodx/main/compatibility.json"
         while True:
@@ -294,10 +281,11 @@ class Plugin:
                     return cached_result
             
             # Steam log file locations
+            steam_logs = self._deck_user_home() / ".steam" / "steam" / "logs"
             log_files = [
-                "/home/deck/.steam/steam/logs/console-linux.txt",
-                "/home/deck/.steam/steam/logs/console_log.txt", 
-                "/home/deck/.steam/steam/logs/console_log.previous.txt"
+                str(steam_logs / "console-linux.txt"),
+                str(steam_logs / "console_log.txt"),
+                str(steam_logs / "console_log.previous.txt"),
             ]
             
             executable_path = None
@@ -546,8 +534,11 @@ class Plugin:
                     linux_confidence = "medium"
                 linux_reasons.append("No Windows executables found, Linux files present")
             
-            # If it's determined to be a Linux game, return early with warning
-            if is_linux_game and linux_confidence in ["high", "medium"]:
+            # Only bail out as a Linux game when there is no Windows build to
+            # target. Games like Valheim ship native Linux builds by default,
+            # but forcing Proton installs/uses the Windows build — if Windows
+            # executables exist we proceed with those.
+            if is_linux_game and linux_confidence in ["high", "medium"] and not main_windows_executables:
                 return {
                     "status": "linux_game_detected",
                     "method": "enhanced_detection_with_simplified_linux_check",
@@ -556,7 +547,11 @@ class Plugin:
                     "linux_reasons": linux_reasons,
                     "linux_indicators": linux_indicators,
                     "windows_executables_found": len(main_windows_executables),
-                    "message": "Linux version detected - ReShade requires Windows version through Proton",
+                    "message": (
+                        "This game is installed as the native Linux build, which HDR injection cannot target. "
+                        "In Steam: Properties → Compatibility → 'Force the use of a specific Steam Play compatibility tool' "
+                        "→ pick Proton Experimental, let Steam re-download the Windows build, launch the game once, then retry here."
+                    ),
                     "details": {
                         "game_path": base_game_path,
                         "total_files_scanned": len(all_executables),
@@ -786,233 +781,96 @@ class Plugin:
                 "message": str(e)
             }
 
+    def _prefer_unreal_shipping_exe(self, exe_path: str) -> str:
+        """Prefer the UE Shipping binary over a root launcher stub.
+
+        Unreal games often launch through a small launcher exe at the game
+        root, while the real process (the one DLL injection must target) is
+        <Game>/Binaries/Win64/<Game>-Win64-Shipping.exe. RenoDX Commander
+        targets the Shipping directory; do the same.
+        """
+        try:
+            exe = Path(exe_path)
+            if not exe_path or not exe.exists():
+                return exe_path
+            if "-shipping" in exe.name.lower():
+                return exe_path
+            base = exe.parent
+            candidates: list[Path] = []
+            for pattern in [
+                "*/Binaries/Win64/*-Shipping.exe",
+                "*/Binaries/WinGDK/*-Shipping.exe",
+                "Binaries/Win64/*-Shipping.exe",
+                "Binaries/WinGDK/*-Shipping.exe",
+            ]:
+                candidates.extend(base.glob(pattern))
+            candidates = [
+                candidate for candidate in candidates
+                if "engine" not in [part.lower() for part in candidate.relative_to(base).parts]
+            ]
+            if candidates:
+                best = max(candidates, key=lambda candidate: candidate.stat().st_size)
+                decky.logger.info(f"Preferring UE Shipping executable over launcher: {best}")
+                return str(best)
+        except Exception as error:
+            decky.logger.warning(f"UE Shipping preference check failed for {exe_path}: {error}")
+        return exe_path
+
     async def find_game_executable_path(self, appid: str) -> dict:
         """
         Primary method that runs BOTH Steam logs and enhanced detection, returning both results
         """
         try:
             decky.logger.info(f"Finding executable path for App ID: {appid}")
-            
+
             # Method 1: Steam console logs
             steam_logs_result = await self.parse_steam_logs_for_executable(appid)
-            
+
             # Method 2: Enhanced detection (now includes Linux detection)
             enhanced_result = await self.find_game_executable_enhanced(appid)
-            
+
             # Handle special case where enhanced detection found a Linux game
             if enhanced_result.get("status") == "linux_game_detected":
                 # Return the Linux detection as the enhanced result
                 return {
-                    "status": "success", 
+                    "status": "success",
                     "steam_logs_result": steam_logs_result,
                     "enhanced_detection_result": enhanced_result,
                     "recommended_method": "enhanced_detection",  # Linux detection takes priority
-                    "linux_game_warning": True
+                    "linux_game_warning": True,
+                    "linux_message": enhanced_result.get("message", ""),
+                    "executable_path": "",
                 }
-            
+
             # Determine recommended method for Windows games
             recommended_method = "steam_logs"
             if steam_logs_result["status"] != "success":
                 recommended_method = "enhanced_detection"
-            
+
+            # Unified best path: Steam logs win (it is what Steam actually ran),
+            # but a UE launcher stub is corrected to the real Shipping binary.
+            unified = ""
+            if steam_logs_result.get("status") == "success":
+                unified = steam_logs_result.get("executable_path", "")
+            if not unified and enhanced_result.get("status") == "success":
+                unified = enhanced_result.get("executable_path", "")
+            unified = self._prefer_unreal_shipping_exe(unified)
+
             return {
                 "status": "success",
                 "steam_logs_result": steam_logs_result,
                 "enhanced_detection_result": enhanced_result,
-                "recommended_method": recommended_method
+                "recommended_method": recommended_method,
+                "executable_path": unified,
+                "directory_path": os.path.dirname(unified) if unified else "",
             }
-            
+
         except Exception as e:
             decky.logger.error(f"Error in find_game_executable_path: {str(e)}")
             return {
                 "status": "error",
                 "message": str(e)
             }
-
-    async def save_shader_preferences(self, selected_shaders: list) -> dict:
-        """Save user's shader preferences to a file"""
-        try:
-            preferences_file = os.path.join(self.main_path, "user_preferences.json")
-            
-            # Load existing preferences to preserve other settings
-            existing_preferences = {}
-            if os.path.exists(preferences_file):
-                try:
-                    with open(preferences_file, 'r') as f:
-                        existing_preferences = json.load(f)
-                except:
-                    pass  # If file is corrupted, start fresh
-            
-            # Update shader preferences while preserving other settings
-            existing_preferences.update({
-                "selected_shaders": selected_shaders,
-                "last_updated": int(time.time()),
-                "version": "1.1"
-            })
-            
-            # Ensure directory exists
-            os.makedirs(self.main_path, exist_ok=True)
-            
-            with open(preferences_file, 'w') as f:
-                json.dump(existing_preferences, f, indent=2)
-            self._fix_deck_user_ownership(Path(self.main_path))
-            
-            decky.logger.info(f"Saved shader preferences: {selected_shaders}")
-            return {"status": "success", "message": "Shader preferences saved successfully"}
-            
-        except Exception as e:
-            decky.logger.error(f"Error saving shader preferences: {str(e)}")
-            return {"status": "error", "message": str(e)}
-
-    async def load_shader_preferences(self) -> dict:
-        """Load user's shader preferences from file"""
-        try:
-            preferences_file = os.path.join(self.main_path, "user_preferences.json")
-            
-            # Also check old file for migration
-            old_preferences_file = os.path.join(self.main_path, "shader_preferences.json")
-            
-            preferences = None
-            
-            # Try to load from new file first
-            if os.path.exists(preferences_file):
-                with open(preferences_file, 'r') as f:
-                    preferences = json.load(f)
-            # Migrate from old file if exists
-            elif os.path.exists(old_preferences_file):
-                with open(old_preferences_file, 'r') as f:
-                    old_prefs = json.load(f)
-                    # Migrate to new format
-                    preferences = {
-                        "selected_shaders": old_prefs.get("selected_shaders", []),
-                        "last_updated": old_prefs.get("last_updated", int(time.time())),
-                        "version": "1.1",
-                        "autohdr_enabled": False  # Default for migrated preferences
-                    }
-                    # Save in new format and remove old file
-                    with open(preferences_file, 'w') as f:
-                        json.dump(preferences, f, indent=2)
-                    try:
-                        os.remove(old_preferences_file)
-                    except:
-                        pass
-            
-            if not preferences:
-                return {"status": "success", "preferences": None, "message": "No preferences file found"}
-            
-            # Validate the preferences structure
-            if "selected_shaders" not in preferences:
-                return {"status": "error", "message": "Invalid preferences file format"}
-            
-            decky.logger.info(f"Loaded shader preferences: {preferences['selected_shaders']}")
-            return {
-                "status": "success", 
-                "preferences": preferences,
-                "selected_shaders": preferences["selected_shaders"]
-            }
-            
-        except Exception as e:
-            decky.logger.error(f"Error loading shader preferences: {str(e)}")
-            return {"status": "error", "message": str(e)}
-
-    async def has_shader_preferences(self) -> dict:
-        """Check if user has saved shader preferences"""
-        try:
-            preferences_file = os.path.join(self.main_path, "user_preferences.json")
-            old_preferences_file = os.path.join(self.main_path, "shader_preferences.json")
-            
-            exists = os.path.exists(preferences_file) or os.path.exists(old_preferences_file)
-            
-            if exists:
-                # Also load and return a summary
-                result = await self.load_shader_preferences()
-                if result["status"] == "success" and result["preferences"]:
-                    shader_count = len(result["selected_shaders"])
-                    return {
-                        "status": "success",
-                        "has_preferences": True,
-                        "shader_count": shader_count,
-                        "last_updated": result["preferences"].get("last_updated", 0)
-                    }
-            
-            return {"status": "success", "has_preferences": False}
-            
-        except Exception as e:
-            decky.logger.error(f"Error checking shader preferences: {str(e)}")
-            return {"status": "error", "message": str(e)}
-
-    async def save_autohdr_preference(self, autohdr_enabled: bool) -> dict:
-        """Save user's AutoHDR preference"""
-        try:
-            preferences_file = os.path.join(self.main_path, "user_preferences.json")
-            
-            # Load existing preferences to preserve other settings
-            existing_preferences = {}
-            if os.path.exists(preferences_file):
-                try:
-                    with open(preferences_file, 'r') as f:
-                        existing_preferences = json.load(f)
-                except:
-                    pass  # If file is corrupted, start fresh
-            
-            # Update AutoHDR preference while preserving other settings
-            existing_preferences.update({
-                "autohdr_enabled": autohdr_enabled,
-                "last_updated": int(time.time()),
-                "version": "1.1"
-            })
-            
-            # Ensure selected_shaders exists if it doesn't
-            if "selected_shaders" not in existing_preferences:
-                existing_preferences["selected_shaders"] = []
-            
-            # Ensure directory exists
-            os.makedirs(self.main_path, exist_ok=True)
-            
-            with open(preferences_file, 'w') as f:
-                json.dump(existing_preferences, f, indent=2)
-            
-            decky.logger.info(f"Saved AutoHDR preference: {autohdr_enabled}")
-            return {"status": "success", "message": "AutoHDR preference saved successfully"}
-            
-        except Exception as e:
-            decky.logger.error(f"Error saving AutoHDR preference: {str(e)}")
-            return {"status": "error", "message": str(e)}
-
-    async def load_autohdr_preference(self) -> dict:
-        """Load user's AutoHDR preference"""
-        try:
-            preferences_file = os.path.join(self.main_path, "user_preferences.json")
-            
-            if not os.path.exists(preferences_file):
-                return {"status": "success", "autohdr_enabled": False, "message": "No preferences file found"}
-            
-            with open(preferences_file, 'r') as f:
-                preferences = json.load(f)
-            
-            autohdr_enabled = preferences.get("autohdr_enabled", False)
-            
-            decky.logger.info(f"Loaded AutoHDR preference: {autohdr_enabled}")
-            return {
-                "status": "success", 
-                "autohdr_enabled": autohdr_enabled
-            }
-            
-        except Exception as e:
-            decky.logger.error(f"Error loading AutoHDR preference: {str(e)}")
-            return {"status": "error", "message": str(e), "autohdr_enabled": False}
-
-    async def save_installed_configuration(self, with_addon: bool, version: str, with_autohdr: bool, selected_shaders: list) -> dict:
-        """Save the configuration that was actually installed"""
-        try:
-            installed_config = self._write_installed_configuration_sync(with_addon, version, with_autohdr, selected_shaders)
-            self._fix_deck_user_ownership(Path(self.main_path))
-            decky.logger.info(f"Saved installed configuration: {installed_config}")
-            return {"status": "success"}
-            
-        except Exception as e:
-            decky.logger.error(f"Error saving installed configuration: {str(e)}")
-            return {"status": "error", "message": str(e)}
 
     def _write_installed_configuration_sync(self, with_addon: bool, version: str, with_autohdr: bool, selected_shaders: list) -> dict:
         config_file = os.path.join(self.main_path, "installed_config.json")
@@ -1028,23 +886,6 @@ class Plugin:
             json.dump(installed_config, f, indent=2)
         return installed_config
 
-    async def load_installed_configuration(self) -> dict:
-        """Load the configuration that was actually installed"""
-        try:
-            config_file = os.path.join(self.main_path, "installed_config.json")
-            
-            if not os.path.exists(config_file):
-                return {"status": "success", "config": None}
-            
-            with open(config_file, 'r') as f:
-                config = json.load(f)
-            
-            return {"status": "success", "config": config}
-            
-        except Exception as e:
-            decky.logger.error(f"Error loading installed configuration: {str(e)}")
-            return {"status": "error", "message": str(e), "config": None}
-
     async def clear_installed_configuration(self) -> dict:
         """Clear the installed configuration (called on uninstall)"""
         try:
@@ -1058,116 +899,6 @@ class Plugin:
         except Exception as e:
             decky.logger.error(f"Error clearing installed configuration: {str(e)}")
             return {"status": "error", "message": str(e)}
-
-    async def get_available_shaders(self) -> dict:
-        """HDR-only fork: broad ReShade shader package selection is disabled."""
-        return {"status": "success", "shaders": [], "total_count": 0}
-
-    async def detect_steam_deck_model(self) -> dict:
-        """Detect Steam Deck model (OLED vs LCD) using board name"""
-        try:
-            decky.logger.info("Detecting Steam Deck model...")
-            
-            # First check if we can read system info at all
-            is_steam_deck = False
-            product_name = ""
-            
-            try:
-                with open('/sys/devices/virtual/dmi/id/product_name', 'r') as f:
-                    product_name = f.read().strip()
-                decky.logger.info(f"DMI Product name: '{product_name}'")
-                
-                # More flexible Steam Deck detection
-                if any(term in product_name.lower() for term in ["steam deck", "steamdeck", "jupiter", "galileo"]):
-                    is_steam_deck = True
-                    decky.logger.info("Confirmed this is a Steam Deck")
-                else:
-                    decky.logger.warning(f"Product name '{product_name}' doesn't indicate Steam Deck")
-            except (FileNotFoundError, PermissionError) as e:
-                decky.logger.warning(f"Could not read DMI product name: {e}")
-            
-            # If we can't confirm it's a Steam Deck through product name, 
-            # let's assume it is and try board detection anyway
-            if not is_steam_deck:
-                decky.logger.info("Could not confirm Steam Deck via product name, proceeding with board detection")
-            
-            # Check board name - most reliable method for Steam Deck OLED vs LCD
-            board_name = ""
-            try:
-                with open('/sys/devices/virtual/dmi/id/board_name', 'r') as f:
-                    board_name = f.read().strip()
-                decky.logger.info(f"DMI Board name: '{board_name}'")
-                
-                # Check for OLED (Galileo)
-                if "Galileo" in board_name:
-                    decky.logger.info("Detected Steam Deck OLED (Galileo)")
-                    return {
-                        "status": "success",
-                        "model": "OLED",
-                        "is_oled": True
-                    }
-                # Check for LCD (Jupiter)
-                elif "Jupiter" in board_name:
-                    decky.logger.info("Detected Steam Deck LCD (Jupiter)")
-                    return {
-                        "status": "success",
-                        "model": "LCD",
-                        "is_oled": False
-                    }
-                else:
-                    decky.logger.warning(f"Unknown board name: '{board_name}'")
-                    
-                    # If we confirmed it's a Steam Deck but unknown board, default to LCD
-                    if is_steam_deck:
-                        decky.logger.info("Confirmed Steam Deck but unknown board, defaulting to LCD")
-                        return {
-                            "status": "success",
-                            "model": "LCD",
-                            "is_oled": False
-                        }
-                    
-            except (FileNotFoundError, PermissionError) as e:
-                decky.logger.warning(f"Could not read DMI board name: {e}")
-            
-            # Additional fallback checks for Steam Deck detection
-            try:
-                # Check system manufacturer
-                with open('/sys/devices/virtual/dmi/id/sys_vendor', 'r') as f:
-                    vendor = f.read().strip()
-                decky.logger.info(f"System vendor: '{vendor}'")
-                
-                if "Valve" in vendor:
-                    is_steam_deck = True
-                    decky.logger.info("Confirmed Steam Deck via vendor")
-            except (FileNotFoundError, PermissionError) as e:
-                decky.logger.debug(f"Could not read sys_vendor: {e}")
-            
-            # Final decision logic
-            if is_steam_deck:
-                # We know it's a Steam Deck but couldn't determine the model
-                decky.logger.info("Confirmed Steam Deck, but model detection failed - defaulting to LCD")
-                return {
-                    "status": "success",
-                    "model": "LCD", 
-                    "is_oled": False
-                }
-            else:
-                # We couldn't confirm this is a Steam Deck
-                decky.logger.info("Could not confirm this is a Steam Deck")
-                return {
-                    "status": "success",
-                    "model": "Not Steam Deck",
-                    "is_oled": False
-                }
-                
-        except Exception as e:
-            decky.logger.error(f"Error detecting Steam Deck model: {str(e)}")
-            return {
-                "status": "error", 
-                "message": str(e),
-                "model": "Unknown",
-                "is_oled": False
-            }
 
     async def check_reshade_path(self) -> dict:
         path = Path(self.main_path)
@@ -1195,62 +926,6 @@ class Plugin:
             "is_addon": addon_marker.exists(),
             "version_info": version_info
         }
-
-    async def run_install_reshade(self, with_addon: bool = False, version: str = "latest", with_autohdr: bool = False, selected_shaders: list = None) -> dict:
-        try:
-            install_description = f"Installing ReShade {version}"
-            if with_addon:
-                install_description += " with addon support"
-            if with_autohdr:
-                install_description += " and AutoHDR components"
-            install_description += " with HDR-only payload"
-
-            decky.logger.info(install_description)
-            await asyncio.wait_for(
-                asyncio.to_thread(self._install_hdr_runtime_sync, version, with_addon, with_autohdr),
-                timeout=360,
-            )
-
-            return {"status": "success", "output": self._runtime_install_success_message(version, with_addon, with_autohdr)}
-        except asyncio.TimeoutError:
-            message = "HDR runtime install timed out after 6 minutes. Check network/download state, then try again."
-            decky.logger.error(message)
-            return {"status": "error", "message": message}
-        except Exception as e:
-            decky.logger.error(f"Install error: {str(e)}")
-            return {"status": "error", "message": str(e)}
-
-    def _install_hdr_runtime_sync(self, version: str, with_addon: bool, with_autohdr: bool) -> None:
-        asset_result = self._ensure_runtime_assets()
-        if not asset_result["ok"]:
-            raise RuntimeError(asset_result["message"])
-
-        self._install_hdr_runtime_python(version)
-
-        if with_addon:
-            marker_file = Path(self.main_path) / ".installed_addon"
-            normal_marker = Path(self.main_path) / ".installed"
-            if normal_marker.exists():
-                normal_marker.unlink()
-        else:
-            marker_file = Path(self.main_path) / ".installed"
-            addon_marker = Path(self.main_path) / ".installed_addon"
-            if addon_marker.exists():
-                addon_marker.unlink()
-
-        marker_file.touch()
-        self._write_installed_configuration_sync(with_addon, version, with_autohdr, ["autohdr"])
-        self._fix_deck_user_ownership(Path(self.main_path))
-        self.executable_cache.clear()
-
-    def _runtime_install_success_message(self, version: str, with_addon: bool, with_autohdr: bool) -> str:
-        version_display = f"ReShade {version.title()}"
-        if with_addon:
-            version_display += " (with Addon Support)"
-        if with_autohdr:
-            version_display += " and AutoHDR components"
-        version_display += " with HDR-only payload"
-        return f"{version_display} installed successfully!"
 
     async def run_uninstall_reshade(self) -> dict:
         try:
@@ -2170,10 +1845,6 @@ class Plugin:
                 runtime_result = await asyncio.to_thread(self._ensure_latest_reshade_runtime_sync)
                 if runtime_result.get("status") != "success":
                     return runtime_result
-            if action in {"install", "uninstall", "remove"}:
-                compat_result = self._clear_steam_compatdata(appid, logger)
-                if compat_result["status"] == "error":
-                    return {"status": "error", "message": compat_result["message"], "compatdata": compat_result}
             assets_dir = self._get_assets_dir()
             script_path = assets_dir / "reshade-game-manager.sh"
             
@@ -2341,6 +2012,12 @@ class Plugin:
             return {"status": "error", "message": str(e)}
 
     def _ensure_latest_reshade_runtime_sync(self) -> dict[str, Any]:
+        """Provision or refresh the shared HDR runtime automatically.
+
+        Per-game installs call this, so no manual 'install runtime' step is
+        needed. Also records the installed marker/configuration so status
+        checks agree that the runtime is present.
+        """
         try:
             asset_result = self._ensure_runtime_assets()
             if not asset_result["ok"]:
@@ -2355,6 +2032,11 @@ class Plugin:
                 self._install_hdr_runtime_python("latest")
             elif not latest64.exists() or latest64.stat().st_size < 1024 * 1024:
                 self._install_hdr_runtime_python("latest")
+            marker = Path(self.main_path) / ".installed_addon"
+            if not marker.exists():
+                marker.touch()
+                self._write_installed_configuration_sync(True, "latest", True, ["autohdr"])
+                self._fix_deck_user_ownership(Path(self.main_path))
             return {"status": "success"}
         except Exception as error:
             decky.logger.exception("Failed to refresh latest ReShade runtime")
@@ -2364,12 +2046,10 @@ class Plugin:
         """Install the best automatic non-RenoDX HDR fallback for a Steam game."""
         try:
             logger = setup_per_game_logger(appid)
-            compat_result = self._clear_steam_compatdata(appid, logger)
-            if compat_result["status"] == "error":
-                return {"status": "error", "message": compat_result["message"], "compatdata": compat_result}
-            reshade_check = await self.check_reshade_path()
-            if not reshade_check.get("exists"):
-                return {"status": "error", "message": "Install the HDR runtime first."}
+            # The shared runtime is provisioned automatically on first use.
+            runtime_result = await asyncio.to_thread(self._ensure_latest_reshade_runtime_sync)
+            if runtime_result.get("status") != "success":
+                return {"status": "error", "message": f"Could not prepare the shared HDR runtime: {runtime_result.get('message')}"}
 
             exe_dir = self._resolve_game_exe_dir(appid, selected_executable_path)
             api = dll_override
@@ -2476,7 +2156,7 @@ class Plugin:
 
             resolved_game_path = game_path
             if not resolved_game_path or not os.path.exists(resolved_game_path):
-                resolved_game_path = await self._resolve_game_executable_for_recommendation(appid, logger)
+                resolved_game_path = await self._resolve_game_executable_for_recommendation(appid, logger, context)
             special_k_override = self.persistent_cache.get(f"specialk_verified_{appid}", expiry_days=3650)
             if isinstance(special_k_override, bool):
                 context["special_k_verified"] = special_k_override
@@ -2571,12 +2251,21 @@ class Plugin:
             if logger:
                 logger.info("PCGamingWiki API fallback unavailable for AppID %s: %s", appid, error)
 
-    async def _resolve_game_executable_for_recommendation(self, appid: str, logger=None) -> str:
+    async def _resolve_game_executable_for_recommendation(self, appid: str, logger=None, context: dict[str, Any] | None = None) -> str:
         try:
             detection = await self.find_game_executable_path(appid)
+            if detection.get("linux_game_warning") and context is not None:
+                context["linux_build_warning"] = detection.get("linux_message", "") or (
+                    "Native Linux build detected. Force Proton in the game's Steam compatibility settings, launch once, then retry."
+                )
             steam_result = detection.get("steam_logs_result", {}) if detection.get("status") == "success" else {}
             enhanced_result = detection.get("enhanced_detection_result", {}) if detection.get("status") == "success" else {}
-            exe_path = steam_result.get("executable_path") or enhanced_result.get("executable_path") or ""
+            exe_path = (
+                detection.get("executable_path")
+                or steam_result.get("executable_path")
+                or enhanced_result.get("executable_path")
+                or ""
+            )
             if exe_path and os.path.exists(exe_path):
                 if logger:
                     logger.info(f"Resolved executable internally for recommendation: {exe_path}")
@@ -2818,16 +2507,12 @@ class Plugin:
         path = found[0]
         return {"path": str(path), "log": path.read_text(encoding="utf-8", errors="ignore")[-180000:]}
 
-    async def execute_setup_flow(self, appid: str, title: str, exe_path: str = "", skip_current: bool = False, clear_compatdata: bool = True) -> dict:
+    async def execute_setup_flow(self, appid: str, title: str, exe_path: str = "", skip_current: bool = False) -> dict:
         """Execute the automated setup flow based on the decision tree."""
         async with self._install_lock:
             try:
                 logger = setup_per_game_logger(appid)
                 logger.info(f"Starting automated setup for {title} (skip_current={skip_current})")
-                if clear_compatdata:
-                    compat_result = self._clear_steam_compatdata(appid, logger)
-                    if compat_result["status"] == "error":
-                        return {"status": "error", "message": compat_result["message"], "compatdata": compat_result}
 
                 # 1. Get Recommendations
                 rec_result = await self.get_hdr_recommendation(appid, title, exe_path)
@@ -2870,10 +2555,15 @@ class Plugin:
                         if not gate["available"]:
                             logger.error("Special K blocked by compatibility gate: %s", gate["reason"])
                             continue
+                        if not exe_path or not os.path.exists(exe_path):
+                            exe_path = await self._resolve_game_executable_for_recommendation(appid, logger)
+                        if not exe_path or not os.path.exists(exe_path):
+                            logger.error("Special K skipped: game executable could not be resolved.")
+                            continue
                         await self._ensure_special_k_bin()
-                        api_info = await self._detect_api_with_cache(exe_path, logger) if exe_path and os.path.exists(exe_path) else {}
+                        api_info = await self._detect_api_with_cache(exe_path, logger)
                         arch = str(api_info.get("architecture", "64") or "64")
-                        exe_dir = self._compat_specialk_install_dir(appid, Path(exe_path).parent) if exe_path else Path()
+                        exe_dir = self._compat_specialk_install_dir(appid, self._resolve_game_exe_dir(appid, exe_path))
                         sk_dll = self._specialk_dll_for_game(appid, context, str(api_info.get("injection_dll") or api_info.get("api") or "dxgi"))
                         specialk_result = self._install_specialk_for_game(exe_dir, sk_dll, arch, appid)
                         if specialk_result.get("status") != "success":
@@ -2963,8 +2653,7 @@ class Plugin:
             }
 
         if method == "recommended":
-            # run_surgical_uninstall above already cleared compatdata.
-            result = await self.execute_setup_flow(appid, title, exe_path, False, clear_compatdata=False)
+            result = await self.execute_setup_flow(appid, title, exe_path, False)
             result["uninstall"] = uninstall_result
             return result
 
@@ -2980,7 +2669,7 @@ class Plugin:
             gate = self._specialk_local_install_gate(appid)
             if not gate["available"]:
                 return {"status": "error", "method": "special_k", "message": gate["reason"], "uninstall": uninstall_result, "gate": gate}
-            result = await self.force_special_k_setup(appid, title, exe_path, clear_compatdata=False)
+            result = await self.force_special_k_setup(appid, title, exe_path)
             result["uninstall"] = uninstall_result
             return result
 
@@ -3002,16 +2691,12 @@ class Plugin:
 
         return {"status": "error", "message": f"Unhandled HDR method: {method}", "uninstall": uninstall_result}
 
-    async def force_special_k_setup(self, appid: str, title: str, exe_path: str = "", clear_compatdata: bool = True) -> dict:
+    async def force_special_k_setup(self, appid: str, title: str, exe_path: str = "") -> dict:
         """Install Special K even when a higher-priority RenoDX/Luma recommendation exists."""
         async with self._install_lock:
             try:
                 logger = setup_per_game_logger(appid)
                 logger.info(f"User requested Special K override for {title}")
-                if clear_compatdata:
-                    compat_result = self._clear_steam_compatdata(appid, logger)
-                    if compat_result["status"] == "error":
-                        return {"status": "error", "message": compat_result["message"], "compatdata": compat_result}
                 if not exe_path or not os.path.exists(exe_path):
                     return {"status": "error", "message": "Game executable path was not resolved. Refresh the game state and try again."}
 
@@ -3021,7 +2706,7 @@ class Plugin:
 
                 rec_result = await self.get_hdr_recommendation(appid, title, exe_path)
                 context = rec_result.get("context", {}) if rec_result.get("status") == "success" else {}
-                exe_dir = self._compat_specialk_install_dir(appid, Path(exe_path).parent)
+                exe_dir = self._compat_specialk_install_dir(appid, self._resolve_game_exe_dir(appid, exe_path))
                 gate = self._specialk_local_install_gate(appid)
                 if not gate["available"]:
                     return {"status": "error", "message": gate["reason"], "gate": gate}
@@ -3076,7 +2761,7 @@ class Plugin:
             wrapper = Path(decky.DECKY_PLUGIN_DIR) / "assets" / "specialk-delayed-launch.sh"
             launch_opts = f'STEAM_COMPAT_DATA_PATH="{compat_path}" PROTON_LOG=1 PROTON_ENABLE_HDR=1 DXVK_HDR=1 ENABLE_HDR_WSI=1 ENABLE_GAMESCOPE_WSI=1 bash "{wrapper}" "{appid}" "{delay}" "{prefix_injector}" %command%'
             await self._set_steam_launch_options(appid, launch_opts)
-            exe_dir = Path(exe_path).parent
+            exe_dir = self._resolve_game_exe_dir(appid, exe_path)
             self._write_game_hdr_marker(exe_dir, appid, "specialk-delayed", "global", "64", {"specialk_prefix": str(sk_prefix_dir), "delay": delay})
             self.manifest_manager.write_manifest(appid, {
                 "appid": appid,
@@ -3149,13 +2834,18 @@ class Plugin:
         Commander, and records the marker/manifest so status checks and
         Remove HDR treat both identically.
         """
+        resolution_context: dict[str, Any] = {}
         if not exe_path or not os.path.exists(exe_path):
-            exe_path = await self._resolve_game_executable_for_recommendation(appid, logger)
+            exe_path = await self._resolve_game_executable_for_recommendation(appid, logger, resolution_context)
         if not exe_path or not os.path.exists(exe_path):
+            message = resolution_context.get("linux_build_warning") or (
+                "Could not find the game's Windows executable. Launch the game once through Steam (so its "
+                "real process is logged), then retry. If the game runs natively on Linux, force Proton first."
+            )
             return {
                 "status": "error",
                 "method": "renodx",
-                "message": "Could not resolve the game executable for RenoDX install.",
+                "message": message,
                 "match": mod,
             }
 
@@ -3578,31 +3268,41 @@ class Plugin:
             return {"status": "error", "message": str(e)}
 
     async def run_surgical_uninstall(self, appid: str, exe_path: str = "") -> dict:
-        """Remove HDR using the manifest system."""
+        """Remove HDR using the manifest system.
+
+        The Proton prefix (compatdata) is intentionally left alone: it can hold
+        local save games and settings. Prefix files the plugin itself installed
+        are removed through the manifest, and reset_game_proton_prefix exists
+        as an explicit repair action.
+        """
         try:
             logger = setup_per_game_logger(appid)
             success, message = self.manifest_manager.remove_hdr(appid, logger)
             fallback = self._cleanup_hdr_files_without_manifest(appid, exe_path, logger)
             launch_result = self._clear_hdr_launch_options_sync(appid)
-            compat_result = self._clear_steam_compatdata(appid, logger)
             self._reset_game_cached_state(appid)
             status_after = await self.get_game_hdr_status(appid, exe_path)
-            compat_message = compat_result.get("message", "")
             launch_message = launch_result.get("message", "")
-            if success and fallback["status"] != "error":
-                return {"status": "success", "message": f"{message} {fallback.get('message', '')} {launch_message} {compat_message}".strip(), **fallback, "launch_options": launch_result, "compatdata": compat_result, "status_after": status_after}
-            if not success and fallback["status"] == "success":
-                return {**fallback, "message": f"{fallback.get('message', '')} {launch_message} {compat_message}".strip(), "launch_options": launch_result, "compatdata": compat_result, "status_after": status_after}
-            if compat_result.get("status") in {"success", "noop"} and fallback["status"] != "error":
-                return {
-                    **fallback,
-                    "status": "success",
-                    "message": f"{message} {fallback.get('message', '')} {launch_message} {compat_message} Cached state reset.".strip(),
-                    "launch_options": launch_result,
-                    "compatdata": compat_result,
-                    "status_after": status_after,
-                }
-            return {"status": "error", "message": f"{message} {fallback.get('message', '')} {launch_message} {compat_message}".strip(), **fallback, "launch_options": launch_result, "compatdata": compat_result, "status_after": status_after}
+            combined = f"{message if success else ''} {fallback.get('message', '')} {launch_message}".strip()
+            if fallback["status"] == "error":
+                return {**fallback, "status": "error", "message": f"{message} {fallback.get('message', '')} {launch_message}".strip(), "launch_options": launch_result, "status_after": status_after}
+            if not success and fallback["status"] == "noop":
+                combined = f"{fallback.get('message', '')} {launch_message} Cached state reset.".strip()
+            return {**fallback, "status": "success", "message": combined, "launch_options": launch_result, "status_after": status_after}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+
+    async def reset_game_proton_prefix(self, appid: str) -> dict:
+        """Explicitly delete the game's Proton prefix (compatdata).
+
+        Destructive: wipes Wine state and any non-cloud save data stored in the
+        prefix. Only offered as a manual repair action, never done implicitly.
+        """
+        try:
+            logger = setup_per_game_logger(appid)
+            result = self._clear_steam_compatdata(appid, logger)
+            ok = result.get("status") in {"success", "noop"}
+            return {"status": "success" if ok else "error", "message": result.get("message", ""), "removed": result.get("removed", [])}
         except Exception as e:
             return {"status": "error", "message": str(e)}
 
@@ -3817,6 +3517,8 @@ class Plugin:
                 success, message = self.installer.verify_special_k(game_dir)
             elif method == "reshade":
                 success, message = self.installer.verify_reshade(game_dir)
+            elif method == "renodx":
+                success, message = self._verify_renodx_install(manifest, Path(game_dir))
             else:
                 return {"status": "success", "message": f"Verification not implemented for {method}."}
                 
@@ -3829,6 +3531,38 @@ class Plugin:
                 return {"status": "error", "message": message}
         except Exception as e:
             return {"status": "error", "message": str(e)}
+
+    def _verify_renodx_install(self, manifest: dict[str, Any], game_dir: Path) -> tuple[bool, str]:
+        """Check a RenoDX install: addon file, ReShade host DLL, and host config."""
+        addons = [
+            Path(path) for path in manifest.get("installed_files", [])
+            if str(path).lower().endswith((".addon64", ".addon32")) and "display_commander" not in str(path).lower()
+        ]
+        search_dirs = {game_dir}
+        for addon in addons:
+            search_dirs.add(addon.parent)
+        if not addons:
+            addons = [path for directory in search_dirs for path in directory.glob("renodx*.addon*")]
+        missing_addons = [addon for addon in addons if not addon.exists()]
+        if not addons or missing_addons:
+            return False, "RenoDX addon file is missing from the game directory. Reinstall the RenoDX method."
+
+        host_dlls = ["dxgi.dll", "d3d11.dll", "d3d12.dll", "d3d9.dll", "dinput8.dll", "ddraw.dll", "opengl32.dll"]
+        host_found = any((directory / dll).exists() for directory in search_dirs for dll in host_dlls)
+        if not host_found:
+            return False, "ReShade host DLL is missing, so the RenoDX addon cannot load. Reinstall the RenoDX method."
+        ini_found = any((directory / "ReShade.ini").exists() for directory in search_dirs)
+        if not ini_found:
+            return False, "ReShade.ini is missing next to the RenoDX addon. Reinstall the RenoDX method."
+
+        for directory in search_dirs:
+            for log_name in ["ReShade.log", "dxgi.log", "d3d11.log", "d3d12.log"]:
+                log_path = directory / log_name
+                if log_path.exists():
+                    content = log_path.read_text(encoding="utf-8", errors="ignore")[:8192]
+                    if "addon" in content.lower() or "renodx" in content.lower():
+                        return True, f"RenoDX verified: host and addon files present, {log_name} shows addon activity."
+        return True, "RenoDX files are installed correctly. Launch the game once, then press Home/POS1 to open the ReShade overlay and confirm the RenoDX tab appears."
 
     async def get_game_hdr_status(self, appid: str, selected_executable_path: str = "") -> dict:
         try:
@@ -3894,45 +3628,10 @@ class Plugin:
                 dirs.append(path)
         return dirs
 
-    async def repair_specialk_hdr_widget(self, appid: str, dll_override: str = "auto", selected_executable_path: str = "") -> dict:
-        """Reset Special K UI/widget state and re-apply HDR defaults for the selected game."""
-        try:
-            exe_dir = self._resolve_game_exe_dir(appid, selected_executable_path)
-            api = dll_override
-            arch = "64"
-            detected = await self._detect_api_for_path(str(exe_dir))
-            if detected.get("status") == "success":
-                arch = str(detected.get("architecture") or "64")
-                if api == "auto":
-                    api = str(detected.get("api") or "dxgi")
-            elif api == "auto":
-                api = "dxgi"
-
-            exe_dir = self._compat_specialk_install_dir(appid, exe_dir)
-            dll = self._specialk_dll_for_game(appid, {"injection_dll": api}, api)
-            result = self._install_specialk_for_game(exe_dir, dll, arch, appid)
-            if result.get("status") != "success":
-                return result
-
-            backed_up = self._reset_specialk_imgui_state(exe_dir)
-            for ini in [exe_dir / "SpecialK.ini", exe_dir / f"{dll}.ini"]:
-                self._write_specialk_hdr_ini(ini, repair_widget=True)
-            self._fix_deck_user_ownership(exe_dir)
-            return {
-                "status": "success",
-                "method": "specialk-widget-repair",
-                "output": (
-                    f"Repaired Special K HDR widget state for {dll.upper()} ({arch}-bit).\n"
-                    f"Backed up {backed_up} Special K UI state file(s). Relaunch the game, open the main Special K overlay, then try HDR Setup again."
-                ),
-            }
-        except Exception as e:
-            decky.logger.exception("Special K HDR widget repair failed")
-            return {"status": "error", "message": str(e)}
-
     def _resolve_game_exe_dir(self, appid: str, selected_executable_path: str = "") -> Path:
         if selected_executable_path and os.path.exists(selected_executable_path):
-            return Path(selected_executable_path).parent
+            preferred = self._prefer_unreal_shipping_exe(selected_executable_path)
+            return Path(preferred).parent
         return Path(self._find_game_path(appid))
 
     def _write_game_hdr_marker(self, exe_dir: Path, appid: str, method: str, dll: str, arch: str, extra: dict[str, Any] | None = None) -> None:
@@ -4240,7 +3939,7 @@ class Plugin:
         self._write_specialk_hdr_ini(exe_dir / f"{dll}.ini", appid=appid)
         return {"status": "success", "dll": dll}
 
-    def _write_specialk_hdr_ini(self, ini: Path, repair_widget: bool = False, appid: str = "") -> None:
+    def _write_specialk_hdr_ini(self, ini: Path, appid: str = "") -> None:
         text = ini.read_text(encoding="utf-8", errors="ignore") if ini.exists() else ""
         updates = {
             "SpecialK.System": {
@@ -4261,16 +3960,6 @@ class Plugin:
                 "Preset": "0",
             },
         }
-        if repair_widget:
-            updates["Render.FrameRate"] = {
-                "SleeplessRenderThread": "false",
-                "SleeplessWindowThread": "false",
-            }
-            updates["ImGui.Render"] = {
-                "Scale": "1.0",
-                "UseHardwareCursor": "false",
-            }
-            
         if hasattr(self, "compat_db") and str(appid) in self.compat_db.get("games", {}):
             game_compat = self.compat_db["games"][str(appid)]
             sk_compat = game_compat.get("tools", {}).get("special_k", {})
@@ -4295,28 +3984,6 @@ class Plugin:
             text = self._upsert_ini_section_values(text, section, values)
         ini.write_text(text, encoding="utf-8")
         ini.chmod(0o666)
-
-    def _reset_specialk_imgui_state(self, exe_dir: Path) -> int:
-        backed_up = 0
-        patterns = [
-            "imgui.ini",
-            "imgui*.ini",
-            "SpecialK*.log",
-            "logs/SpecialK*.log",
-            "logs/imgui*.ini",
-        ]
-        timestamp = int(time.time())
-        for pattern in patterns:
-            for path in exe_dir.glob(pattern):
-                if not path.is_file():
-                    continue
-                backup = path.with_name(f"{path.name}.decky-renodx-backup-{timestamp}")
-                try:
-                    path.rename(backup)
-                    backed_up += 1
-                except OSError as error:
-                    decky.logger.warning("Could not back up Special K UI state file %s: %s", path, error)
-        return backed_up
 
     def _upsert_ini_section_values(self, text: str, section: str, values: dict[str, str]) -> str:
         if not text.strip():

@@ -550,18 +550,6 @@ class BackendMockTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("[Steam.Log]", specialk_ini)
         self.assertFalse((game_dir / "dxgi.ini").exists())
 
-    async def test_specialk_widget_repair_backs_up_imgui_state(self):
-        plugin = self.module.Plugin()
-        game_dir = self.home / "game"
-        game_dir.mkdir()
-        (game_dir / "imgui.ini").write_text("old-window-state", encoding="utf-8")
-
-        backed_up = plugin._reset_specialk_imgui_state(game_dir)
-
-        self.assertEqual(backed_up, 1)
-        self.assertFalse((game_dir / "imgui.ini").exists())
-        self.assertTrue(list(game_dir.glob("imgui.ini.decky-renodx-backup-*")))
-
     async def test_game_hdr_status_reports_installed_and_update_needed(self):
         plugin = self.module.Plugin()
         plugin._current_version = lambda: "0.2.0"
@@ -656,7 +644,7 @@ class BackendMockTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(special_k_rec["score"], 90)
         self.assertTrue(any("AutoHDR script provided" in note for note in special_k_rec["notes"]))
 
-    async def test_decision_tree_generic_engine_flags_renodx_experimental_and_scores_90(self):
+    async def test_decision_tree_generic_engine_flags_renodx_experimental(self):
         recommendations = DecisionTree([{"name": "Generic Game", "match_type": "generic_engine", "experimental": True, "engine_bucket": "unreal"}]).evaluate({
             "appid": "123",
             "title": "Generic Game",
@@ -673,10 +661,46 @@ class BackendMockTest(unittest.IsolatedAsyncioTestCase):
         })
 
         renodx_rec = next(r for r in recommendations if r["method"] == "renodx")
-        self.assertEqual(renodx_rec["score"], 90)
+        self.assertEqual(renodx_rec["score"], 80)
         self.assertEqual(renodx_rec["confidence"], "medium")
         self.assertIn("Experimental generic RenoDX engine addon", renodx_rec["reason"])
         self.assertEqual(renodx_rec["renodx_match_type"], "generic_engine")
+
+    async def test_decision_tree_specific_renodx_match_outranks_native_hdr(self):
+        recommendations = DecisionTree().evaluate({
+            "appid": "123",
+            "title": "Lies of P",
+            "graphics_api": "dx12",
+            "anti_cheat": [],
+            "is_multiplayer": False,
+            "native_hdr": "true",
+            "special_k_wiki": False,
+            "renodx_flow_enabled": True,
+            "renodx_supported": True,
+            "renodx_match": {"match_type": "specific", "name": "Lies of P", "status": "working", "addon_url": "https://example.invalid/renodx-liesofp.addon64"},
+        })
+
+        methods = [rec["method"] for rec in recommendations]
+        self.assertEqual(methods[0], "renodx")
+        self.assertIn("native_hdr", methods)
+
+    async def test_decision_tree_native_hdr_outranks_experimental_generic_renodx(self):
+        recommendations = DecisionTree().evaluate({
+            "appid": "123",
+            "title": "Some Native HDR Game",
+            "graphics_api": "dx12",
+            "engine": "Unreal Engine 5",
+            "anti_cheat": [],
+            "is_multiplayer": False,
+            "native_hdr": "true",
+            "special_k_wiki": False,
+            "renodx_flow_enabled": True,
+            "renodx_supported": True,
+            "renodx_experimental": True,
+            "renodx_match": {"match_type": "generic_engine", "name": "Generic", "status": "experimental", "addon_url": "https://example.invalid/renodx-unrealengine.addon64"},
+        })
+
+        self.assertEqual(recommendations[0]["method"], "native_hdr")
 
     async def test_renodx_match_does_not_prefix_match_sequels(self):
         plugin = self.module.Plugin()
@@ -1242,7 +1266,7 @@ class BackendMockTest(unittest.IsolatedAsyncioTestCase):
         addon.write_text("addon", encoding="utf-8")
         called = {}
 
-        async def fake_resolve(_appid, _logger=None):
+        async def fake_resolve(_appid, _logger=None, _context=None):
             return str(exe)
         async def fake_manage(_appid, _action, _api, _vulkan, selected_executable_path):
             called["selected_executable_path"] = selected_executable_path
@@ -1270,6 +1294,55 @@ class BackendMockTest(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(plugin._strip_hdr_launch_tokens(options), "%command%")
+
+    async def test_prefer_unreal_shipping_exe_over_root_launcher(self):
+        plugin = self.module.Plugin()
+        game_root = self.home / "LiesofP"
+        launcher = game_root / "LiesofP.exe"
+        shipping_dir = game_root / "LiesofP" / "Binaries" / "Win64"
+        shipping_dir.mkdir(parents=True)
+        launcher.write_bytes(b"MZ" * 256)
+        shipping = shipping_dir / "LOP-Win64-Shipping.exe"
+        shipping.write_bytes(b"MZ" * 4096)
+        engine_dir = game_root / "Engine" / "Binaries" / "Win64"
+        engine_dir.mkdir(parents=True)
+        (engine_dir / "Fake-Win64-Shipping.exe").write_bytes(b"MZ" * 8192)
+
+        self.assertEqual(plugin._prefer_unreal_shipping_exe(str(launcher)), str(shipping))
+        # A shipping exe stays as-is, and non-UE layouts are untouched.
+        self.assertEqual(plugin._prefer_unreal_shipping_exe(str(shipping)), str(shipping))
+        flat_dir = self.home / "FlatGame"
+        flat_dir.mkdir()
+        flat_exe = flat_dir / "Game.exe"
+        flat_exe.write_bytes(b"MZ")
+        self.assertEqual(plugin._prefer_unreal_shipping_exe(str(flat_exe)), str(flat_exe))
+
+    async def test_enhanced_detection_proceeds_when_windows_build_exists_beside_linux_files(self):
+        plugin = self.module.Plugin()
+        steam_root = self.home / ".steam" / "steam"
+        steamapps = steam_root / "steamapps"
+        steamapps.mkdir(parents=True)
+        (steamapps / "libraryfolders.vdf").write_text(
+            '"libraryfolders"\n{\n\t"0"\n\t{\n\t\t"path"\t\t"' + str(steam_root).replace("\\", "\\\\") + '"\n\t}\n}\n',
+            encoding="utf-8",
+        )
+        # Manifest mentions linux (as Valheim's does) but a Windows exe exists
+        # because the user forced Proton.
+        (steamapps / "appmanifest_892970.acf").write_text(
+            '"AppState"\n{\n\t"appid"\t\t"892970"\n\t"name"\t\t"Valheim"\n\t"installdir"\t\t"Valheim"\n\t"platform"\t\t"linux"\n}\n',
+            encoding="utf-8",
+        )
+        game_root = steamapps / "common" / "Valheim"
+        game_root.mkdir(parents=True)
+        (game_root / "valheim.exe").write_bytes(b"MZ" * 4096)
+        (game_root / "valheim.x86_64").write_bytes(b"\x7fELF")
+        (game_root / "UnityPlayer.dll").write_bytes(b"MZ")
+        (game_root / "steam_appid.txt").write_text("892970", encoding="utf-8")
+
+        result = await plugin.find_game_executable_enhanced("892970")
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["filename"], "valheim.exe")
 
     async def test_enhanced_detection_skips_engine_dir_and_prefers_shipping_exe(self):
         plugin = self.module.Plugin()
@@ -1480,7 +1553,7 @@ class BackendMockTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["status"], "error")
         self.assertIn("invalid appid", result["message"])
 
-    async def test_uninstall_succeeds_when_only_compatdata_or_cache_is_removed(self):
+    async def test_uninstall_keeps_proton_prefix_but_clears_cache(self):
         plugin = self.module.Plugin()
         compat = self.home / ".local" / "share" / "Steam" / "steamapps" / "compatdata" / "123"
         (compat / "pfx").mkdir(parents=True)
@@ -1489,8 +1562,22 @@ class BackendMockTest(unittest.IsolatedAsyncioTestCase):
         result = await plugin.run_surgical_uninstall("123", "")
 
         self.assertEqual(result["status"], "success")
-        self.assertFalse(compat.exists())
+        # The Proton prefix can hold save games; uninstall must not delete it.
+        self.assertTrue(compat.exists())
         self.assertEqual(plugin.persistent_cache.data, {})
+
+    async def test_reset_game_proton_prefix_is_explicit_and_scoped(self):
+        plugin = self.module.Plugin()
+        compat = self.home / ".local" / "share" / "Steam" / "steamapps" / "compatdata" / "123"
+        other = self.home / ".local" / "share" / "Steam" / "steamapps" / "compatdata" / "456"
+        (compat / "pfx").mkdir(parents=True)
+        (other / "pfx").mkdir(parents=True)
+
+        result = await plugin.reset_game_proton_prefix("123")
+
+        self.assertEqual(result["status"], "success")
+        self.assertFalse(compat.exists())
+        self.assertTrue(other.exists())
 
     async def test_fallback_cleanup_finds_nested_renodx_install_without_selected_exe(self):
         plugin = self.module.Plugin()

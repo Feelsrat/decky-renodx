@@ -54,17 +54,19 @@ class DecisionTree:
                 "notes": ["Even if HDR tools inject successfully, the final output will be crushed to SDR by the system."]
             }]
 
-        # 2. Native HDR (Score 100)
+        # 2. Native HDR (Score 85)
         if native_hdr in ["true", "limited", "good"]:
             recommendations.append({
                 "method": "native_hdr",
-                "score": 100,
+                "score": 85,
                 "reason": "Game has native HDR support.",
                 "confidence": "high",
                 "notes": [f"PCGamingWiki status: {native_hdr}"]
             })
 
-        # 3. RenoDX / Luma (Score 90)
+        # 3. RenoDX / Luma. A real per-game mod outranks native HDR (score 95):
+        # RenoDX mods exist precisely because they beat the game's own HDR.
+        # Experimental generic engine addons stay below native HDR (score 80).
         renodx_flow_enabled = context.get("renodx_flow_enabled", False)
         if renodx_flow_enabled and (renodx_supported or luma_supported or self._is_renodx_supported(title, appid)):
             match = context.get("renodx_match", {}) or {}
@@ -73,7 +75,7 @@ class DecisionTree:
             needs_manual_download = bool(match.get("manual_url")) and not bool(match.get("addon_url"))
             recommendations.append({
                 "method": "renodx",
-                "score": 90,
+                "score": 80 if is_experimental else 95,
                 "reason": (
                     "Experimental generic RenoDX engine addon is available for this engine."
                     if is_experimental

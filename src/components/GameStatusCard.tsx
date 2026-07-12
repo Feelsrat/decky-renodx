@@ -72,6 +72,22 @@ export const GameStatusCard = ({ loading, recommendation, context, hdrStatus, hd
           </div>
         )}
 
+        {context?.linux_build_warning ? (
+          <div style={{
+            marginTop: "8px",
+            padding: "8px",
+            backgroundColor: "rgba(230, 126, 34, 0.14)",
+            borderRadius: "4px",
+            border: "1px solid rgba(230,126,34,0.55)",
+            fontSize: "0.78em",
+            color: "#f5b041",
+            lineHeight: 1.3,
+          }}>
+            <div style={{ fontWeight: 700, marginBottom: "2px" }}>Native Linux build detected</div>
+            {context.linux_build_warning}
+          </div>
+        ) : null}
+
         {context?.anti_cheat?.length ? (
           <div style={{
             marginTop: "8px",

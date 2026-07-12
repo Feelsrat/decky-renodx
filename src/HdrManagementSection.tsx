@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import {
+  ConfirmModal,
   Navigation,
   PanelSection,
   PanelSectionRow,
@@ -33,6 +34,7 @@ const getGameHdrStatus = callable<[string, string], any>("get_game_hdr_status");
 const openRenoDxSearch = callable<[string], any>("open_renodx_search");
 const importRenoDxForGame = callable<[string, string, string], any>("import_renodx_for_game");
 const findRecentRenoDxDownloads = callable<[], any>("find_recent_renodx_downloads");
+const resetGameProtonPrefix = callable<[string], any>("reset_game_proton_prefix");
 
 async function getSteamLaunchOptions(appid: string): Promise<string> {
   const apps = (SteamClient.Apps as any);
@@ -82,6 +84,7 @@ interface GameContext {
   architecture?: string;
   injection_dll?: string;
   engine?: string;
+  linux_build_warning?: string;
   anti_cheat: string[];
   is_multiplayer: boolean;
   native_hdr: string;
@@ -160,7 +163,10 @@ const HdrManagementSection = () => {
       const detection = await findGameExecutablePath(selectedGame.appid);
       let resolvedExePath = "";
       if (detection.status === "success") {
-        resolvedExePath = detection.steam_logs_result?.executable_path || detection.enhanced_detection_result?.executable_path || "";
+        resolvedExePath = detection.executable_path
+          || detection.steam_logs_result?.executable_path
+          || detection.enhanced_detection_result?.executable_path
+          || "";
       }
       if (token !== refreshToken.current) return;
       setExePath(resolvedExePath);
@@ -206,7 +212,10 @@ const HdrManagementSection = () => {
       if (response.status === "success" && response.launch_options) {
         await setMergedHdrLaunchOptions(selectedGame.appid, response.launch_options);
       }
-      if (selectedMethod === "sdr" || selectedMethod === "native_hdr") {
+      // "Recommended" can resolve to sdr/native_hdr too — strip live launch
+      // options whenever the outcome is a no-injection method.
+      const resolvedMethod = response.method || selectedMethod;
+      if (["sdr", "native_hdr"].includes(selectedMethod) || ["sdr", "native_hdr"].includes(resolvedMethod)) {
         await removeHdrLaunchOptions(selectedGame.appid);
       }
       if (response.manual_download) {
@@ -302,6 +311,21 @@ const HdrManagementSection = () => {
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleResetPrefix = () => {
+    if (!selectedGame) return;
+    showModal(
+      <ConfirmModal
+        strTitle="Reset Proton Prefix?"
+        strDescription={`This deletes the Proton prefix (compatdata) for ${selectedGame.name}. Wine state is rebuilt on next launch, but any save games or settings the game stores inside the prefix (non-Steam-Cloud saves) are lost. Only use this if HDR refuses to engage after a clean reinstall.`}
+        strOKButtonText="Delete Prefix"
+        onOK={async () => {
+          const response = await resetGameProtonPrefix(selectedGame.appid);
+          toaster.toast({ title: "Proton Prefix", body: response.message || "Done." });
+        }}
+      />
+    );
   };
 
   const handleResetCaches = async () => {
@@ -528,6 +552,17 @@ const HdrManagementSection = () => {
                   description="Clears cached paths, API detection, and RenoDX data, then re-runs detection."
                 >
                   Reset Detection Caches
+                </ButtonItem>
+              </PanelSectionRow>
+
+              <PanelSectionRow>
+                <ButtonItem
+                  layout="below"
+                  onClick={handleResetPrefix}
+                  disabled={loading}
+                  description="Last-resort repair. Deletes the game's Proton prefix — non-cloud saves inside it are lost."
+                >
+                  Reset Proton Prefix
                 </ButtonItem>
               </PanelSectionRow>
             </>
