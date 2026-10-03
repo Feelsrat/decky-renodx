@@ -22,7 +22,7 @@ METHOD_LABELS = {
     "renodx": "RenoDX", "special_k": "Special K", "special_k_delayed": "Special K Delayed",
     "reshade": "ReShade AutoHDR", "native_hdr": "Native HDR", "sdr": "SDR",
 }
-METHOD_ALIASES = {"specialk": "special_k", "reshade_autohdr": "reshade", "reshade-hdr": "reshade"}
+METHOD_ALIASES = {"specialk": "special_k", "specialk-delayed": "special_k_delayed", "reshade_autohdr": "reshade", "reshade-hdr": "reshade"}
 IMPORT_EXTENSIONS = {".addon64", ".addon32", ".zip", ".7z", ".rar"}
 
 
@@ -222,7 +222,16 @@ class HdrService:
             result = self.uninstall(appid)
             if method == "native_hdr" and result["status"] == "success":
                 # No injection, but Proton/DXVK still need the HDR switches for the game's own HDR.
-                result["launch"], result["previous_launch"] = launch.spec(""), result.get("launch")
+                # A file-less record makes it removable and lets a later method replace the switches.
+                app = self._app(appid)
+                spec = launch.spec("")
+                self.store.put(appid, {
+                    "appid": app.appid, "title": app.name, "kind": app.kind, "buildid": app.buildid, "method": "native_hdr",
+                    "dll": "", "exe_path": "", "target_dir": "", "install_path": str(app.install_path),
+                    "plugin_version": self.version, "installed_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                    "launch": spec, "extra": {}, "created": [], "replaced": {}, "artifacts": [],
+                })
+                result["launch"], result["previous_launch"] = spec, result.get("launch")
                 result["message"] = (result.get("message", "") + " HDR launch switches applied; enable HDR in the game's settings.").strip()
             else:
                 result["previous_launch"], result["launch"] = result.get("launch"), None
@@ -288,7 +297,7 @@ class HdrService:
 
     def _install_plan(
         self, app: SteamApp, scan: detect.GameScan, ctx: dict[str, Any], plan: list[str], *,
-        explicit: bool, renodx_file: Path | None = None, renodx_mod: dict[str, Any] | None = None,
+        explicit: bool, renodx_file: Path | None = None, renodx_mod: dict[str, Any] | None = None, delay: int | None = None,
     ) -> dict[str, Any]:
         logger = log.game(app.appid)
         target = self._target(app, scan)
@@ -308,7 +317,7 @@ class HdrService:
         for method in plan:
             tx = transaction.Transaction(logger)
             try:
-                result = self._run_installer(method, tx, target, ctx, renodx_file, renodx_mod)
+                result = self._run_installer(method, tx, target, ctx, renodx_file, renodx_mod, delay)
             except ManualDownload as pending:
                 tx.rollback()
                 manual = pending.mod
@@ -385,18 +394,36 @@ class HdrService:
             return ""
 
     def repair(self, appid: str) -> dict[str, Any]:
-        """Reinstall the current method (after a game update, a Steam file check, or a plugin update)."""
+        """Reinstall the current method (after a game update, a Steam file check, or a plugin update).
+
+        Also migrates installs made by older plugin versions, reusing the installed RenoDX addon.
+        """
+        app = self._app(appid)
         record = self.store.get(appid)
-        if not record:
-            return _err("Nothing is installed for this game.")
-        method = record["method"]
-        source = Path(str(record.get("extra", {}).get("source_addon") or ""))
-        if method == "renodx" and source.is_file():
-            app = self._app(appid)
+        extra: dict[str, Any] = (record or {}).get("extra", {}) or {}
+        if record:
+            method = record["method"]
+            candidates = [extra.get("source_addon"), extra.get("addon")]
+        else:
+            legacy = state.find_legacy(self.paths, appid, app.install_path)
+            if not legacy:
+                return _err("Nothing is installed for this game.")
+            method = METHOD_ALIASES.get(str(legacy.get("method") or ""), str(legacy.get("method") or ""))
+            candidates = [str(path) for directory in legacy.get("markers", []) for path in sorted(Path(directory).glob("renodx*.addon*"))]
+        if method == "renodx":
+            source = next((Path(str(item)) for item in candidates if item and Path(str(item)).is_file()), None)
+            if source is not None:
+                # Copy it out first: reinstalling removes the copy in the game folder.
+                kept = Path(self._keep_addon_source(appid, source) or source)
+                scan = self._scan(app)
+                ctx = self._context(app, scan)
+                mod = extra.get("mod") or {"name": kept.name, "match_type": "manual"}
+                return self._install_plan(app, scan, ctx, ["renodx"], explicit=True, renodx_file=kept, renodx_mod=mod)
+        if method == "special_k_delayed" and extra.get("delay"):
             scan = self._scan(app)
-            ctx = self._context(app, scan)
-            mod = record.get("extra", {}).get("mod") or {"name": source.name, "match_type": "manual"}
-            return self._install_plan(app, scan, ctx, ["renodx"], explicit=True, renodx_file=source, renodx_mod=mod)
+            return self._install_plan(app, scan, self._context(app, scan), [method], explicit=True, delay=int(extra["delay"]))
+        if method not in {"renodx", "special_k", "special_k_delayed", "reshade", "native_hdr"}:
+            method = "recommended"
         return self.install(appid, method)
 
     def set_launch_keep(self, appid: str, keep: dict[str, Any]) -> dict[str, Any]:
@@ -414,7 +441,7 @@ class HdrService:
         return _ok(message="Saved.")
 
     def display_status(self) -> dict[str, Any]:
-        return _ok(**display.hdr_status(self.paths.user))
+        return _ok(**display.hdr_status(self.paths.user, self.paths.home))
 
     def _manual_info(self, mod: dict[str, Any]) -> dict[str, Any]:
         url = mod.get("manual_url") or next(iter(mod.get("page_links") or []), "")
@@ -425,7 +452,10 @@ class HdrService:
             "message": f"{mod.get('name', 'This RenoDX mod')} must be downloaded manually. Download it to ~/Downloads, then import it here.",
         }
 
-    def _run_installer(self, method: str, tx: transaction.Transaction, target: Target, ctx: dict[str, Any], renodx_file: Path | None, renodx_mod: dict[str, Any] | None) -> dict[str, Any]:
+    def _run_installer(
+        self, method: str, tx: transaction.Transaction, target: Target, ctx: dict[str, Any],
+        renodx_file: Path | None, renodx_mod: dict[str, Any] | None, delay: int | None = None,
+    ) -> dict[str, Any]:
         if method == "renodx":
             mod = renodx_mod or ctx.get("renodx_match")
             if not mod:
@@ -435,7 +465,7 @@ class HdrService:
         if method == "special_k":
             return installers.install_specialk(tx, target, self.runtime, self.compat)
         if method == "special_k_delayed":
-            return installers.install_specialk_delayed(tx, target, self.runtime, self.compat, self._wrapper())
+            return installers.install_specialk_delayed(tx, target, self.runtime, self.compat, self._wrapper(), delay)
         if method == "reshade":
             return installers.install_reshade(tx, target, self.runtime, self.compat)
         raise InstallError(f"Unhandled method {method}")
@@ -496,6 +526,8 @@ class HdrService:
         if not record:
             status = self.install_status(appid)
             return _err(status["message"] if status.get("legacy") else "Nothing is installed for this game.")
+        if record["method"] == "native_hdr":
+            return _ok(message="Native HDR only uses launch options; nothing is installed in the game folder.")
         missing = [path for path in record.get("created", []) if not os.path.lexists(path)]
         if missing:
             return _err(f"{len(missing)} installed file(s) are missing, e.g. {Path(missing[0]).name}. Reinstall to repair.", missing=missing[:10])

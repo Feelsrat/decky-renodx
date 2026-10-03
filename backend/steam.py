@@ -95,7 +95,7 @@ class SteamLibrary:
                     continue
                 entries = vdf.get(data, "shortcuts", default={}) or {}
                 for entry in entries.values():
-                    app = _shortcut_app(entry, roots[0]) if isinstance(entry, dict) else None
+                    app = _shortcut_app(entry, root) if isinstance(entry, dict) else None
                     if app and app.appid not in found:
                         found[app.appid] = app
         return sorted(found.values(), key=lambda app: app.name.lower())
@@ -190,6 +190,8 @@ def _shortcut_app(entry: dict, steam_root: Path) -> SteamApp | None:
         raw_id = binascii.crc32((raw_exe + name).encode("utf-8")) | 0x80000000
     appid = str(raw_id & 0xFFFFFFFF)
     exe = _strip_quotes(raw_exe)
+    if not exe.lower().endswith(".exe") or not Path(exe).is_absolute():
+        return None  # launchers and scripts (Lutris, flatpak run, …): nothing to install HDR next to
     start_dir = _strip_quotes(str(vdf.get(entry, "StartDir", default="") or ""))
     install = Path(start_dir) if start_dir else Path(exe).parent if exe else None
     if exe and install is not None and not _is_within(Path(exe), install):
@@ -200,7 +202,7 @@ def _shortcut_app(entry: dict, steam_root: Path) -> SteamApp | None:
         appid=appid, name=name, install_path=install,
         # Non-Steam games get their Proton prefix in the main Steam library.
         compatdata=steam_root / "steamapps" / "compatdata" / appid,
-        kind="shortcut", exe=exe if exe.lower().endswith(".exe") else "",
+        kind="shortcut", exe=exe,
         launch_options=str(vdf.get(entry, "LaunchOptions", default="") or ""),
     )
 

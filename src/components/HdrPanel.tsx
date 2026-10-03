@@ -33,6 +33,7 @@ const CHECK_STEPS: Record<string, string[]> = {
     "Launch the game and wait a few seconds for Special K to attach.",
     "Open Special K with Ctrl+Shift+Backspace and check its HDR section.",
   ],
+  native_hdr: ["Launch the game and turn on HDR in its own display or graphics settings."],
 };
 
 function reportUrl(state: GameState, version: string) {
@@ -144,6 +145,9 @@ export default function HdrPanel() {
 
   const applyLaunch = async (target: GameState, spec: LaunchSpec) => {
     const result = await updateLaunchOptions(gameRef(target), spec, []);
+    if (result.keep && (result.keep.args.length || result.keep.dlls.length || result.keep.env.length)) {
+      await api.setLaunchKeep(target.appid, result.keep).catch(() => undefined);
+    }
     toast("Launch options", result.ok ? "HDR launch options added." : result.message || "Could not update launch options.", result.ok ? 4000 : 12000);
     refresh(target.appid);
   };

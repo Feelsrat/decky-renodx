@@ -112,6 +112,10 @@ class ShortcutTests(ServiceCase):
         self.assertEqual(result["status"], "success", result)
         self.assertTrue((exe.parent / "dxgi.dll").exists())
 
+    def test_launcher_shortcuts_are_skipped(self):
+        self.fake.add_shortcut("Lutris Game", "/usr/bin/flatpak", "/home/deck")
+        self.assertEqual(self.service.list_games()["games"], [])
+
     def test_shortcut_without_stored_appid_uses_steams_crc(self):
         import binascii
         exe = make_pe(self.fake.root / "Old" / "Old.exe")
@@ -498,6 +502,57 @@ class RepairTests(ServiceCase):
         self.service.install("1000", "reshade")
         self.service.set_launch_keep("1000", {"args": ["-dx11"], "dlls": ["DXGI"], "env": []})
         self.assertEqual(self.service.store.get("1000")["launch"]["keep"], {"args": ["-dx11"], "dlls": ["dxgi"], "env": []})
+
+
+class RepairEdgeTests(ServiceCase):
+    def test_repair_migrates_legacy_renodx_reusing_its_addon(self):
+        _root, shipping = self.unreal_game()
+        exe_dir = shipping.parent
+        (exe_dir / ".decky-renodx-hdr.json").write_text(json.dumps({"method": "renodx", "dll": "dxgi"}))
+        make_pe(exe_dir / "dxgi.dll", marker=b"ReShade", size=4096)
+        (exe_dir / "renodx-oldmod.addon64").write_bytes(b"old imported mod")
+        self.downloads.clear()
+        result = self.service.repair("1000")
+        self.assertEqual(result["status"], "success", result)
+        self.assertEqual(self.downloads, [])
+        self.assertEqual((exe_dir / "renodx-oldmod.addon64").read_bytes(), b"old imported mod")
+        self.assertFalse(self.service.install_status("1000")["legacy"])
+
+    def test_repair_of_010_renodx_uses_installed_addon(self):
+        _root, shipping = self.unreal_game()
+        self.service.install("1000", "renodx")
+        record = self.service.store.get("1000")
+        record["extra"].pop("source_addon")
+        record["launch"]["env"]["ENABLE_HDR_WSI"] = "1"
+        self.service.store.put("1000", record)
+        self.downloads.clear()
+        result = self.service.repair("1000")
+        self.assertEqual(result["status"], "success", result)
+        self.assertEqual(self.downloads, [])
+        self.assertFalse(self.service.install_status("1000")["needs_repair"])
+
+    def test_repair_keeps_special_k_delay(self):
+        root = self.fake.add_game("3000", "Delayed", "Delayed")
+        make_pe(root / "Delayed.exe", imports=("d3d11.dll",))
+        self.fake.paths.plugin_dir.joinpath("compatibility.json").write_text(json.dumps({"games": {"3000": {"name": "Delayed", "tools": {"special_k": {
+            "automation": {"preferred_injection": "global_delayed"}}}}}}), encoding="utf-8")
+        self.service.compat.reload()
+        self.fake.compatdata("3000")
+        self.service.install("3000", "special_k_delayed")
+        self.service.set_specialk_delay("3000", 20)
+        result = self.service.repair("3000")
+        self.assertEqual(result["launch"]["wrapper"][3], "20")
+
+    def test_native_hdr_is_recorded_so_it_can_be_replaced_and_removed(self):
+        self.unreal_game()
+        native = self.service.install("1000", "native_hdr")
+        self.assertTrue(self.service.install_status("1000")["installed"])
+        switched = self.service.install("1000", "reshade")
+        self.assertEqual(switched["previous_launch"]["env"], native["launch"]["env"])
+        self.service.install("1000", "native_hdr")
+        removed = self.service.uninstall("1000")
+        self.assertEqual(removed["launch"]["env"], native["launch"]["env"])
+        self.assertFalse(self.service.install_status("1000")["installed"])
 
 
 class LegacyTests(ServiceCase):
