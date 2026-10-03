@@ -1,73 +1,56 @@
 #!/usr/bin/env python3
+"""Build decky-renodx.zip: one plugin folder with exactly what the plugin needs at runtime."""
 import sys
 import zipfile
-from stat import S_IFREG
 from pathlib import Path
-
+from stat import S_IFREG
 
 PLUGIN_FOLDER = "decky-renodx"
 OUTPUT_FILENAME = "decky-renodx.zip"
-EXCLUDED_DIRS = {"__pycache__", ".pytest_cache", ".mypy_cache"}
-EXCLUDED_SUFFIXES = {".pyc", ".pyo"}
+ROOT_FILES = ["plugin.json", "main.py", "package.json", "README.md", "LICENSE", "compatibility.json"]
+FOLDERS = ["dist", "defaults", "backend"]
+EXCLUDED_PARTS = {"__pycache__", ".pytest_cache", ".mypy_cache"}
+EXCLUDED_SUFFIXES = {".pyc", ".pyo", ".map"}
+# Files the running plugin (or the self-updater of older versions) requires.
+REQUIRED = ["dist/index.js", "main.py", "backend/service.py", "backend/cache.py", "defaults/assets/specialk-delayed-launch.sh"]
+FIXED_DATE = (2020, 1, 1, 0, 0, 0)
 
 
-def should_package_file(path: Path) -> bool:
-    if any(part in EXCLUDED_DIRS for part in path.parts):
-        return False
-    if path.suffix.lower() in EXCLUDED_SUFFIXES:
-        return False
-    return True
+def include(path: Path) -> bool:
+    return not (set(path.parts) & EXCLUDED_PARTS) and path.suffix.lower() not in EXCLUDED_SUFFIXES
 
 
-def write_plugin_file(zipf: zipfile.ZipFile, source: Path, archive_name: str) -> None:
-    if source.suffix == ".sh":
-        data = source.read_bytes().replace(b"\r\n", b"\n")
-        info = zipfile.ZipInfo(archive_name)
-        info.external_attr = (S_IFREG | 0o755) << 16
-        zipf.writestr(info, data)
-        return
+def add(archive: zipfile.ZipFile, source: Path, name: str) -> None:
+    data = source.read_bytes()
+    executable = source.suffix == ".sh"
+    if executable:
+        data = data.replace(b"\r\n", b"\n")
+    info = zipfile.ZipInfo(name, date_time=FIXED_DATE)
+    info.external_attr = (S_IFREG | (0o755 if executable else 0o644)) << 16
+    info.compress_type = zipfile.ZIP_DEFLATED
+    archive.writestr(info, data)
 
-    zipf.write(source, archive_name)
 
-
-def create_plugin_zip(output_filename: str = OUTPUT_FILENAME) -> str:
-    root_dir = Path(__file__).resolve().parents[1]
-    zip_path = root_dir / output_filename
-    root_files = ["plugin.json", "main.py", "package.json", "README.md", "compatibility.json"]
-    folders = ["dist", "defaults", "backend", "py_modules"]
-
-    if zip_path.exists():
-        zip_path.unlink()
-
-    for filename in root_files:
-        if not (root_dir / filename).exists():
-            raise FileNotFoundError(f"{filename} not found")
-
-    for folder in folders:
-        if not (root_dir / folder).exists():
-            raise FileNotFoundError(f"{folder} folder not found")
-
-    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zipf:
-        for filename in root_files:
-            source = root_dir / filename
-            write_plugin_file(zipf, source, f"{PLUGIN_FOLDER}/{filename}")
-
-        for folder in folders:
-            for file_path in (root_dir / folder).rglob("*"):
-                if file_path.is_file() and should_package_file(file_path):
-                    relative_path = file_path.relative_to(root_dir).as_posix()
-                    write_plugin_file(zipf, file_path, f"{PLUGIN_FOLDER}/{relative_path}")
-
-    with zipfile.ZipFile(zip_path) as zipf:
-        plugin_json_files = [
-            name for name in zipf.namelist()
-            if name.endswith("/plugin.json") and name.count("/") == 1
-        ]
-        if len(plugin_json_files) != 1:
+def create_plugin_zip(output_filename: str = OUTPUT_FILENAME) -> Path:
+    root = Path(__file__).resolve().parents[1]
+    for name in [*ROOT_FILES, *REQUIRED]:
+        if not (root / name).exists():
+            raise FileNotFoundError(f"{name} is missing (run the build first?)")
+    zip_path = root / output_filename
+    zip_path.unlink(missing_ok=True)
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as archive:
+        for name in ROOT_FILES:
+            add(archive, root / name, f"{PLUGIN_FOLDER}/{name}")
+        for folder in FOLDERS:
+            for path in sorted((root / folder).rglob("*")):
+                if path.is_file() and include(path.relative_to(root)):
+                    add(archive, path, f"{PLUGIN_FOLDER}/{path.relative_to(root).as_posix()}")
+    with zipfile.ZipFile(zip_path) as archive:
+        names = archive.namelist()
+        if [name for name in names if name.endswith("plugin.json") and name.count("/") == 1] != [f"{PLUGIN_FOLDER}/plugin.json"]:
             raise ValueError("Decky zip must contain exactly one folder/plugin.json")
-
-    print(f"Created {zip_path}")
-    return str(zip_path)
+    print(f"Created {zip_path} ({len(names)} files)")
+    return zip_path
 
 
 if __name__ == "__main__":

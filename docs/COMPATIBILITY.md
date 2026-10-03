@@ -50,14 +50,15 @@ Fields the plugin **applies automatically** at install time:
 
 | field | type | effect |
 | --- | --- | --- |
-| `launch_options` | `string[]` | appended to the generated Steam launch options (`_hdr_launch_options`) |
-| `special_k_delay_seconds` | `number` | written as `GlobalInjectDelay` in SpecialK.ini; also enables the delayed/global method gate |
-| `special_k_ini_tweaks` | `{ "Section": { "Key": "value" } }` | merged into SpecialK.ini on install (`_write_specialk_hdr_ini`) |
+| `launch_options` | `string[]` | game arguments added after `%command%` (and removed again on uninstall) |
+| `special_k_delay_seconds` | `number` | delay for the Special K Delayed method (launch wrapper + `GlobalInjectDelay` in Profiles.ini) |
+| `special_k_ini_tweaks` | `{ "Section": { "Key": "value" } }` | merged into the Special K ini on install (`backend/installers.py:specialk_ini`) |
 | `automation.preferred_injection` | `"local" \| "global" \| "global_delayed"` | steers the Special K install method |
 | `automation.local_dll.target` | dll name | forces the Special K hook DLL (dxgi/d3d11/d3d9/…) |
 | `automation.local_dll.relative_path` | path | installs Special K into a subfolder relative to the exe dir |
 | `automation.force_render_api` | api name | overrides detected graphics API |
 | `automation.hdr.avoid` | `bool` | blocks Special K HDR for this game |
+| `name` (on the `renodx` tool) | string | extra title used to match the game against the RenoDX wiki |
 
 Fields the plugin **surfaces to the user** (shown in the panel, never auto-applied):
 
@@ -65,7 +66,7 @@ Fields the plugin **surfaces to the user** (shown in the panel, never auto-appli
 | --- | --- | --- |
 | `warnings` / `automation.warnings` | `string[]` | orange warning list on the game status card |
 | `manual_steps` / `automation.manual_steps` | `string[]` | numbered "Manual steps" list on the game status card |
-| `notes` | `string` | maintainer context; used for DLL inference as a last resort |
+| `notes` | `string` | maintainer context |
 
 Informational / provenance fields (not consumed by the plugin):
 

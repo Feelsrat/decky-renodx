@@ -43,13 +43,6 @@ yalc.lock
 
 .vscode/settings.json
 
-# Ignore output folder
-
-backend/out
-
-# Make sure to ignore any instance of the loader's decky_plugin.py
-decky_plugin.py
-
 # Ignore decky CLI for building plugins
 out
 out/*
@@ -57,4 +50,4 @@ cli/
 cli/*
 cli/decky
 
-py_modules
+

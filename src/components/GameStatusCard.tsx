@@ -1,149 +1,97 @@
 import { PanelSectionRow } from "@decky/ui";
+import type { GameState } from "../backend";
 
-interface GameStatusCardProps {
-  loading: boolean;
-  recommendation: any;
-  context: any;
-  hdrStatus: any;
-  hdrInstalled: boolean;
-  methodLabel: string;
-}
-
-const confidenceColor = (confidence: string) => {
-  switch ((confidence || "").toLowerCase()) {
-    case "high": return "#2ecc71";
-    case "medium": return "#f1c40f";
-    case "low": return "#e67e22";
-    default: return "#3498db";
-  }
+const METHOD_NAMES: Record<string, string> = {
+  renodx: "RenoDX",
+  special_k: "Special K",
+  special_k_delayed: "Special K (delayed)",
+  reshade: "ReShade AutoHDR",
+  native_hdr: "Native HDR",
+  sdr: "SDR",
 };
 
-/**
- * Single stable card combining recommendation, detection context, install
- * status, and safety warnings. Always keeps the same structure so the panel
- * does not jump around while data loads or refreshes.
- */
-export const GameStatusCard = ({ loading, recommendation, context, hdrStatus, hdrInstalled, methodLabel }: GameStatusCardProps) => {
-  const accent = recommendation ? confidenceColor(recommendation.confidence) : "rgba(255,255,255,0.25)";
+const confidenceColor = (confidence?: string) =>
+  ({ high: "#2ecc71", medium: "#f1c40f", low: "#e67e22" } as Record<string, string>)[(confidence || "").toLowerCase()] || "#3498db";
+
+function Notice({ color, title, children }: { color: string; title?: string; children: any }) {
+  return (
+    <div style={{ marginTop: 8, padding: 8, borderRadius: 4, border: `1px solid ${color}`, background: `${color}22`, fontSize: "0.78em", lineHeight: 1.3 }}>
+      {title && <div style={{ fontWeight: 700, marginBottom: 2 }}>{title}</div>}
+      {children}
+    </div>
+  );
+}
+
+export function methodName(method?: string) {
+  return METHOD_NAMES[method || ""] || method || "";
+}
+
+/** One stable card: recommendation, detection, install status and warnings. */
+export function GameStatusCard({ state, loading, launchApplied }: { state?: GameState; loading: boolean; launchApplied: boolean | null }) {
+  const top = state?.recommendations?.[0];
+  const install = state?.install;
+  const ctx = state?.context;
+  const accent = top ? confidenceColor(top.confidence) : "rgba(255,255,255,0.25)";
+  let headline = top ? methodName(top.method) : "";
+  if (top?.method === "renodx" && ctx?.renodx_match) {
+    headline = top.renodx_match_type === "generic_engine" ? `RenoDX (experimental ${ctx.engine})` : `RenoDX: ${ctx.renodx_match.name}`;
+  }
 
   return (
     <PanelSectionRow>
-      <div style={{
-        padding: "10px 12px",
-        borderRadius: "6px",
-        backgroundColor: "rgba(255, 255, 255, 0.05)",
-        borderLeft: `4px solid ${accent}`,
-        width: "100%",
-        boxSizing: "border-box",
-        overflowWrap: "anywhere",
-        minHeight: "108px",
-      }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px", minWidth: 0 }}>
-          <div style={{ fontWeight: "bold", color: accent, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", fontSize: "0.92em" }}>
-            {loading && !recommendation ? "Analyzing game…" : methodLabel || "No recommendation"}
+      <div style={{ padding: "10px 12px", borderRadius: 6, background: "rgba(255,255,255,0.05)", borderLeft: `4px solid ${accent}`, width: "100%", boxSizing: "border-box", overflowWrap: "anywhere", minHeight: 100 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center" }}>
+          <div style={{ fontWeight: 700, color: accent, fontSize: "0.92em", minWidth: 0 }}>
+            {loading && !state ? "Analyzing game…" : headline ? `Best: ${headline}` : "No recommendation"}
           </div>
-          <div style={{
-            flexShrink: 0,
-            fontSize: "0.72em",
-            fontWeight: 700,
-            padding: "2px 8px",
-            borderRadius: "10px",
-            border: `1px solid ${hdrInstalled ? "rgba(76,175,80,0.6)" : "rgba(255,255,255,0.25)"}`,
-            color: hdrInstalled ? "#2ecc71" : "rgba(255,255,255,0.6)",
-          }}>
-            {loading ? "Refreshing…" : hdrInstalled ? "HDR installed" : "Not installed"}
+          <div style={{ flexShrink: 0, fontSize: "0.72em", fontWeight: 700, padding: "2px 8px", borderRadius: 10, border: `1px solid ${install?.installed ? "#2ecc7199" : "#ffffff40"}`, color: install?.installed ? "#2ecc71" : "#ffffff99" }}>
+            {loading ? "Refreshing…" : install?.installed ? methodName(install.method) || "Installed" : "Not installed"}
           </div>
         </div>
 
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "2px 8px", fontSize: "0.76em", opacity: 0.7, marginTop: "6px" }}>
-          <div>API: {context?.graphics_api || "…"}</div>
-          <div>Hook: {context?.injection_dll || "…"}</div>
-          <div>Engine: {context?.engine || "…"}</div>
-          <div>Arch: {context?.architecture || "…"}</div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "2px 8px", fontSize: "0.76em", opacity: 0.7, marginTop: 6 }}>
+          <div>API: {ctx?.api || "…"}</div>
+          <div>Hook: {ctx?.hook ? `${ctx.hook}.dll` : "…"}</div>
+          <div>Engine: {ctx?.engine || "…"}</div>
+          <div>Arch: {ctx?.architecture ? `${ctx.architecture}-bit` : "…"}</div>
         </div>
 
-        <div style={{ fontSize: "0.84em", marginTop: "6px", color: "#eee", lineHeight: 1.3 }}>
-          {recommendation?.reason || (loading ? "Detecting graphics API, engine, and HDR support…" : "Select a game to analyze.")}
-        </div>
+        <div style={{ fontSize: "0.84em", marginTop: 6, lineHeight: 1.3 }}>{top?.reason || (loading ? "Detecting the executable, graphics API and available mods…" : "")}</div>
+        {install?.installed && <div style={{ fontSize: "0.76em", opacity: 0.65, marginTop: 4 }}>{install.message}</div>}
 
-        {hdrStatus?.status === "success" && hdrStatus.message && (
-          <div style={{ fontSize: "0.76em", opacity: 0.62, marginTop: "4px" }}>
-            {hdrStatus.message}{hdrStatus.method ? ` (${hdrStatus.method})` : ""}
-          </div>
+        {install?.installed && install.launch && launchApplied === false && (
+          <Notice color="#e67e22" title="Launch options missing">
+            HDR files are installed but Steam's launch options don't include them. Use "Apply launch options" below.
+          </Notice>
         )}
-
-        {context?.linux_build_warning ? (
-          <div style={{
-            marginTop: "8px",
-            padding: "8px",
-            backgroundColor: "rgba(230, 126, 34, 0.14)",
-            borderRadius: "4px",
-            border: "1px solid rgba(230,126,34,0.55)",
-            fontSize: "0.78em",
-            color: "#f5b041",
-            lineHeight: 1.3,
-          }}>
-            <div style={{ fontWeight: 700, marginBottom: "2px" }}>Native Linux build detected</div>
-            {context.linux_build_warning}
-          </div>
+        {install?.installed && install.files_ok === false && (
+          <Notice color="#e67e22" title="Files missing">
+            A game update or file verification removed part of the install. Reinstall to repair.
+          </Notice>
+        )}
+        {ctx?.anti_cheat?.length ? (
+          <Notice color="#e74c3c">Anti-cheat detected: {ctx.anti_cheat.join(", ")}. Injection is blocked to protect your account.</Notice>
         ) : null}
-
-        {context?.anti_cheat?.length ? (
-          <div style={{
-            marginTop: "8px",
-            padding: "8px",
-            backgroundColor: "rgba(231, 76, 60, 0.16)",
-            borderRadius: "4px",
-            border: "1px solid rgba(231,76,60,0.6)",
-            fontSize: "0.8em",
-            color: "#ff6b6b",
-          }}>
-            Anti-cheat detected: {context.anti_cheat.join(", ")}. Injection is blocked for your safety.
-          </div>
+        {ctx?.linux_build && !state?.exe_path ? (
+          <Notice color="#e67e22" title="Native Linux build">
+            Force a Proton version in the game's Steam compatibility settings, launch it once, then refresh.
+          </Notice>
         ) : null}
-
-        {recommendation?.warnings?.length ? (
-          <div style={{
-            marginTop: "8px",
-            padding: "8px",
-            backgroundColor: "rgba(230, 126, 34, 0.14)",
-            borderRadius: "4px",
-            border: "1px solid rgba(230,126,34,0.55)",
-            fontSize: "0.78em",
-            color: "#f5b041",
-            lineHeight: 1.3,
-          }}>
-            <div style={{ fontWeight: 700, marginBottom: "2px" }}>Known issues for this game</div>
-            {recommendation.warnings.map((warning: string, i: number) => (
-              <div key={i} style={{ marginTop: "2px" }}>• {warning}</div>
-            ))}
-          </div>
+        {top?.warnings?.length ? (
+          <Notice color="#e67e22" title="Known issues">
+            {top.warnings.map((warning, index) => <div key={index}>• {warning}</div>)}
+          </Notice>
         ) : null}
-
-        {recommendation?.manual_steps?.length ? (
-          <div style={{
-            marginTop: "8px",
-            padding: "8px",
-            backgroundColor: "rgba(52, 152, 219, 0.12)",
-            borderRadius: "4px",
-            border: "1px solid rgba(52,152,219,0.5)",
-            fontSize: "0.78em",
-            color: "#aed6f1",
-            lineHeight: 1.3,
-          }}>
-            <div style={{ fontWeight: 700, marginBottom: "2px" }}>Manual steps after install</div>
-            {recommendation.manual_steps.map((step: string, i: number) => (
-              <div key={i} style={{ marginTop: "2px" }}>{i + 1}. {step}</div>
-            ))}
-          </div>
+        {top?.manual_steps?.length ? (
+          <Notice color="#3498db" title="After installing">
+            {top.manual_steps.map((step, index) => <div key={index}>{index + 1}. {step}</div>)}
+          </Notice>
         ) : null}
-
-        {recommendation?.notes?.slice(0, 3).map((note: string, i: number) => (
-          <div key={i} style={{ fontSize: "0.74em", opacity: 0.55, marginTop: "3px", fontStyle: "italic" }}>
-            {note}
-          </div>
+        {ctx?.renodx_error ? <div style={{ fontSize: "0.72em", opacity: 0.5, marginTop: 4 }}>{ctx.renodx_error}</div> : null}
+        {top?.notes?.slice(0, 2).map((note, index) => (
+          <div key={index} style={{ fontSize: "0.72em", opacity: 0.55, marginTop: 3, fontStyle: "italic" }}>{note}</div>
         ))}
       </div>
     </PanelSectionRow>
   );
-};
+}

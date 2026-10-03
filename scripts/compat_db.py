@@ -29,12 +29,12 @@ import json
 import re
 import sys
 import time
-import unicodedata
 import urllib.parse
 import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 DB_PATH = ROOT / "compatibility.json"
 RENODX_MODS_URL = "https://raw.githubusercontent.com/wiki/clshortfuse/renodx/Mods.md"
 STORESEARCH_URL = "https://store.steampowered.com/api/storesearch/?cc=us&l=en&term="
@@ -56,13 +56,10 @@ def save_db(db: dict, path: Path = DB_PATH) -> None:
 
 
 def normalize_title(title: str) -> str:
-    """Match main.py's _normalize_game_title so lookups behave identically."""
-    title = unicodedata.normalize("NFKD", title)
-    title = "".join(ch for ch in title if not unicodedata.combining(ch))
-    title = title.lower().replace("™", "").replace("®", "")
-    title = re.sub(r"\([^)]*\)", " ", title)
-    title = re.sub(r"\b(the|definitive edition|directors cut|director's cut|remastered|remake|dx10|dx11|dx12|steam only)\b", " ", title)
-    return re.sub(r"[^a-z0-9]+", "", title)
+    """Same normalization the plugin uses for RenoDX matching."""
+    from backend.renodx import normalize_title as plugin_normalize
+
+    return plugin_normalize(title)
 
 
 def fetch(url: str) -> str:
@@ -268,25 +265,10 @@ def cmd_add(args) -> int:
 # ---------------------------------------------------------------- sync-renodx
 
 def parse_wiki_mods(markdown: str) -> list[dict]:
-    """Parse the wiki with the production parser from main.py (decky stubbed)."""
-    import importlib.util
-    import tempfile
-    import types
+    """Parse the wiki with the plugin's own parser."""
+    from backend.renodx import parse_mods
 
-    temp_home = tempfile.mkdtemp(prefix="compat-db-")
-    decky = types.SimpleNamespace(
-        HOME=temp_home, USER="deck", DECKY_USER="deck",
-        DECKY_USER_HOME=temp_home, DECKY_HOME=str(Path(temp_home) / "homebrew"),
-        DECKY_PLUGIN_DIR=str(ROOT),
-        logger=types.SimpleNamespace(**{k: (lambda *a, **kw: None) for k in ["debug", "info", "warning", "error", "exception"]}),
-    )
-    sys.modules["decky"] = decky
-    spec = importlib.util.spec_from_file_location("decky_renodx_main_for_compat_db", ROOT / "main.py")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules["decky_renodx_main_for_compat_db"] = module
-    spec.loader.exec_module(module)
-    plugin = module.Plugin()
-    return plugin._parse_renodx_mods(markdown)
+    return parse_mods(markdown)
 
 
 def resolve_appid(title: str) -> tuple[str, str]:

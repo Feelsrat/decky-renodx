@@ -1,11 +1,11 @@
 {
   "name": "Decky RenoDX",
   "author": "Feelsrat",
-  "flags": ["debug", "_root", "root"],
+  "flags": ["root"],
   "api_version": 1,
   "publish": {
-    "tags": ["hdr", "renodx", "proton", "root"],
-    "description": "Manage per-game HDR launch options and run RenoDX, protontricks, or ReShade fallback helper commands from Decky.",
-    "image": "https://opengraph.githubassets.com/1/SteamDeckHomebrew/PluginLoader"
+    "tags": ["hdr", "renodx", "reshade", "special-k", "proton"],
+    "description": "Per-game HDR for the Steam Deck OLED: installs RenoDX mods, Special K or ReShade AutoHDR into Proton games and sets the launch options, with a clean, reversible uninstall.",
+    "image": "https://raw.githubusercontent.com/Feelsrat/decky-renodx/main/assets/logo.png"
   }
 }

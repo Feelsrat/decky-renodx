@@ -1,69 +1,45 @@
 #!/usr/bin/env node
-import { existsSync, readFileSync } from "fs";
-import { join, dirname } from "path";
-import { fileURLToPath } from "url";
+// Everything CI runs: Python tests, compat DB validation, launch option tests, types, build, package check.
 import { execFileSync } from "child_process";
+import { existsSync, readFileSync } from "fs";
+import { dirname, join } from "path";
+import { fileURLToPath } from "url";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-const rootDir = join(__dirname, "..");
+const rootDir = join(dirname(fileURLToPath(import.meta.url)), "..");
+const python = process.env.PYTHON || "python3";
 let failed = false;
 
-function run(command, args) {
-  execFileSync(command, args, { cwd: rootDir, stdio: "pipe" });
+function step(name, command, args) {
+  try {
+    execFileSync(command, args, { cwd: rootDir, stdio: "pipe" });
+    console.log(`OK: ${name}`);
+  } catch (error) {
+    failed = true;
+    console.error(`FAIL: ${name}`);
+    console.error(error.stdout?.toString() || "");
+    console.error(error.stderr?.toString() || error.message);
+  }
 }
 
 function check(condition, message) {
-  if (condition) {
-    console.log(`OK: ${message}`);
-  } else {
-    console.error(`FAIL: ${message}`);
-    failed = true;
-  }
+  console.log(`${condition ? "OK" : "FAIL"}: ${message}`);
+  if (!condition) failed = true;
 }
 
-function checkJson() {
-  const plugin = JSON.parse(readFileSync(join(rootDir, "plugin.json"), "utf-8"));
-  const pkg = JSON.parse(readFileSync(join(rootDir, "package.json"), "utf-8"));
-  check(plugin.name === "Decky RenoDX", "plugin name");
-  check(pkg.name === "decky-renodx", "package name");
-  check(Boolean(pkg.version), "package version");
+const plugin = JSON.parse(readFileSync(join(rootDir, "plugin.json"), "utf-8"));
+const pkg = JSON.parse(readFileSync(join(rootDir, "package.json"), "utf-8"));
+check(plugin.name === "Decky RenoDX", "plugin name");
+check(pkg.name === "decky-renodx" && /^\d+\.\d+\.\d+/.test(pkg.version), "package name and version");
+check(!plugin.flags.includes("debug"), "release build has no debug flag");
+
+step("Python syntax", python, ["-m", "compileall", "-q", "main.py", "backend", "scripts", "tests"]);
+step("compatibility.json schema", python, ["scripts/compat_db.py", "validate"]);
+step("backend tests", python, ["-m", "unittest", "discover", "-s", "tests", "-t", "."]);
+step("launch option tests", process.execPath, ["--experimental-strip-types", "--no-warnings", "tests/launchOptions.test.ts"]);
+step("TypeScript types", process.execPath, [join(rootDir, "node_modules", "typescript", "bin", "tsc"), "--noEmit", "--skipLibCheck"]);
+step("frontend build", process.execPath, [join(rootDir, "node_modules", "rollup", "dist", "bin", "rollup"), "-c"]);
+for (const file of ["dist/index.js", "LICENSE", "defaults/assets/specialk-delayed-launch.sh"]) {
+  check(existsSync(join(rootDir, file)), `${file} exists`);
 }
 
-function checkRequiredFiles() {
-  for (const file of ["plugin.json", "package.json", "main.py", "README.md", "dist/index.js"]) {
-    check(existsSync(join(rootDir, file)), `${file} exists`);
-  }
-  for (const file of ["defaults/assets/reshade-install.sh", "defaults/assets/reshade-game-manager.sh", "defaults/assets/reshade-uninstall.sh"]) {
-    check(existsSync(join(rootDir, file)), `${file} exists`);
-  }
-}
-
-function main() {
-  try {
-    checkJson();
-    run("python", ["-m", "py_compile", "main.py"]);
-    console.log("OK: Python syntax");
-    run("python", ["scripts/compat_db.py", "validate"]);
-    console.log("OK: compatibility.json schema");
-    run("python", ["-m", "unittest", "tests.test_backend_mocks"]);
-    console.log("OK: backend tests");
-    run(process.execPath, ["--experimental-strip-types", "scripts/test_hdr_logic.ts"]);
-    console.log("OK: frontend logic tests");
-    run(process.execPath, [join(rootDir, "node_modules", "typescript", "bin", "tsc"), "--noEmit", "--skipLibCheck"]);
-    console.log("OK: TypeScript types");
-    run(process.execPath, [join(rootDir, "node_modules", "rollup", "dist", "bin", "rollup"), "-c"]);
-    console.log("OK: frontend build");
-    checkRequiredFiles();
-  } catch (error) {
-    console.error(error.stdout?.toString() || "");
-    console.error(error.stderr?.toString() || error.message);
-    failed = true;
-  }
-
-  if (failed) {
-    process.exit(1);
-  }
-}
-
-main();
+process.exit(failed ? 1 : 0);

@@ -1,18 +1,19 @@
 {
   "name": "decky-renodx",
-  "version": "0.0.81",
-  "description": "Decky Loader plugin for RenoDX, AutoHDR fallback launch setup, and Proton HDR helpers",
+  "version": "0.1.0",
+  "description": "Decky Loader plugin: per-game HDR for Proton games via RenoDX, Special K or ReShade AutoHDR",
   "type": "module",
   "scripts": {
     "build": "rollup -c",
     "watch": "rollup -c -w",
     "test": "node scripts/test.js",
-    "test:backend": "python -m unittest tests.test_backend_mocks",
+    "test:backend": "python3 -m unittest discover -s tests -t .",
+    "test:launch": "node --experimental-strip-types tests/launchOptions.test.ts",
     "test:types": "tsc --noEmit --skipLibCheck",
-    "compat:validate": "python scripts/compat_db.py validate",
-    "compat:report": "python scripts/compat_db.py report",
-    "compat:sync": "python scripts/compat_db.py sync-renodx",
-    "package": "python scripts/create_zip.py",
+    "compat:validate": "python3 scripts/compat_db.py validate",
+    "compat:report": "python3 scripts/compat_db.py report",
+    "compat:sync": "python3 scripts/compat_db.py sync-renodx",
+    "package": "python3 scripts/create_zip.py",
     "release": "node scripts/release.js"
   },
   "repository": {

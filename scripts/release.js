@@ -1,105 +1,69 @@
 #!/usr/bin/env node
-import { readFileSync, writeFileSync, existsSync, rmSync } from "fs";
-import { join, dirname } from "path";
+// Bump the version, run the tests, then commit, tag and push.
+// The "Release" GitHub Actions workflow builds decky-renodx.zip from the tag and publishes it.
+import { execFileSync } from "child_process";
+import { readFileSync, writeFileSync } from "fs";
+import { dirname, join } from "path";
 import { fileURLToPath } from "url";
-import { execSync, spawnSync } from "child_process";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-const rootDir = join(__dirname, "..");
-const zipFilename = "decky-renodx.zip";
+const rootDir = join(dirname(fileURLToPath(import.meta.url)), "..");
+const packagePath = join(rootDir, "package.json");
 
-function printUsage() {
-  console.log(`Usage:
-  pnpm run release              Run tests, bump patch, build, package, publish release
-  pnpm run release -- --private Run the same flow but create a draft/private review release
-  pnpm run release -- --draft   Alias for --private
-`);
+function usage() {
+  console.log("Usage: pnpm run release -- [patch|minor|major|<x.y.z>] [--no-push]");
 }
 
-function parseArgs(argv) {
-  const options = { draft: false };
-  for (const arg of argv) {
-    if (arg === "--private" || arg === "--draft") {
-      options.draft = true;
-    } else if (arg === "--help" || arg === "-h") {
-      printUsage();
-      process.exit(0);
-    } else {
-      console.error(`Unknown release option: ${arg}`);
-      printUsage();
-      process.exit(1);
-    }
-  }
-  return options;
+function git(...args) {
+  return execFileSync("git", args, { cwd: rootDir, encoding: "utf-8" }).trim();
 }
 
-function bumpVersion() {
-  const packagePath = join(rootDir, "package.json");
-  const packageJson = JSON.parse(readFileSync(packagePath, "utf-8"));
-  const match = packageJson.version.match(/^(\d+)\.(\d+)\.(\d+)(?:-(.+)\.(\d+))?$/);
-  if (!match) {
-    throw new Error(`Invalid version: ${packageJson.version}`);
-  }
-
-  let [, major, minor, patch, preRelease, preReleaseNum] = match;
-  if (preRelease && preReleaseNum) {
-    packageJson.version = `${major}.${minor}.${patch}-${preRelease}.${Number(preReleaseNum) + 1}`;
-  } else {
-    packageJson.version = `${major}.${minor}.${Number(patch) + 1}`;
-  }
-  writeFileSync(packagePath, JSON.stringify(packageJson, null, 2) + "\n", "utf-8");
-  return packageJson.version;
+function nextVersion(current, bump) {
+  if (/^\d+\.\d+\.\d+$/.test(bump)) return bump;
+  const [major, minor, patch] = current.split("-")[0].split(".").map(Number);
+  if (bump === "major") return `${major + 1}.0.0`;
+  if (bump === "minor") return `${major}.${minor + 1}.0`;
+  if (bump === "patch") return `${major}.${minor}.${patch + 1}`;
+  throw new Error(`Unknown version bump: ${bump}`);
 }
 
-function cleanup() {
-  for (const target of [join(rootDir, "dist"), join(rootDir, zipFilename)]) {
-    if (existsSync(target)) {
-      rmSync(target, { recursive: true, force: true });
-    }
-  }
+const args = process.argv.slice(2);
+if (args.includes("--help") || args.includes("-h")) {
+  usage();
+  process.exit(0);
+}
+const push = !args.includes("--no-push");
+const bump = args.find((arg) => !arg.startsWith("--")) || "patch";
+
+if (git("status", "--porcelain")) {
+  console.error("Working tree is not clean; commit or stash first.");
+  process.exit(1);
 }
 
-function run(command) {
-  execSync(command, { cwd: rootDir, stdio: "inherit" });
+const pkg = JSON.parse(readFileSync(packagePath, "utf-8"));
+const version = nextVersion(pkg.version, bump);
+const tag = `v${version}`;
+if (git("tag", "--list", tag)) {
+  console.error(`Tag ${tag} already exists.`);
+  process.exit(1);
 }
 
-function publish(version, draft) {
-  execSync("gh auth status", { cwd: rootDir, stdio: "ignore" });
-  const tagName = `v${version}`;
-  const args = [
-    "release",
-    "create",
-    tagName,
-    join(rootDir, zipFilename),
-    "--title",
-    `Decky RenoDX ${tagName}`,
-    "--notes",
-    `Release ${tagName}`,
-  ];
-  if (draft) args.push("--draft");
-  if (version.includes("test") || version.includes("alpha") || version.includes("beta")) {
-    args.push("--prerelease");
-  }
-
-  const result = spawnSync("gh", args, { cwd: rootDir, stdio: "inherit" });
-  if (result.status !== 0) {
-    throw new Error(`gh release create failed with exit code ${result.status}`);
-  }
+pkg.version = version;
+writeFileSync(packagePath, `${JSON.stringify(pkg, null, 2)}\n`, "utf-8");
+try {
+  execFileSync(process.execPath, [join(rootDir, "scripts", "test.js")], { cwd: rootDir, stdio: "inherit" });
+} catch {
+  git("checkout", "--", "package.json");
+  console.error("Tests failed; version bump reverted.");
+  process.exit(1);
 }
 
-function main() {
-  const options = parseArgs(process.argv.slice(2));
-  if (options.draft) {
-    console.log("Private review mode: creating a draft GitHub release.");
-  }
-  const version = bumpVersion();
-  run("pnpm run test");
-  cleanup();
-  run("pnpm run build");
-  run("python scripts/create_zip.py");
-  publish(version, options.draft);
-  console.log(`Released v${version}`);
+git("add", "package.json");
+git("commit", "-m", `Release ${tag}`);
+git("tag", "-a", tag, "-m", `Decky RenoDX ${tag}`);
+if (push) {
+  const branch = git("rev-parse", "--abbrev-ref", "HEAD");
+  execFileSync("git", ["push", "origin", branch, "--follow-tags"], { cwd: rootDir, stdio: "inherit" });
+  console.log(`Pushed ${tag}; the Release workflow will publish decky-renodx.zip.`);
+} else {
+  console.log(`Tagged ${tag} locally. Push with: git push origin HEAD --follow-tags`);
 }
-
-main();

@@ -1,6 +1,5 @@
-"""Backend package for Decky RenoDX.
+"""Decky RenoDX backend package.
 
-This file exists so the `backend` directory is a proper Python package when
-loaded by Decky's plugin sandbox.
+Everything here is importable without Decky so it can be unit tested; only
+``main.py`` talks to the ``decky`` module.
 """
-
