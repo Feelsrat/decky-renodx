@@ -68,6 +68,8 @@ pnpm run release -- patch     # or minor / major / 1.2.3
 
 This bumps `package.json`, runs the tests, commits, tags `vX.Y.Z` and pushes. The **Release** workflow then builds `decky-renodx.zip` and publishes the GitHub release that the in-plugin updater installs from.
 
+You can also run the **Release** workflow by hand (Actions → Release → Run workflow): it releases the version in `package.json` from the chosen branch and creates the tag itself.
+
 ## License
 
 BSD-3-Clause. See [LICENSE](LICENSE).
