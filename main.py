@@ -17,7 +17,7 @@ from backend.config import COMPAT_DB_URL, Paths, resolve_user  # noqa: E402
 from backend.service import HdrService, ServiceError  # noqa: E402
 from backend.updater import Updater  # noqa: E402
 
-COMPAT_REFRESH_INTERVAL = 86400
+COMPAT_CHECK_INTERVAL = 300
 
 
 def _plugin_version() -> str:
@@ -43,6 +43,7 @@ class Plugin:
 
     async def _main(self):
         await asyncio.to_thread(self.updater.cleanup_previous)
+        await asyncio.to_thread(self.service.recover_all)
         self._compat_task = asyncio.create_task(self._refresh_compat_db())
         decky.logger.info("Decky RenoDX %s loaded for user %s (%s)", self.version, self.paths.user, self.paths.home)
 
@@ -84,16 +85,20 @@ class Plugin:
             return await self._call(fn, *args)
 
     async def _refresh_compat_db(self):
+        """Keep the compatibility database at most a day old, retrying with backoff when offline."""
+        compat = self.service.compat
         while True:
-            try:
-                text = await asyncio.to_thread(net.fetch_text, COMPAT_DB_URL, timeout=20)
-                count = await asyncio.to_thread(self.service.compat.accept_remote, text)
-                decky.logger.info("Compatibility database refreshed (%d games)", count)
-            except asyncio.CancelledError:
-                raise
-            except Exception as error:
-                decky.logger.warning("Compatibility database refresh failed: %s", error)
-            await asyncio.sleep(COMPAT_REFRESH_INTERVAL)
+            if compat.refresh_due():
+                try:
+                    text = await asyncio.to_thread(net.fetch_text, COMPAT_DB_URL, timeout=20)
+                    count = await asyncio.to_thread(compat.accept_remote, text)
+                    decky.logger.info("Compatibility database refreshed (%d games)", count)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as error:
+                    compat.refresh_failed()
+                    decky.logger.info("Compatibility database refresh failed, will retry: %s", error)
+            await asyncio.sleep(COMPAT_CHECK_INTERVAL)
 
     # ------------------------------------------------------------ games
     async def list_installed_games(self) -> dict:
@@ -135,19 +140,14 @@ class Plugin:
     async def set_special_k_verified(self, appid: str, verified: bool) -> dict:
         return await self._call(self.service.set_specialk_verified, str(appid), bool(verified))
 
-    async def set_special_k_delay(self, appid: str, seconds: int) -> dict:
-        return await self._exclusive(appid, self.service.set_specialk_delay, str(appid), int(seconds))
-
     async def reset_game_proton_prefix(self, appid: str) -> dict:
         return await self._exclusive(appid, self.service.reset_prefix, str(appid))
 
     async def get_per_game_log(self, appid: str) -> dict:
         return await self._call(self.service.logs, str(appid))
 
-    async def get_pcgw_improvements_issues(self, appid: str) -> dict:
-        return await self._call(self.service.pcgw_fixes, str(appid))
-
     async def reset_plugin_caches(self) -> dict:
+        self.service.compat.refresh_soon()
         return await self._call(self.service.reset_caches)
 
     async def open_url(self, url: str) -> dict:

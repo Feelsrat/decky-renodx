@@ -42,6 +42,11 @@ if (git("status", "--porcelain")) {
 const pkg = JSON.parse(readFileSync(packagePath, "utf-8"));
 const version = nextVersion(pkg.version, bump);
 const tag = `v${version}`;
+const changelog = readFileSync(join(rootDir, "CHANGELOG.md"), "utf-8");
+if (!new RegExp(`^## ${version.replace(/\./g, "\\.")}\\s*$`, "m").test(changelog)) {
+  console.error(`CHANGELOG.md has no "## ${version}" section; write the release notes first.`);
+  process.exit(1);
+}
 if (git("tag", "--list", tag)) {
   console.error(`Tag ${tag} already exists.`);
   process.exit(1);

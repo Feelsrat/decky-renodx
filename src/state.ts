@@ -106,9 +106,29 @@ export function useGames() {
     api.displayStatus().then((result) => setDisplay(result.status === "success" ? result : null)).catch(() => setDisplay(null));
   }, []);
 
+  /**
+   * The plugin stays mounted (alwaysRender), so re-check everything each time the
+   * Quick Access Menu opens: games may have started, updated, or had their launch
+   * options edited since. Jump to a newly started game, but not when the user picked
+   * another one while the same game kept running.
+   */
+  const lastRunning = useRef<string | null>(null);
+  const opened = useCallback(async () => {
+    refreshDisplay();
+    const sorted = await loadGames();
+    const nowRunning = runningAppid();
+    const started = lastRunning.current !== null && nowRunning && nowRunning !== lastRunning.current;
+    lastRunning.current = nowRunning;
+    if (started && sorted.some((game) => game.appid === nowRunning) && nowRunning !== appidRef.current) {
+      setAppid(nowRunning);
+    } else if (appidRef.current) {
+      refresh(appidRef.current);
+    }
+  }, [loadGames, refresh, refreshDisplay, setAppid]);
+
   useEffect(() => {
     if (appid) refresh(appid);
   }, [appid, refresh]);
 
-  return { games, appid, setAppid, entries, patch, refresh, loadGames, display, refreshDisplay, running };
+  return { games, appid, setAppid, entries, patch, refresh, loadGames, display, refreshDisplay, running, opened };
 }

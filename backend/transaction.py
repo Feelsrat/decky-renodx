@@ -15,7 +15,7 @@ import os
 import shutil
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from . import fsutil
 from .config import STATE_DIR_NAME
@@ -56,19 +56,27 @@ def _prune_state_dir(directory: Path) -> None:
 
 
 class Transaction:
-    def __init__(self, logger: logging.Logger):
+    """Records every change *before* making it (write-ahead), via ``on_change``,
+    so an install interrupted by a crash or power loss can still be undone."""
+
+    def __init__(self, logger: logging.Logger, on_change: Callable[[], None] | None = None):
         self.log = logger
+        self.on_change = on_change or (lambda: None)
         self.created: list[str] = []          # paths that did not exist before
         self.replaced: dict[str, str] = {}    # pre-existing path -> backup of the original
         self.artifacts: list[str] = []
+
+    def _created(self, paths: list[Path]) -> None:
+        if paths:
+            self.created.extend(str(path) for path in paths)
+            self.on_change()
 
     # ------------------------------------------------------------ recording
     def _inside_created(self, target: Path) -> bool:
         return any(fsutil.is_within(target, Path(item)) for item in self.created if item != str(target))
 
     def _prepare(self, target: Path) -> None:
-        for directory in fsutil.makedirs(target.parent):
-            self.created.append(str(directory))
+        self._created(fsutil.makedirs(target.parent))
         key = str(target)
         if key in self.created or key in self.replaced or self._inside_created(target):
             # Ours already (or inside a folder we created): overwrite without a backup.
@@ -77,18 +85,19 @@ class Transaction:
             return
         if _exists(target):
             backup = _unique(_state_dir(target) / "backup" / target.name)
+            self.replaced[key] = str(backup)
+            self.on_change()
             _move(target, backup)
             fsutil.chown(backup.parent.parent)
             fsutil.chown(backup.parent)
-            self.replaced[key] = str(backup)
             self.log.info("Backed up %s -> %s", target, backup)
         else:
             self.created.append(key)
+            self.on_change()
 
     def mkdir(self, path: Path) -> Path:
         path = Path(path)
-        for directory in fsutil.makedirs(path):
-            self.created.append(str(directory))
+        self._created(fsutil.makedirs(path))
         return path
 
     def copy_file(self, source: Path, target: Path, mode: int = 0o644) -> Path:
@@ -121,6 +130,7 @@ class Transaction:
             path = Path(directory) / name
             if not _exists(path) and str(path) not in self.artifacts:
                 self.artifacts.append(str(path))
+        self.on_change()
 
     def to_record(self) -> dict[str, Any]:
         return {"created": list(self.created), "replaced": dict(self.replaced), "artifacts": list(self.artifacts)}
@@ -183,12 +193,24 @@ def revert(record: dict[str, Any], logger: logging.Logger) -> tuple[list[str], d
 class Stash:
     """Temporarily takes an install apart so a new one can be tried, then commits or puts it back."""
 
-    def __init__(self, record: dict[str, Any], logger: logging.Logger):
+    def __init__(self, record: dict[str, Any], logger: logging.Logger, on_change: Callable[[], None] | None = None):
         self.record = record
         self.log = logger
+        self.on_change = on_change or (lambda: None)
         self.token = f"stash-{time.time_ns()}"
         self.moved: list[tuple[str, str]] = []                # (original location, stash location)
         self.restored: list[tuple[str, str, str]] = []        # (path, backup location, stash of our file)
+
+    def state(self) -> dict[str, Any]:
+        return {"record": self.record, "token": self.token, "moved": self.moved, "restored": self.restored}
+
+    @classmethod
+    def from_state(cls, data: dict[str, Any], logger: logging.Logger) -> "Stash":
+        stash = cls(data.get("record") or {}, logger)
+        stash.token = str(data.get("token") or stash.token)
+        stash.moved = [tuple(item) for item in data.get("moved", [])]  # type: ignore[misc]
+        stash.restored = [tuple(item) for item in data.get("restored", [])]  # type: ignore[misc]
+        return stash
 
     def _stash_path(self, path: Path) -> Path:
         return _unique(_state_dir(path) / self.token / path.name)
@@ -204,25 +226,27 @@ class Stash:
                 if not _exists(path):
                     continue
                 stash_path = self._stash_path(path)
-                _move(path, stash_path)
                 self.moved.append((str(path), str(stash_path)))
+                self.on_change()
+                _move(path, stash_path)
             for original, backup in self.record.get("replaced", {}).items():
                 path, backup_path = Path(original), Path(backup)
                 if not _exists(backup_path):
                     continue  # nothing provably ours to swap; leave the current file alone
-                ours = ""
-                if _exists(path):
-                    ours = str(self._stash_path(path))
+                ours = str(self._stash_path(path)) if _exists(path) else ""
+                self.restored.append((original, backup, ours))
+                self.on_change()
+                if ours:
                     _move(path, Path(ours))
                 _move(backup_path, path)
-                self.restored.append((original, backup, ours))
         except OSError:
             self.put_back()
             raise
 
     def put_back(self) -> None:
         for original, backup, ours in reversed(self.restored):
-            if _exists(Path(original)):
+            # The backup only stops existing once it was moved into place.
+            if _exists(Path(original)) and not _exists(Path(backup)):
                 _move(Path(original), Path(backup))
             if ours and _exists(Path(ours)):
                 _move(Path(ours), Path(original))

@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.2.1
+
+### Fixes
+- An install interrupted by a crash, reboot or plugin reload is now undone the next time the plugin starts. Previously, leftover files could later be mistaken for the game's own (so Remove HDR could put ReShade back), and an interrupted method switch could strand the previous install.
+- The panel refreshes every time the Quick Access Menu opens. It switches to a game you just started and picks up game updates and launch options you edited yourself.
+- The compatibility database now refreshes when it's more than a day old, retrying every few minutes when offline. Before, a failed first fetch (Decky often starts before Wi-Fi) meant no refresh for a day of uptime, and sleep paused that timer.
+- Slow or offline networks no longer stall the panel. PCGamingWiki lookups for one game don't block another, failures aren't retried on every refresh, and non-Steam games skip PCGamingWiki.
+- Self-update refuses to run, and leaves everything as it was, when it can't start its helper outside Decky's service. Previously Decky could be left stopped.
+- Shared downloads (7-Zip, ReShade, Special K) are saved atomically, so an interrupted download can't leave a broken copy behind.
+
+### Removed (simpler, fewer things to break)
+- **Special K Delayed.** Existing installs keep working and can still be removed; Repair asks you to pick another method.
+- **Display Commander** is no longer added to RenoDX installs.
+- **The PCGamingWiki fixes window.** Advanced now links to the game's PCGamingWiki page instead. PCGamingWiki is still used for native-HDR and graphics-API hints.
+
+### Project
+- Issue forms (the in-app "Report on GitHub" fills one in), Dependabot for GitHub Actions, unused dev dependencies removed, and releases require a CHANGELOG entry.
+- Cleanup for installs made by 0.0.x will be removed after 0.3.
+
 ## 0.2.0
 
 ### New

@@ -38,12 +38,15 @@ jobs:
       - run: sha256sum decky-renodx.zip > decky-renodx.zip.sha256
       - name: Release notes
         run: |
-          # The section of CHANGELOG.md for this version, or GitHub's generated notes.
+          # The release notes are this version's section of CHANGELOG.md.
           awk -v v="${TAG#v}" '
-            /^## / { if (found) exit; if (index($0, v)) { found = 1; next } }
+            /^## / { if (found) exit; if ($0 == "## " v) { found = 1; next } }
             found { print }
           ' CHANGELOG.md > notes.md
-          [ -s notes.md ] || echo "Release $TAG" > notes.md
+          if [ ! -s notes.md ]; then
+            echo "CHANGELOG.md has no section for ${TAG#v}; add release notes before releasing."
+            exit 1
+          fi
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}

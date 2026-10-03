@@ -90,7 +90,8 @@ class HdrService:
         return scan
 
     def _context(self, app: SteamApp, scan: detect.GameScan) -> dict[str, Any]:
-        wiki = self.pcgw.game_data(app.appid)
+        # Non-Steam shortcut ids mean nothing to PCGamingWiki.
+        wiki = {} if app.is_shortcut else self.pcgw.game_data(app.appid)
         if scan.api == "unknown" and wiki.get("graphics_api", "unknown") != "unknown":
             scan.api, scan.api_confidence, scan.api_source = wiki["graphics_api"], "metadata", "pcgamingwiki"
             scan.hook = detect.hook_for_api(scan.api)
@@ -116,11 +117,11 @@ class HdrService:
             "linux_build": scan.linux_build,
             "native_hdr": wiki.get("native_hdr", "unknown"),
             "pcgw_page": wiki.get("page_name", ""),
+            "pcgw_url": PCGamingWiki.page_url(wiki.get("page_name", "")),
             "pcgw_error": wiki.get("error", ""),
             "renodx_match": match,
             "renodx_error": renodx_error,
             "specialk_local_gate": self.compat.specialk_local_gate(app.appid),
-            "specialk_delayed_gate": self.compat.specialk_delayed_gate(app.appid),
             "specialk_verified": bool(settings.get("specialk_verified")),
             "specialk_wiki": bool(wiki.get("special_k")),
             "specialk_compat": bool(self.compat.tool(app.appid, "special_k")),
@@ -148,7 +149,7 @@ class HdrService:
             exe_override=bool(self.settings.game(appid).get("exe")),
             exe_candidates=[{"path": c.path, "label": os.path.relpath(c.path, app.install_path), "arch": c.arch} for c in scan.candidates[:10]],
             context={
-                **{key: value for key, value in ctx.items() if key not in {"renodx_match", "specialk_local_gate", "specialk_delayed_gate"}},
+                **{key: value for key, value in ctx.items() if key not in {"renodx_match", "specialk_local_gate"}},
                 "renodx_match": {key: match.get(key) for key in ("name", "status", "match_type", "addon_url", "manual_url", "bitness", "notes")} if match else None,
             },
             recommendations=recs,
@@ -216,7 +217,7 @@ class HdrService:
     # ------------------------------------------------------------ install / remove
     def install(self, appid: str, method: str) -> dict[str, Any]:
         method = METHOD_ALIASES.get((method or "recommended").strip().lower(), (method or "recommended").strip().lower())
-        if method not in {"recommended", "renodx", "special_k", "special_k_delayed", "reshade", "native_hdr", "sdr"}:
+        if method not in {"recommended", "renodx", "special_k", "reshade", "native_hdr", "sdr"}:
             return _err(f"Unknown HDR method: {method}")
         if method in {"sdr", "native_hdr"}:
             result = self.uninstall(appid)
@@ -297,14 +298,24 @@ class HdrService:
 
     def _install_plan(
         self, app: SteamApp, scan: detect.GameScan, ctx: dict[str, Any], plan: list[str], *,
-        explicit: bool, renodx_file: Path | None = None, renodx_mod: dict[str, Any] | None = None, delay: int | None = None,
+        explicit: bool, renodx_file: Path | None = None, renodx_mod: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         logger = log.game(app.appid)
         target = self._target(app, scan)
         logger.info("Install plan for %s: %s (exe %s, api %s, arch %s)", app.name, plan, target.exe_path, target.api, target.arch)
 
+        self.recover(app.appid)
         old_record = self.store.get(app.appid)
-        stash = transaction.Stash(old_record, logger) if old_record else None
+        current: dict[str, Any] = {"tx": None}
+
+        def journal() -> None:
+            self.store.put_pending(app.appid, {
+                "stash": stash.state() if stash else None,
+                "tx": current["tx"].to_record() if current["tx"] else None,
+            })
+
+        stash = transaction.Stash(old_record, logger, on_change=journal) if old_record else None
+        journal()
         if stash:
             stash.take_apart()
         legacy = state.find_legacy(self.paths, app.appid, app.install_path)
@@ -315,11 +326,13 @@ class HdrService:
         errors: list[str] = []
         manual: dict[str, Any] | None = None
         for method in plan:
-            tx = transaction.Transaction(logger)
+            tx = current["tx"] = transaction.Transaction(logger, on_change=journal)
             try:
-                result = self._run_installer(method, tx, target, ctx, renodx_file, renodx_mod, delay)
+                result = self._run_installer(method, tx, target, ctx, renodx_file, renodx_mod)
             except ManualDownload as pending:
                 tx.rollback()
+                current["tx"] = None
+                journal()
                 manual = pending.mod
                 errors.append(f"RenoDX: {pending}")
                 continue
@@ -329,6 +342,8 @@ class HdrService:
                 errors.append(f"{METHOD_LABELS.get(method, method)}: {error}")
                 if rollback_errors:
                     errors.append(f"Rollback problems: {'; '.join(rollback_errors)}")
+                current["tx"] = None
+                journal()
                 continue
             record = {
                 "appid": app.appid,
@@ -351,6 +366,8 @@ class HdrService:
             if method == "renodx":
                 record["extra"]["source_addon"] = self._keep_addon_source(app.appid, Path(result["extra"]["addon"]))
             self.store.put(app.appid, record)
+            # Committed: from here on the record describes the install, not the journal.
+            self.store.delete_pending(app.appid)
             if stash:
                 try:
                     stash.commit()
@@ -363,7 +380,6 @@ class HdrService:
                 message=result.get("message", ""),
                 launch=result["launch"],
                 previous_launch=old_record.get("launch") if old_record else None,
-                launch_options=result["launch"]["preview"],
                 failed_attempts=errors,
                 legacy=bool(legacy),
                 renodx_manual=self._manual_info(manual) if manual else None,
@@ -376,12 +392,38 @@ class HdrService:
             except OSError as error:
                 logger.exception("Restoring the previous install failed")
                 errors.append(f"Restoring the previous install failed: {error}")
+        self.store.delete_pending(app.appid)
         if manual and explicit:
             return {"status": "manual_required", **self._manual_info(manual), "kept_previous": bool(stash)}
         message = "; ".join(errors) or "Nothing could be installed."
         if stash:
             message += " Your previous HDR install was left in place."
         return _err(message, kept_previous=bool(stash), renodx_manual=self._manual_info(manual) if manual else None)
+
+    def recover(self, appid: str) -> bool:
+        """Undo an install that was interrupted (crash, reboot, plugin reload) before it finished."""
+        pending = self.store.get_pending(appid)
+        if pending is None:
+            return False
+        logger = log.game(appid)
+        logger.warning("Found an interrupted install; undoing it.")
+        if pending.get("tx"):
+            errors, _remaining = transaction.revert(pending["tx"], logger)
+            if errors:
+                logger.error("Problems undoing the interrupted install: %s", errors)
+        if pending.get("stash"):
+            try:
+                transaction.Stash.from_state(pending["stash"], logger).put_back()
+            except OSError as error:
+                logger.error("Could not restore the previous install: %s", error)
+        self.store.delete_pending(appid)
+        return True
+
+    def recover_all(self) -> list[str]:
+        recovered = [appid for appid in self.store.pending_appids() if self.recover(appid)]
+        if recovered:
+            log.plugin().warning("Undid interrupted installs for %s", ", ".join(recovered))
+        return recovered
 
     def _keep_addon_source(self, appid: str, addon: Path) -> str:
         """Keep a copy of the installed addon so "Repair" works without the wiki or ~/Downloads."""
@@ -419,10 +461,9 @@ class HdrService:
                 ctx = self._context(app, scan)
                 mod = extra.get("mod") or {"name": kept.name, "match_type": "manual"}
                 return self._install_plan(app, scan, ctx, ["renodx"], explicit=True, renodx_file=kept, renodx_mod=mod)
-        if method == "special_k_delayed" and extra.get("delay"):
-            scan = self._scan(app)
-            return self._install_plan(app, scan, self._context(app, scan), [method], explicit=True, delay=int(extra["delay"]))
-        if method not in {"renodx", "special_k", "special_k_delayed", "reshade", "native_hdr"}:
+        if method == "special_k_delayed":
+            return _err("Special K Delayed is no longer supported. Remove HDR, then pick another method.")
+        if method not in {"renodx", "special_k", "reshade", "native_hdr"}:
             method = "recommended"
         return self.install(appid, method)
 
@@ -454,7 +495,7 @@ class HdrService:
 
     def _run_installer(
         self, method: str, tx: transaction.Transaction, target: Target, ctx: dict[str, Any],
-        renodx_file: Path | None, renodx_mod: dict[str, Any] | None, delay: int | None = None,
+        renodx_file: Path | None, renodx_mod: dict[str, Any] | None,
     ) -> dict[str, Any]:
         if method == "renodx":
             mod = renodx_mod or ctx.get("renodx_match")
@@ -464,8 +505,6 @@ class HdrService:
             return installers.install_renodx(tx, target, self.runtime, self.compat, addon, mod)
         if method == "special_k":
             return installers.install_specialk(tx, target, self.runtime, self.compat)
-        if method == "special_k_delayed":
-            return installers.install_specialk_delayed(tx, target, self.runtime, self.compat, self._wrapper(), delay)
         if method == "reshade":
             return installers.install_reshade(tx, target, self.runtime, self.compat)
         raise InstallError(f"Unhandled method {method}")
@@ -483,19 +522,11 @@ class HdrService:
                 last_error = error
         raise InstallError(f"RenoDX download failed ({url}): {last_error}")
 
-    def _wrapper(self) -> Path:
-        source = self.paths.assets_dir() / "specialk-delayed-launch.sh"
-        if not source.is_file():
-            raise InstallError("The Special K launch wrapper is missing from the plugin.")
-        # Outside bin/ so "remove shared downloads" never breaks a game's launch options.
-        target = self.paths.data / "launch" / "specialk-delayed-launch.sh"
-        fsutil.atomic_write_bytes(target, source.read_bytes(), mode=0o755)
-        return target
-
     def uninstall(self, appid: str) -> dict[str, Any]:
         if not valid_appid(appid):
             return _err(f"Invalid AppID: {appid}")
         logger = log.game(appid)
+        self.recover(appid)
         record = self.store.get(appid)
         app = self.steam.app(appid)
         errors: list[str] = []
@@ -579,26 +610,6 @@ class HdrService:
         self.settings.set_game(appid, "specialk_verified", bool(verified))
         return _ok(message="Special K HDR marked as working." if verified else "Special K HDR mark cleared.")
 
-    def set_specialk_delay(self, appid: str, seconds: int) -> dict[str, Any]:
-        record = self.store.get(appid)
-        if not record or record.get("method") != "special_k_delayed":
-            return _err("Special K Delayed is not installed for this game.")
-        seconds = max(1, min(60, int(seconds)))
-        old_launch = record["launch"]
-        wrapper = list(old_launch.get("wrapper", []))
-        if len(wrapper) >= 4:
-            wrapper[3] = str(seconds)
-        new_launch = launch.spec("", args=old_launch.get("args", []), wrapper=wrapper)
-        profiles = Path(record["extra"]["specialk_dir"]) / "Profiles.ini"
-        if profiles.exists():
-            text = profiles.read_text(encoding="utf-8", errors="replace")
-            section = f"Profile.{Path(record['exe_path']).stem}"
-            fsutil.atomic_write_text(profiles, installers.upsert_ini(text, section, {"GlobalInjectDelay": f"{float(seconds)}"}))
-        record["launch"] = new_launch
-        record["extra"]["delay"] = seconds
-        self.store.put(appid, record)
-        return _ok(message=f"Special K will inject {seconds}s after launch.", launch=new_launch, previous_launch=old_launch)
-
     # ------------------------------------------------------------ repair tools
     def reset_prefix(self, appid: str) -> dict[str, Any]:
         app = self._app(appid)
@@ -652,9 +663,6 @@ class HdrService:
         proton = self.paths.home / f"steam-{appid}.log"
         proton_log = proton.read_text(encoding="utf-8", errors="replace")[-150_000:] if proton.exists() else ""
         return _ok(plugin_log=plugin_log, proton_log=proton_log, path=str(path or ""), proton_log_path=str(proton))
-
-    def pcgw_fixes(self, appid: str) -> dict[str, Any]:
-        return self.pcgw.improvements(appid)
 
     def runtime_status(self) -> dict[str, Any]:
         return _ok(**self.runtime.status())

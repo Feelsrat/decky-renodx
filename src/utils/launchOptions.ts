@@ -5,8 +5,8 @@ export interface LaunchSpec {
   env: Record<string, string>;
   dll_overrides: Record<string, string>;
   args: string[];
+  /** Only set by Decky RenoDX 0.1-0.2.0 (Special K Delayed); kept so those options can be removed. */
   wrapper: string[];
-  preview?: string;
   /** Parts the user already had before HDR was applied; removing HDR leaves them. */
   keep?: LaunchKeep;
 }

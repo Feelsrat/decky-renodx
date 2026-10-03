@@ -9,7 +9,6 @@ from typing import Any
 
 from . import fsutil, launch
 from .compat import CompatDB
-from .config import DISPLAY_COMMANDER_NAME
 from .runtime import Runtime
 from .transaction import Transaction
 
@@ -124,18 +123,12 @@ def install_renodx(tx: Transaction, target: Target, runtime: Runtime, compat: Co
     reshade = _reshade_host(tx, target, runtime, hook, effects=False)
     tx.write_text(target.dir / "ReShadePreset.ini", "Techniques=\nTechniqueSorting=\n")
     addon_target = tx.copy_file(addon_file, target.dir / addon_file.name)
-    companion = ""
-    if addon_bits == "64":
-        cached = runtime.display_commander()
-        if cached is not None:
-            companion = str(tx.copy_file(cached, target.dir / DISPLAY_COMMANDER_NAME))
     return {
         "method": "renodx",
         "dll": hook,
         "launch": launch.spec(hook, args=compat.game_args(target.appid, "renodx")),
-        "extra": {"addon": str(addon_target), "display_commander": companion, "mod": _mod_summary(mod), "reshade_version": reshade["version"]},
-        "message": f"RenoDX installed ({mod.get('name') or addon_file.name}) with ReShade {reshade['version']} as {hook}.dll."
-        + (" Display Commander added." if companion else ""),
+        "extra": {"addon": str(addon_target), "mod": _mod_summary(mod), "reshade_version": reshade["version"]},
+        "message": f"RenoDX installed ({mod.get('name') or addon_file.name}) with ReShade {reshade['version']} as {hook}.dll.",
     }
 
 
@@ -190,30 +183,3 @@ def install_specialk(tx: Transaction, target: Target, runtime: Runtime, compat: 
         "message": f"Special K installed as {hook}.dll. Open its menu in game (Ctrl+Shift+Backspace) to confirm HDR.",
     }
 
-
-def install_specialk_delayed(tx: Transaction, target: Target, runtime: Runtime, compat: CompatDB, wrapper: Path, delay: int | None = None) -> dict[str, Any]:
-    gate = compat.specialk_delayed_gate(target.appid)
-    if not gate["available"]:
-        raise InstallError(gate["reason"])
-    prefix = target.compatdata / "pfx"
-    if not (prefix / "drive_c").is_dir():
-        raise InstallError("This game's Proton prefix does not exist yet. Launch the game once, quit, then try again.")
-    sk_dir = prefix / "drive_c" / "users" / "steamuser" / "Documents" / "My Mods" / "SpecialK"
-    tx.copy_tree(runtime.specialk(), sk_dir)
-    injector = next((path for name in ("SKIF.exe", "SpecialK.exe", "SpecialK64.exe") for path in sorted(sk_dir.rglob(name))), None)
-    if injector is None:
-        raise InstallError("The Special K download has no global injector (SKIF.exe).")
-    delay = delay or compat.specialk_delay(target.appid)
-    tx.write_text(sk_dir / "SpecialK.ini", specialk_ini("", compat.specialk_ini_tweaks(target.appid)))
-    profile = upsert_ini("", f"Profile.{target.exe_path.stem}", {
-        "Title": target.title, "Executable": target.exe_path.name, "Enabled": "true", "GlobalInjectDelay": f"{float(delay)}",
-    })
-    tx.write_text(sk_dir / "Profiles.ini", profile)
-    wrapper_args = ["bash", str(wrapper), target.appid, str(delay), str(injector), "--"]
-    return {
-        "method": "special_k_delayed",
-        "dll": "",
-        "launch": launch.spec("", args=compat.game_args(target.appid, "special_k"), wrapper=wrapper_args),
-        "extra": {"specialk_dir": str(sk_dir), "delay": delay, "injector": str(injector)},
-        "message": f"Special K will be injected {delay}s after launch (experimental). Check its HDR menu in game.",
-    }

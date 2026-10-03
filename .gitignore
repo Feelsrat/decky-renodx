@@ -1,58 +1,24 @@
-lib-cov
-*.seed
-*.log
-*.csv
-*.dat
-*.out
-*.pid
-*.gz
-*.zip
-*.swp
-
-pids
-logs
-results
-tmp
-
-# Coverage reports
-coverage
-
-# API keys and secrets
-.env
-
-# Dependency directory
-node_modules
-bower_components
-.pnpm-store
-
-# Editors
-.idea
-*.iml
-
-# OS metadata
-.DS_Store
-Thumbs.db
-
-# Ignore built ts files
+# Dependencies and build output
+node_modules/
+.pnpm-store/
 dist/
-
 __pycache__/
+*.pyc
+decky-renodx.zip
 
-/.yalc
-yalc.lock
-
-.vscode/settings.json
-
-# Ignore decky CLI for building plugins
-out
-out/*
-cli/
-cli/*
-cli/decky
-
-
-
-# Dev harness
+# Dev harness (pnpm dev)
 dev/dist/
 dev/.sandbox/
 dev/screens/
+
+# Local files
+*.log
+.env
+.vscode/settings.json
+.idea/
+.DS_Store
+Thumbs.db
+
+# Decky CLI, if you build with it
+out/
+cli/

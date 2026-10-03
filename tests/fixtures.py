@@ -150,12 +150,6 @@ class OfflineRuntime(Runtime):
         make_pe(root / "SKIF.exe", size=4096)
         return root
 
-    def display_commander(self):
-        path = self.store / "zzz_display_commander.addon64"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(b"display commander")
-        return path
-
 
 def tree_digest(root: Path) -> dict[str, str]:
     """Relative path -> content hash (dirs map to 'dir'), for byte-identical comparisons."""

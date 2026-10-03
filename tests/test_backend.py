@@ -9,7 +9,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from backend import compat, fsutil, launch, pcgw, recommend, renodx, state, transaction, updater, vdf  # noqa: E402
+from backend import compat, fsutil, installers, launch, pcgw, recommend, renodx, state, transaction, updater, vdf  # noqa: E402
 from backend.pe import read_pe  # noqa: E402
 from backend.service import HdrService  # noqa: E402
 from backend.steam import SteamLibrary  # noqa: E402
@@ -97,6 +97,12 @@ class SteamTests(ServiceCase):
 
 
 class ShortcutTests(ServiceCase):
+    def test_non_steam_games_skip_pcgamingwiki(self):
+        exe = make_pe(self.fake.root / "G" / "G.exe", imports=("d3d11.dll",))
+        self.fake.add_shortcut("G", str(exe), str(exe.parent))
+        self.service.pcgw.game_data = mock.Mock(side_effect=AssertionError("should not be called"))
+        self.assertEqual(self.service.game_state(str(0x9ABCDEF0))["status"], "success")
+
     def test_non_steam_game_is_listed_and_installable(self):
         folder = self.fake.root / "Games" / "Indie"
         exe = make_pe(folder / "bin" / "Indie.exe", imports=("d3d11.dll",))
@@ -341,17 +347,6 @@ class InstallFlowTests(ServiceCase):
         self.assertEqual(self.service.import_renodx("1000", str(downloads / "(1).zip"))["status"], "success")
         self.assertTrue(keep.exists())
 
-    def test_reset_prefix_returns_delayed_launch_to_strip(self):
-        root = self.fake.add_game("3000", "Delayed", "Delayed")
-        make_pe(root / "Delayed.exe", imports=("d3d11.dll",))
-        self.fake.paths.plugin_dir.joinpath("compatibility.json").write_text(json.dumps({"games": {"3000": {"name": "Delayed", "tools": {"special_k": {
-            "automation": {"preferred_injection": "global_delayed"}}}}}}), encoding="utf-8")
-        self.service.compat.reload()
-        self.fake.compatdata("3000")
-        installed = self.service.install("3000", "special_k_delayed")
-        result = self.service.reset_prefix("3000")
-        self.assertEqual(result["launch"], installed["launch"])
-
     def test_reshade_install_and_remove_restores_game(self):
         root, shipping = self.unreal_game()
         exe_dir = shipping.parent
@@ -377,7 +372,7 @@ class InstallFlowTests(ServiceCase):
         result = self.service.install("1000", "recommended")
         self.assertEqual(result["method"], "renodx", result)
         self.assertTrue((shipping.parent / "renodx-shippy.addon64").exists())
-        self.assertTrue((shipping.parent / "zzz_display_commander.addon64").exists())
+        self.assertFalse((shipping.parent / "zzz_display_commander.addon64").exists())
         ini = (shipping.parent / "ReShade.ini").read_text()
         self.assertIn("EffectSearchPaths=\n", ini)
         self.assertFalse((shipping.parent / "ReShade_shaders").exists())
@@ -432,27 +427,6 @@ class InstallFlowTests(ServiceCase):
         self.unreal_game()
         self.assertEqual(self.service.import_renodx("1000", "/etc/passwd")["status"], "error")
 
-    def test_specialk_delayed_needs_prefix_and_uses_wrapper(self):
-        root = self.fake.add_game("3000", "Delayed", "Delayed", sdcard=True)
-        make_pe(root / "Delayed.exe", imports=("d3d11.dll",))
-        self.fake.paths.plugin_dir.joinpath("compatibility.json").write_text(json.dumps({"games": {"3000": {"name": "Delayed", "tools": {"special_k": {
-            "special_k_delay_seconds": 7, "automation": {"preferred_injection": "global_delayed"}}}}}}), encoding="utf-8")
-        self.service.compat.reload()
-        result = self.service.install("3000", "special_k_delayed")
-        self.assertEqual(result["status"], "error")
-        self.assertIn("Launch the game once", result["message"])
-        prefix = self.fake.compatdata("3000", sdcard=True)
-        result = self.service.install("3000", "special_k_delayed")
-        self.assertEqual(result["status"], "success", result)
-        wrapper = result["launch"]["wrapper"]
-        self.assertEqual(wrapper[2:4], ["3000", "7"])
-        self.assertTrue(Path(wrapper[1]).is_file())
-        self.assertTrue(str(prefix) in wrapper[4])
-        changed = self.service.set_specialk_delay("3000", 12)
-        self.assertEqual(changed["launch"]["wrapper"][3], "12")
-        self.assertEqual(self.service.uninstall("3000")["status"], "success")
-        self.assertFalse((prefix / "pfx" / "drive_c" / "users").exists())
-
     def test_reset_prefix_refuses_running_game(self):
         self.fake.add_game("4000", "Running", "Running")
         self.fake.compatdata("4000")
@@ -504,6 +478,46 @@ class RepairTests(ServiceCase):
         self.assertEqual(self.service.store.get("1000")["launch"]["keep"], {"args": ["-dx11"], "dlls": ["dxgi"], "env": []})
 
 
+class CrashRecoveryTests(ServiceCase):
+    """A hard stop (power off, Decky killed) mid-install must be undone on the next start."""
+
+    def crash_during(self, method):
+        real = installers.install_reshade if method == "reshade" else installers.install_specialk
+
+        def crashing(tx, target, *args, **kwargs):
+            real(tx, target, *args, **kwargs)  # files are written...
+            raise KeyboardInterrupt("power cut")  # ...but the install never commits
+
+        name = "install_reshade" if method == "reshade" else "install_specialk"
+        with mock.patch(f"backend.installers.{name}", side_effect=crashing), self.assertRaises(KeyboardInterrupt):
+            self.service.install("1000", method)
+
+    def restart(self):
+        service = HdrService(self.fake.paths, "1.0.0")
+        service.runtime = self.service.runtime
+        return service
+
+    def test_interrupted_fresh_install_is_undone(self):
+        root, _shipping = self.unreal_game()
+        before = tree_digest(root)
+        self.crash_during("reshade")
+        self.assertNotEqual(tree_digest(root), before)
+        self.assertEqual(self.restart().recover_all(), ["1000"])
+        self.assertEqual(tree_digest(root), before)
+
+    def test_interrupted_switch_restores_previous_install(self):
+        root, _shipping = self.unreal_game()
+        self.assertEqual(self.service.install("1000", "reshade")["status"], "success")
+        installed = tree_digest(root)
+        record = self.service.store.get("1000")
+        self.crash_during("special_k")
+        service = self.restart()
+        service.recover_all()
+        self.assertEqual(tree_digest(root), installed)
+        self.assertEqual(service.store.get("1000")["installed_at"], record["installed_at"])
+        self.assertEqual(service.uninstall("1000")["status"], "success")
+
+
 class RepairEdgeTests(ServiceCase):
     def test_repair_migrates_legacy_renodx_reusing_its_addon(self):
         _root, shipping = self.unreal_game()
@@ -530,18 +544,6 @@ class RepairEdgeTests(ServiceCase):
         self.assertEqual(result["status"], "success", result)
         self.assertEqual(self.downloads, [])
         self.assertFalse(self.service.install_status("1000")["needs_repair"])
-
-    def test_repair_keeps_special_k_delay(self):
-        root = self.fake.add_game("3000", "Delayed", "Delayed")
-        make_pe(root / "Delayed.exe", imports=("d3d11.dll",))
-        self.fake.paths.plugin_dir.joinpath("compatibility.json").write_text(json.dumps({"games": {"3000": {"name": "Delayed", "tools": {"special_k": {
-            "automation": {"preferred_injection": "global_delayed"}}}}}}), encoding="utf-8")
-        self.service.compat.reload()
-        self.fake.compatdata("3000")
-        self.service.install("3000", "special_k_delayed")
-        self.service.set_specialk_delay("3000", 20)
-        result = self.service.repair("3000")
-        self.assertEqual(result["launch"]["wrapper"][3], "20")
 
     def test_native_hdr_is_recorded_so_it_can_be_replaced_and_removed(self):
         self.unreal_game()
@@ -576,11 +578,16 @@ class LegacyTests(ServiceCase):
 
 
 class MiscTests(unittest.TestCase):
-    def test_launch_preview_quotes_paths(self):
-        spec = launch.spec("", wrapper=["bash", "/home/deck/My Mods/w.sh", "1"], args=["-dx11"])
-        self.assertTrue(spec["preview"].startswith("PROTON_ENABLE_HDR=1"))
-        self.assertIn('"/home/deck/My Mods/w.sh"', spec["preview"])
-        self.assertTrue(spec["preview"].endswith("%command% -dx11"))
+    def test_launch_spec_is_structured_only(self):
+        self.assertEqual(launch.spec("dxgi", args=["-dx11"]), {"env": {"PROTON_ENABLE_HDR": "1", "DXVK_HDR": "1"}, "dll_overrides": {"dxgi": "n,b"}, "args": ["-dx11"], "wrapper": []})
+
+    def test_delayed_special_k_entries_are_blocked_for_local_install(self):
+        fake = FakeSteam()
+        self.addCleanup(fake.cleanup)
+        (fake.plugin_dir / "compatibility.json").write_text(json.dumps({"games": {"5": {"name": "X", "tools": {"special_k": {
+            "automation": {"preferred_injection": "global_delayed"}}}}}}))
+        db = compat.CompatDB(fake.plugin_dir / "compatibility.json", fake.root / "none.json")
+        self.assertFalse(db.specialk_local_gate("5")["available"])
 
     def test_hdr_env_is_gamescope_safe(self):
         env = launch.spec("dxgi")["env"]
@@ -604,11 +611,71 @@ class MiscTests(unittest.TestCase):
         merged = compat.merge({"games": {"1": {"name": "a"}, "2": {"name": "b"}}}, {"games": {"2": {"name": "B"}}})
         self.assertEqual(merged["games"], {"1": {"name": "a"}, "2": {"name": "B"}})
 
+    def test_pcgw_lookups_do_not_block_other_games(self):
+        import threading
+        import time
+        fake = FakeSteam()
+        self.addCleanup(fake.cleanup)
+        calls = []
+
+        def slow_fetch(url, **_kwargs):
+            calls.append(url)
+            if '"1"' in url or "%221%22" in url:
+                time.sleep(0.5)
+            return {"cargoquery": []}
+
+        wiki = pcgw.PCGamingWiki(fake.root / "pcgw.json", slow_fetch)
+        slow = threading.Thread(target=wiki.game_data, args=("1",))
+        slow.start()
+        time.sleep(0.05)
+        started = time.time()
+        wiki.game_data("2")
+        self.assertLess(time.time() - started, 0.3)
+        same = wiki.game_data("1")  # waits for the in-flight lookup instead of starting another
+        slow.join()
+        self.assertEqual(same.get("page_name"), "")
+        self.assertEqual(sum('"1"' in c or "%221%22" in c for c in calls), 1)
+
+    def test_runtime_folders_are_swapped_in_whole(self):
+        from backend.runtime import _replace_dir
+        fake = FakeSteam()
+        self.addCleanup(fake.cleanup)
+        source, target = fake.root / "new", fake.root / "rt" / "SpecialK"
+        (source / "sub").mkdir(parents=True)
+        (source / "sub" / "a.dll").write_bytes(b"new")
+        (target / "old").mkdir(parents=True)
+        _replace_dir(source, target)
+        self.assertEqual(sorted(p.name for p in target.rglob("*")), ["a.dll", "sub"])
+        self.assertEqual(sorted(p.name for p in target.parent.iterdir()), ["SpecialK"])
+
+    def test_compat_refresh_backs_off_and_uses_wall_clock(self):
+        fake = FakeSteam()
+        self.addCleanup(fake.cleanup)
+        db = compat.CompatDB(fake.plugin_dir / "compatibility.json", fake.root / "cache.json")
+        self.assertTrue(db.refresh_due(now=1000))
+        db.refresh_failed(now=1000)
+        self.assertFalse(db.refresh_due(now=1000 + 599))
+        self.assertTrue(db.refresh_due(now=1000 + 600))
+        db.refresh_failed(now=2000)
+        self.assertFalse(db.refresh_due(now=2000 + 1199))
+        (fake.root / "cache.json").write_text("{}")
+        db.refresh_soon()
+        self.assertFalse(db.refresh_due())
+
+    def test_update_refuses_without_systemd_run(self):
+        fake = FakeSteam()
+        self.addCleanup(fake.cleanup)
+        up = updater.Updater(fake.plugin_dir, "0.1.0")
+        staging = fake.root / "staging"
+        staging.mkdir()
+        with mock.patch("backend.updater.shutil.which", return_value=None), self.assertRaises(RuntimeError):
+            up._schedule_swap(staging)
+        self.assertEqual(list(up.work_dir.glob("apply-*")), [])
+
     def test_pcgw_helpers(self):
         self.assertEqual(pcgw.api_from_fields("9, 11", "", ""), "d3d11")
         self.assertEqual(pcgw.api_from_fields("", "", "1.2"), "vulkan")
-        text = "== Essential improvements ==\n* Fix one\n=== Skip intro ===\n== Other ==\n* no"
-        self.assertEqual(pcgw.extract_section(text, "Essential improvements"), ["Fix one", "Skip intro"])
+        self.assertEqual(pcgw.PCGamingWiki.page_url("Baldur's Gate 3"), "https://www.pcgamingwiki.com/wiki/Baldur%27s_Gate_3")
 
     def test_version_parsing(self):
         self.assertGreater(updater.parse_version("0.1.0"), updater.parse_version("0.0.81"))

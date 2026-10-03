@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # Steam launch wrapper for Decky RenoDX's experimental delayed Special K injection.
+# No longer used by new installs (removed in 0.2.1). Still shipped because the
+# self-updater in 0.2.0 refuses release zips without it; delete it in a later release.
 # Usage (set by the plugin): bash specialk-delayed-launch.sh <appid> <delay> <injector.exe> -- %command%
 set -u
 

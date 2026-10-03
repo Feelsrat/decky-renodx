@@ -38,6 +38,7 @@ export interface GameContext {
   anti_cheat: string[];
   linux_build: boolean;
   native_hdr: string;
+  pcgw_url: string;
   specialk_verified: boolean;
   renodx_match: { name: string; status: string; match_type: string; manual_url?: string } | null;
   renodx_error?: string;
@@ -150,10 +151,8 @@ export const api = {
   verify: callable<[appid: string], Simple>("verify_hdr_installation"),
   setExecutable: callable<[appid: string, path: string], Simple>("set_game_executable"),
   setSpecialKVerified: callable<[appid: string, verified: boolean], Simple>("set_special_k_verified"),
-  setSpecialKDelay: callable<[appid: string, seconds: number], ChangeResult>("set_special_k_delay"),
   resetPrefix: callable<[appid: string], ChangeResult>("reset_game_proton_prefix"),
   logs: callable<[appid: string], { status: string; plugin_log: string; proton_log: string; proton_log_path: string; message?: string }>("get_per_game_log"),
-  pcgwFixes: callable<[appid: string], { status: string; page_name?: string; essential_improvements?: string[]; issues_fixed?: string[]; message?: string }>("get_pcgw_improvements_issues"),
   resetCaches: callable<[], Simple>("reset_plugin_caches"),
   openUrl: callable<[url: string], Simple>("open_url"),
   runtimeStatus: callable<[], { status: string; installed: boolean; components: Record<string, string | boolean> }>("get_runtime_status"),

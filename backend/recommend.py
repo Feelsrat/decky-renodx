@@ -4,7 +4,7 @@ from __future__ import annotations
 from typing import Any
 
 DX_MODERN = {"d3d10", "d3d11", "d3d12", "dxgi", "dx11_dx12"}
-INSTALL_ORDER = ["renodx", "special_k", "special_k_delayed", "reshade"]
+INSTALL_ORDER = ["renodx", "special_k", "reshade"]
 
 
 def _rec(method: str, score: int, reason: str, confidence: str, notes: list[str] | None = None, **extra: Any) -> dict[str, Any]:
@@ -21,7 +21,6 @@ def evaluate(ctx: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, 
     match = ctx.get("renodx_match") or {}
     exe_found = bool(ctx.get("exe_found"))
     sk_local = ctx.get("specialk_local_gate") or {"available": True, "reason": ""}
-    sk_delayed = ctx.get("specialk_delayed_gate") or {"available": False, "reason": ""}
 
     blocked: dict[str, str] = {}
     if anti_cheat:
@@ -85,11 +84,6 @@ def evaluate(ctx: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, 
     if sk_score:
         recs.append(_rec("special_k", sk_score, "Special K can retrofit HDR into this game.", "medium" if sk_score > 70 else "low", sk_notes + notes_32))
 
-    if sk_delayed.get("available"):
-        recs.append(_rec("special_k_delayed", 60, str(sk_delayed.get("reason")), "low", ["Experimental."]))
-    else:
-        blocked.setdefault("special_k_delayed", str(sk_delayed.get("reason") or "Not needed for this game."))
-
     # ReShade AutoHDR
     if api == "vulkan":
         blocked.setdefault("reshade", "ReShade proxy DLLs cannot hook Vulkan games.")
@@ -139,7 +133,6 @@ def method_options(recs: list[dict[str, Any]], blocked: dict[str, str], ctx: dic
         option("recommended", "Recommended", top["reason"] if top else "No recommendation.", ""),
         option("renodx", "RenoDX", renodx_reason, renodx_badge),
         option("special_k", "Special K", "Adds HDR to most DX10-12 games. You confirm it in Special K's menu.", "Verified" if ctx.get("specialk_compat") else ""),
-        option("special_k_delayed", "Special K Delayed", str((ctx.get("specialk_delayed_gate") or {}).get("reason") or ""), "Experimental"),
         option("reshade", "ReShade AutoHDR", "Converts the SDR image to HDR with shaders. Works on most DirectX games; quality varies.", "Fallback"),
         {"method": "native_hdr", "label": "Native HDR (no mod)", "available": True,
          "reason": ("PCGamingWiki says this game has HDR. " if native else "") + "Only turns on Proton's HDR switches; enable HDR in the game's own settings.",

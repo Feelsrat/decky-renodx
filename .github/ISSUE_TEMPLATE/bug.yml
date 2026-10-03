@@ -1,0 +1,17 @@
+name: Plugin bug
+description: Something in the plugin itself is broken (crash, wrong state, install/remove problem).
+labels: ["bug"]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: Plugin version
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: Steps to reproduce, what you expected, and the plugin log (Advanced → View logs) if relevant.
+    validations:
+      required: true

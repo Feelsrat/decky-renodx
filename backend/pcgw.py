@@ -22,6 +22,7 @@ class PCGamingWiki:
         self._fetch_json = fetch_json
         self._lock = threading.Lock()
         self._cache: dict[str, Any] | None = None
+        self._inflight: dict[str, threading.Event] = {}
 
     # ------------------------------------------------------------ cache
     def _load(self) -> dict[str, Any]:
@@ -55,32 +56,40 @@ class PCGamingWiki:
 
     # ------------------------------------------------------------ public
     def game_data(self, appid: str) -> dict[str, Any]:
-        """HDR/API/engine/Special K hints for a Steam app. Never raises."""
+        """HDR/API/engine/Special K hints for a Steam app. Never raises.
+
+        Network requests run outside the shared lock, so a slow lookup for one
+        game never holds up another; concurrent calls for the same game share one fetch.
+        """
         key = f"game:{appid}"
         with self._lock:
             cached = self._get(key)
             if cached is not None:
-                return cached
-            try:
-                data = self._game_data(str(appid))
-            except Exception as error:
-                log.plugin().info("PCGamingWiki lookup failed for %s: %s", appid, error)
-                data = {"error": str(error)}
+                return {**cached}
+            pending = self._inflight.get(key)
+            if pending is None:
+                pending = self._inflight[key] = threading.Event()
+                owner = True
+            else:
+                owner = False
+        if not owner:
+            pending.wait(timeout=REQUEST_TIMEOUT * 6)
+            with self._lock:
+                return {**(self._get(key) or {"error": "PCGamingWiki lookup still running"})}
+        try:
+            data = self._game_data(str(appid))
+        except Exception as error:
+            log.plugin().info("PCGamingWiki lookup failed for %s: %s", appid, error)
+            data = {"error": str(error)}  # cached for ERROR_TTL so it isn't retried on every refresh
+        with self._lock:
             self._put(key, data)
-            return {**data}
+            self._inflight.pop(key, None)
+        pending.set()
+        return {**data}
 
-    def improvements(self, appid: str) -> dict[str, Any]:
-        data = self.game_data(appid)
-        if data.get("error"):
-            return {"status": "error", "message": f"PCGamingWiki unavailable: {data['error']}"}
-        if not data.get("page_name"):
-            return {"status": "error", "message": f"No PCGamingWiki page is linked to Steam AppID {appid}."}
-        return {
-            "status": "success",
-            "page_name": data["page_name"],
-            "essential_improvements": data.get("essential_improvements", []),
-            "issues_fixed": data.get("issues_fixed", []),
-        }
+    @staticmethod
+    def page_url(page_name: str) -> str:
+        return f"https://www.pcgamingwiki.com/wiki/{urllib.parse.quote(page_name.replace(' ', '_'))}" if page_name else ""
 
     # ------------------------------------------------------------ fetching
     def _query(self, params: dict[str, str]) -> Any:
@@ -114,18 +123,7 @@ class PCGamingWiki:
             "where": f'_pageName="{page.replace(chr(34), chr(92) + chr(34))}" AND Middleware HOLDS "Special K"', "limit": "1",
         })
         result["special_k"] = bool((middleware or {}).get("cargoquery"))
-        text = self._wikitext(page)
-        result["essential_improvements"] = extract_section(text, "Essential improvements")
-        result["issues_fixed"] = extract_section(text, "Issues fixed")
         return result
-
-    def _wikitext(self, page: str) -> str:
-        data = self._query({"action": "query", "prop": "revisions", "rvprop": "content", "rvslots": "main", "titles": page})
-        try:
-            pages = data.get("query", {}).get("pages", {})
-            return next(iter(pages.values())).get("revisions", [{}])[0].get("slots", {}).get("main", {}).get("*", "")
-        except (AttributeError, StopIteration, IndexError):
-            return ""
 
 
 def api_from_fields(direct3d: str, opengl: str, vulkan: str) -> str:
@@ -139,34 +137,3 @@ def api_from_fields(direct3d: str, opengl: str, vulkan: str) -> str:
         return "vulkan"
     return "unknown"
 
-
-def extract_section(text: str, name: str) -> list[str]:
-    if not text:
-        return []
-    heading = re.search(rf"(?im)^(=+)\s*{re.escape(name)}\s*\1\s*$", text)
-    if not heading:
-        return []
-    level = len(heading.group(1))
-    following = re.search(rf"(?im)^={{1,{level}}}\s*[^=\n].*={{1,{level}}}\s*$", text[heading.end():])
-    body = text[heading.end(): heading.end() + following.start()] if following else text[heading.end():]
-    lines: list[str] = []
-    for raw in body.splitlines():
-        line = raw.strip()
-        if not line or line.startswith("{{ii"):
-            continue
-        if line.startswith("==="):
-            clean = line.strip("= ")
-        elif line.startswith(("*", "#", ";", ":")):
-            clean = line.lstrip("*#;: ")
-        elif "{{Fixbox" in line:
-            clean = line
-        else:
-            continue
-        clean = re.sub(r"\{\{([^|{}]+)\|([^{}]+)\}\}", r"\2", clean)
-        clean = re.sub(r"\{\{|\}\}|\[\[|\]\]|<[^>]+>", "", clean)
-        clean = re.sub(r"\s+", " ", clean).strip()
-        if clean and clean not in lines:
-            lines.append(clean[:320])
-        if len(lines) >= 80:
-            break
-    return lines

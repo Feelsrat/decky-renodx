@@ -11,7 +11,8 @@ ROOT_FILES = ["plugin.json", "main.py", "package.json", "README.md", "LICENSE", 
 FOLDERS = ["dist", "defaults", "backend"]
 EXCLUDED_PARTS = {"__pycache__", ".pytest_cache", ".mypy_cache"}
 EXCLUDED_SUFFIXES = {".pyc", ".pyo", ".map"}
-# Files the running plugin (or the self-updater of older versions) requires.
+# Files the running plugin requires, plus files older versions' self-updaters insist on:
+# backend/cache.py (0.0.x) and defaults/assets/specialk-delayed-launch.sh (0.2.0).
 REQUIRED = ["dist/index.js", "main.py", "backend/service.py", "backend/cache.py", "defaults/assets/specialk-delayed-launch.sh"]
 FIXED_DATE = (2020, 1, 1, 0, 0, 0)
 

@@ -12,6 +12,7 @@ from . import fsutil, log
 from .config import RENODX_MODS_URL
 
 CACHE_TTL = 24 * 3600
+RETRY_AFTER = 15 * 60
 CACHE_SCHEMA = 2
 
 GENERIC_FALLBACK_URLS = {
@@ -264,6 +265,7 @@ class RenoDXCatalog:
         self._fetch_text = fetch_text
         self._mods: list[dict[str, Any]] | None = None
         self._fetched_at = 0.0
+        self._retry_after = 0.0
 
     def mods(self, refresh: bool = False) -> list[dict[str, Any]]:
         """Cached mod list; a stale cache is used when the wiki cannot be reached."""
@@ -271,8 +273,9 @@ class RenoDXCatalog:
             cached = fsutil.read_json(self.cache_file, {}) or {}
             if cached.get("schema") == CACHE_SCHEMA and isinstance(cached.get("mods"), list):
                 self._mods, self._fetched_at = cached["mods"], float(cached.get("fetched_at", 0))
-        fresh = self._mods is not None and time.time() - self._fetched_at < CACHE_TTL
-        if fresh and not refresh:
+        now = time.time()
+        fresh = self._mods is not None and now - self._fetched_at < CACHE_TTL
+        if (fresh or (self._mods is not None and now < self._retry_after)) and not refresh:
             return self._mods or []
         try:
             mods = parse_mods(self._fetch_text(RENODX_MODS_URL))
@@ -281,13 +284,15 @@ class RenoDXCatalog:
             self._mods, self._fetched_at = mods, time.time()
             fsutil.write_json(self.cache_file, {"schema": CACHE_SCHEMA, "fetched_at": self._fetched_at, "mods": mods})
         except Exception as error:
+            # Don't retry on every panel refresh; a slow or captive network would stall each one.
+            self._retry_after = time.time() + RETRY_AFTER
             if self._mods is None:
                 raise
             log.plugin().warning("RenoDX wiki unavailable, using cached list: %s", error)
         return self._mods or []
 
     def clear(self) -> None:
-        self._mods, self._fetched_at = None, 0.0
+        self._mods, self._fetched_at, self._retry_after = None, 0.0, 0.0
         if self.cache_file.exists():
             self.cache_file.unlink()
 

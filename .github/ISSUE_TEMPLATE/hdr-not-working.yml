@@ -1,0 +1,38 @@
+name: HDR not working for a game
+description: An HDR method installed but the game isn't in HDR (or looks wrong).
+title: "HDR not working: <game>"
+labels: ["game report"]
+body:
+  - type: markdown
+    attributes:
+      value: The plugin's "Report on GitHub" button fills most of this in for you.
+  - type: input
+    id: game
+    attributes:
+      label: Game
+      description: Name, and the Steam AppID or "non-Steam".
+    validations:
+      required: true
+  - type: dropdown
+    id: method
+    attributes:
+      label: Method
+      options: [RenoDX, Special K, ReShade AutoHDR, Native HDR, Not sure]
+    validations:
+      required: true
+  - type: input
+    id: detected
+    attributes:
+      label: Detected
+      description: API, bit-ness and engine shown on the status card (e.g. DX12, 64-bit, Unreal).
+  - type: input
+    id: version
+    attributes:
+      label: Plugin version
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you saw, and what you expected. Logs from Advanced → View logs help a lot.
+    validations:
+      required: true

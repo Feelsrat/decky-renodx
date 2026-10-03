@@ -21,7 +21,7 @@ from . import fsutil, log, net
 from .config import GITHUB_RELEASES_URL, PLUGIN_NAME, PLUGIN_PACKAGE
 
 CHECK_TTL = 6 * 3600
-REQUIRED_FILES = ("plugin.json", "package.json", "main.py", "dist/index.js", "backend/service.py", "defaults/assets/specialk-delayed-launch.sh")
+REQUIRED_FILES = ("plugin.json", "package.json", "main.py", "dist/index.js", "backend/service.py")
 
 
 def parse_version(version: str) -> tuple[int, ...]:
@@ -156,19 +156,23 @@ fi
 systemctl start plugin_loader.service 2>/dev/null || systemctl --user start plugin_loader.service 2>/dev/null
 rm -f "$0"
 """
+        self.work_dir.mkdir(parents=True, exist_ok=True)
         fd, helper = tempfile.mkstemp(prefix="apply-", suffix=".sh", dir=str(self.work_dir))
         with os.fdopen(fd, "w") as handle:
             handle.write(script)
         os.chmod(helper, 0o700)
         env = net.clean_env()
         unit = f"{PLUGIN_PACKAGE}-update-{int(time.time())}"
+        # The helper must live outside plugin_loader.service's cgroup, or stopping the
+        # loader kills it mid-swap and Decky stays down. Only systemd-run guarantees that.
+        error = "systemd-run is not available"
         if shutil.which("systemd-run"):
             result = subprocess.run(["systemd-run", f"--unit={unit}", "--collect", "--no-block", "/bin/bash", helper], capture_output=True, text=True, timeout=15, env=env)
             if result.returncode == 0:
                 return f"systemd unit {unit}"
-            log.plugin().warning("systemd-run failed: %s", result.stderr.strip())
-        subprocess.Popen(["/bin/bash", helper], start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
-        return "detached helper"
+            error = result.stderr.strip() or f"systemd-run exited {result.returncode}"
+        os.unlink(helper)
+        raise RuntimeError(f"Could not start the update helper ({error}). Nothing was changed.")
 
     def cleanup_previous(self) -> None:
         legacy_backup = self.plugin_dir.with_name(f"{self.plugin_dir.name}.previous")

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from typing import Any
 
@@ -21,12 +22,36 @@ def _list(value: Any) -> list[Any]:
     return [value] if isinstance(value, str) and value.strip() else []
 
 
+REFRESH_AGE = 24 * 3600
+RETRY_MIN, RETRY_MAX = 600, 6 * 3600
+
+
 class CompatDB:
     def __init__(self, bundled: Path, cached: Path):
         self.bundled_path = Path(bundled)
         self.cached_path = Path(cached)
         self.data: dict[str, Any] = {"games": {}}
+        self._next_try = 0.0
+        self._retry_delay = RETRY_MIN
         self.reload()
+
+    # Refresh timing uses the wall clock (time.time), not a long asyncio.sleep:
+    # the monotonic clock stops while the Deck is suspended.
+    def refresh_due(self, now: float | None = None) -> bool:
+        now = time.time() if now is None else now
+        try:
+            fresh = now - self.cached_path.stat().st_mtime < REFRESH_AGE
+        except OSError:
+            fresh = False
+        return not fresh and now >= self._next_try
+
+    def refresh_failed(self, now: float | None = None) -> None:
+        now = time.time() if now is None else now
+        self._next_try = now + self._retry_delay
+        self._retry_delay = min(self._retry_delay * 2, RETRY_MAX)
+
+    def refresh_soon(self) -> None:
+        self._next_try, self._retry_delay = 0.0, RETRY_MIN
 
     def reload(self) -> None:
         bundled = fsutil.read_json(self.bundled_path, {}) or {}
@@ -40,6 +65,7 @@ class CompatDB:
             raise ValueError("remote compatibility.json failed the sanity check")
         fsutil.atomic_write_text(self.cached_path, text)
         self.reload()
+        self.refresh_soon()
         return len(parsed["games"])
 
     # ------------------------------------------------------------ lookups
@@ -117,12 +143,6 @@ class CompatDB:
         tweaks = _dict(self.tool(appid, "special_k").get("special_k_ini_tweaks"))
         return {str(section): {str(k): str(v) for k, v in _dict(values).items()} for section, values in tweaks.items()}
 
-    def specialk_delay(self, appid: str, default: int = 5) -> int:
-        try:
-            return max(1, min(60, int(float(self.tool(appid, "special_k").get("special_k_delay_seconds") or default))))
-        except (TypeError, ValueError):
-            return default
-
     def specialk_avoid_hdr(self, appid: str) -> bool:
         return bool(_dict(self.automation(appid, "special_k").get("hdr")).get("avoid"))
 
@@ -146,25 +166,12 @@ class CompatDB:
         if "local" in avoid_modes:
             return {"available": False, "reason": "Compatibility database says local Special K injection should be avoided."}
         if automation.get("avoid_injection_at_launch") and not local_dll:
-            return {"available": False, "reason": "Needs delayed injection; use Special K Delayed instead."}
+            return {"available": False, "reason": "Needs Special K injected after launch (global injector), which this plugin doesn't set up. See the game's notes."}
         if preferred.startswith("global") and "local" not in preferred and not local_dll:
-            return {"available": False, "reason": f"Needs {preferred.replace('_', ' ')} injection; local DLL injection is not safe here."}
+            return {"available": False, "reason": f"Needs {preferred.replace('_', ' ')} Special K injection, which this plugin doesn't set up. See the game's notes."}
         if automation.get("anti_cheat"):
             return {"available": False, "reason": "Needs anti-cheat changes before Special K is safe."}
         return {"available": True, "reason": "Local Special K install is allowed by the compatibility database."}
-
-    def specialk_delayed_gate(self, appid: str) -> dict[str, Any]:
-        automation = self.automation(appid, "special_k")
-        if not self.tool(appid, "special_k"):
-            return {"available": False, "reason": "Only offered for games whose compatibility entry needs delayed injection."}
-        preferred = str(automation.get("preferred_injection") or "").lower()
-        if _dict(automation.get("hdr")).get("avoid"):
-            return {"available": False, "reason": "Compatibility database says to avoid Special K HDR for this game."}
-        if automation.get("anti_cheat"):
-            return {"available": False, "reason": "Needs anti-cheat changes before global injection is safe."}
-        if "global" in preferred and ("delayed" in preferred or automation.get("avoid_injection_at_launch")):
-            return {"available": True, "reason": f"Experimental: injects Special K {self.specialk_delay(appid)}s after launch."}
-        return {"available": False, "reason": "This game's entry does not need delayed injection."}
 
 
 def merge(bundled: dict[str, Any], cached: dict[str, Any]) -> dict[str, Any]:

@@ -25,8 +25,6 @@ SPECIALK_RELEASES_URL = "https://api.github.com/repos/SpecialKO/SpecialK/release
 LILIUM_RELEASES_URL = "https://api.github.com/repos/EndlesslyFlowering/ReShade_HDR_shaders/releases/latest"
 PUMBO_AUTOHDR_ZIP_URL = "https://github.com/Filoppi/PumboAutoHDR/archive/refs/heads/master.zip"
 AUTOHDR_ADDON_ZIP_URL = "https://github.com/MajorPainTheCactus/AutoHDR-ReShade/archive/refs/heads/main.zip"
-DISPLAY_COMMANDER_NAME = "zzz_display_commander.addon64"
-DISPLAY_COMMANDER_URL = f"https://github.com/pmnoxx/display-commander/releases/download/latest_build/{DISPLAY_COMMANDER_NAME}"
 SEVENZIP_VERSION = "2501"
 
 # Environment variables every HDR launch gets. Deliberately absent:

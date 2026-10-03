@@ -1,6 +1,6 @@
 {
   "name": "decky-renodx",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Decky Loader plugin: per-game HDR for Proton games via RenoDX, Special K or ReShade AutoHDR",
   "type": "module",
   "scripts": {
@@ -41,10 +41,8 @@
   "devDependencies": {
     "@decky/rollup": "^1.0.2",
     "@decky/ui": "^4.11.0",
-    "@rollup/rollup-linux-x64-musl": "^4.53.3",
     "@types/react": "19.1.1",
     "@types/react-dom": "19.1.1",
-    "@types/webpack": "^5.28.5",
     "esbuild": "~0.25.12",
     "playwright-core": "~1.56.1",
     "react": "18.3.1",

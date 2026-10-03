@@ -4,7 +4,7 @@ A [Decky Loader](https://decky.xyz) plugin that adds HDR to Proton games on the 
 
 1. **RenoDX**: a per-game HDR mod from the [RenoDX wiki](https://github.com/clshortfuse/renodx/wiki/Mods), loaded through ReShade. Generic Unreal/Unity addons are offered as an experimental option.
 2. **Native HDR**: if the game has its own HDR, the plugin only sets Proton's HDR switches.
-3. **Special K**: HDR retrofit for DX10-12 games (or games listed in the compatibility database), including an experimental delayed-injection mode.
+3. **Special K**: HDR retrofit for DX10-12 games, or games listed in the compatibility database.
 4. **ReShade AutoHDR**: AutoHDR, Lilium and Pumbo shaders as a fallback.
 
 It also sets the matching Steam launch options for you. Steam games and non-Steam games you've added to Steam are both supported.
@@ -30,13 +30,13 @@ The ReShade overlay opens with **Home** and Special K with **Ctrl+Shift+Backspac
 
 Some RenoDX mods are only on Nexus Mods or Discord. For those, download the `.addon64`/`.addon32` (or an archive containing it) to `~/Downloads` from Desktop Mode, then use **Import downloaded RenoDX mod**.
 
-**Advanced** has: choosing the game executable by hand, checking the installed files, viewing plugin/Proton logs, PCGamingWiki fixes, resetting caches, and resetting the Proton prefix as a last resort.
+**Advanced** has: choosing the game executable by hand, checking the installed files, reinstalling (repair), viewing plugin/Proton logs, a link to the game's PCGamingWiki page, refreshing the mod list, and resetting the Proton prefix as a last resort.
 
 ## Limitations
 
 - Native Linux builds must be switched to Proton first.
 - Vulkan games can't use proxy-DLL injection (ReShade/Special K/RenoDX). Use their native HDR if they have it.
-- Special K HDR, and the delayed mode especially, always needs a check in game.
+- Special K HDR always needs a check in game. Games whose compatibility entry needs Special K injected after launch (its global injector) aren't set up automatically.
 - Updating a game through Steam can replace installed files. The panel shows when files are missing; reinstalling repairs it.
 
 ## Development
@@ -55,7 +55,7 @@ pnpm dev             # http://127.0.0.1:8787
 pnpm dev:screens     # (with pnpm dev running) screenshots of every scenario into dev/screens/
 ```
 
-`pnpm dev` bundles the real plugin UI with browser stand-ins for `@decky/ui`, `@decky/api` and `SteamClient`, laid out like the Quick Access Menu. It also starts `dev/server.py`, which runs the real Python backend against a fake Steam library in `dev/.sandbox`. That library has an Unreal game, a 32-bit DX9 game, a Vulkan game, an anti-cheat game, a native Linux build, a native-HDR game, a Special K Delayed game and a non-Steam shortcut. Downloads are faked, so installs, repairs and removals run for real against the fake game folders. The page shows the resulting Steam launch options next to the panel. Useful flags:
+`pnpm dev` bundles the real plugin UI with browser stand-ins for `@decky/ui`, `@decky/api` and `SteamClient`, laid out like the Quick Access Menu. It also starts `dev/server.py`, which runs the real Python backend against a fake Steam library in `dev/.sandbox`. That library has an Unreal game, a 32-bit DX9 game, a Vulkan game, an anti-cheat game, a native Linux build, a native-HDR game, a game with compatibility notes and a non-Steam shortcut. Downloads are faked, so installs, repairs and removals run for real against the fake game folders. The page shows the resulting Steam launch options next to the panel. Useful flags:
 
 - `python3 dev/server.py --hdr off`: pretend HDR is turned off in SteamOS.
 - `--reset`: start over with a fresh fake library.
@@ -74,13 +74,16 @@ Layout:
 | `backend/installers.py` | One installer per method, writing only through `transaction.py` |
 | `backend/transaction.py` | Records and reverses file changes |
 | `backend/runtime.py` | Shared downloads |
-| `backend/renodx.py`, `pcgw.py`, `compat.py` | RenoDX wiki, PCGamingWiki, compatibility database |
+| `backend/renodx.py`, `pcgw.py`, `compat.py` | RenoDX wiki, PCGamingWiki (native HDR, API, engine), compatibility database |
 | `src/components/HdrPanel.tsx` | The per-game panel |
 | `src/utils/launchOptions.ts` | Merging and removing launch options |
 | `dev/` | Local UI harness (see above) |
 | `compatibility.json` | Per-game knowledge base; see [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) |
 
 ## Releasing
+
+1. Add a `## x.y.z` section to `CHANGELOG.md` and commit it. The release notes come from it, and releasing refuses without it.
+2. Run:
 
 ```bash
 pnpm run release -- patch     # or minor / major / 1.2.3
@@ -89,6 +92,13 @@ pnpm run release -- patch     # or minor / major / 1.2.3
 This bumps `package.json`, runs the tests, commits, tags `vX.Y.Z` and pushes. The **Release** workflow then builds `decky-renodx.zip` and publishes the GitHub release that the in-plugin updater installs from.
 
 You can also run the **Release** workflow by hand (Actions → Release → Run workflow): it releases the version in `package.json` from the chosen branch and creates the tag itself.
+
+## Maintainer notes
+
+- `pnpm dev` to work on the UI, `pnpm test` before pushing (CI runs the same).
+- Never hand-edit `compatibility.json`; use `scripts/compat_db.py` (see [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md)). The running plugin picks up changes from `main` within a day, no release needed.
+- `backend/cache.py` and `defaults/assets/specialk-delayed-launch.sh` are only shipped because older versions' self-updaters require them in release zips. Remove them after a release or two.
+- Cleanup for installs made by 0.0.x (`state.find_legacy`/`remove_legacy`) can go after 0.3.
 
 ## License
 

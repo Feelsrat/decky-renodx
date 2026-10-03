@@ -51,9 +51,8 @@ Fields the plugin **applies automatically** at install time:
 | field | type | effect |
 | --- | --- | --- |
 | `launch_options` | `string[]` | game arguments added after `%command%` (and removed again on uninstall) |
-| `special_k_delay_seconds` | `number` | delay for the Special K Delayed method (launch wrapper + `GlobalInjectDelay` in Profiles.ini) |
 | `special_k_ini_tweaks` | `{ "Section": { "Key": "value" } }` | merged into the Special K ini on install (`backend/installers.py:specialk_ini`) |
-| `automation.preferred_injection` | `"local" \| "global" \| "global_delayed"` | steers the Special K install method |
+| `automation.preferred_injection` | `"local" \| "global" \| "global_delayed"` | `global*` blocks the automatic (local DLL) Special K install unless `local_dll` is given |
 | `automation.local_dll.target` | dll name | forces the Special K hook DLL (dxgi/d3d11/d3d9/…) |
 | `automation.local_dll.relative_path` | path | installs Special K into a subfolder relative to the exe dir |
 | `automation.force_render_api` | api name | overrides detected graphics API |
@@ -70,6 +69,7 @@ Fields the plugin **surfaces to the user** (shown in the panel, never auto-appli
 
 Informational / provenance fields (not consumed by the plugin):
 
+- `special_k_delay_seconds` (the delayed-injection method was removed in 0.2.1)
 - `automation.appid_resolution` — how the AppID was determined (`method`, `source`)
 - `automation.source` — where the entry came from (e.g. "RenoDX Mods wiki")
 - `automation.engine`, `automation.renodx_profile`, `automation.renodx_settings`

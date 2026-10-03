@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ButtonItem, ConfirmModal, DialogButton, DropdownItem, Focusable, Navigation, PanelSection, PanelSectionRow, showModal } from "@decky/ui";
+import { ButtonItem, ConfirmModal, DialogButton, DropdownItem, Focusable, Navigation, PanelSection, PanelSectionRow, showModal, useQuickAccessVisible } from "@decky/ui";
 import { toaster } from "@decky/api";
 import { api, type ChangeResult, type GameState, type ManualDownload, type MethodOption } from "../backend";
 import { EMPTY, gameRef, useGames } from "../state";
@@ -29,25 +29,21 @@ const CHECK_STEPS: Record<string, string[]> = {
     "Launch the game and open Special K with Ctrl+Shift+Backspace (bind it in Steam Input).",
     "In its HDR section, check that HDR is active and set the peak brightness.",
   ],
-  special_k_delayed: [
-    "Launch the game and wait a few seconds for Special K to attach.",
-    "Open Special K with Ctrl+Shift+Backspace and check its HDR section.",
-  ],
   native_hdr: ["Launch the game and turn on HDR in its own display or graphics settings."],
 };
 
+/** Opens .github/ISSUE_TEMPLATE/hdr-not-working.yml with its fields filled in (they're matched by id). */
 function reportUrl(state: GameState, version: string) {
   const ctx = state.context;
-  const body = [
-    `**Game:** ${state.title} (${state.kind === "shortcut" ? "non-Steam" : `AppID ${state.appid}`})`,
-    `**Method:** ${methodName(state.install.method) || "none"}`,
-    `**Detected:** ${ctx.api}, ${ctx.architecture}-bit, engine ${ctx.engine}, hook ${ctx.hook || "-"}`,
-    `**Plugin:** ${version || "unknown"}`,
-    "",
-    "**What happened?**",
-    "",
-  ].join("\n");
-  return `${REPO}/issues/new?${new URLSearchParams({ title: `HDR not working: ${state.title}`, body }).toString()}`;
+  const params = new URLSearchParams({
+    template: "hdr-not-working.yml",
+    title: `HDR not working: ${state.title}`,
+    game: `${state.title} (${state.kind === "shortcut" ? "non-Steam" : `AppID ${state.appid}`})`,
+    method: methodName(state.install.method) || "Not sure",
+    detected: `${ctx.api}, ${ctx.architecture}-bit, engine ${ctx.engine}, hook ${ctx.hook || "-"}`,
+    version: version || "unknown",
+  });
+  return `${REPO}/issues/new?${params.toString()}`;
 }
 
 function openLink(url: string) {
@@ -67,7 +63,8 @@ function Buttons({ children }: { children: React.ReactNode }) {
 }
 
 export default function HdrPanel() {
-  const { games, appid, setAppid, entries, patch, refresh, loadGames, display, refreshDisplay, running } = useGames();
+  const { games, appid, setAppid, entries, patch, refresh, loadGames, display, refreshDisplay, running, opened } = useGames();
+  const visible = useQuickAccessVisible();
   const [section, setSection] = useState<"" | "methods" | "advanced">("");
   const [version, setVersion] = useState("");
   const entry = entries[appid] || EMPTY;
@@ -76,8 +73,10 @@ export default function HdrPanel() {
   const inFlight = useRef(new Set<string>());
 
   useEffect(() => {
-    loadGames().catch((error) => toast("Couldn't list games", String(error)));
-    refreshDisplay();
+    if (visible) opened().catch((error) => toast("Couldn't list games", String(error)));
+  }, [visible]);
+
+  useEffect(() => {
     api.updateStatus().then((status) => setVersion(status.current || "")).catch(() => undefined);
   }, []);
 
@@ -424,9 +423,9 @@ function SectionToggle({ open, onClick, disabled, children }: { open: boolean; o
 
 function MethodList({ state, busy, onPick, onImport }: { state: GameState; busy: boolean; onPick: (option: MethodOption) => void; onImport: () => void }) {
   const installed = state.install.installed ? state.install.method : "";
-  // "Remove HDR" already covers SDR, and the delayed mode only matters for the few games that need it.
+  // "Remove HDR" already covers SDR.
   const options = state.method_options.filter((option) =>
-    !["recommended", "sdr", installed].includes(option.method) && !(option.method === "special_k_delayed" && !option.available),
+    !["recommended", "sdr", installed].includes(option.method),
   );
   return (
     <>
@@ -449,7 +448,6 @@ function MethodList({ state, busy, onPick, onImport }: { state: GameState; busy:
 
 function Advanced({ state, busy, simple, run }: { state: GameState; busy: boolean; simple: Simple; run: Run }) {
   const ctx = state.context;
-  const delay = state.install.method === "special_k_delayed" ? Number(state.install.extra?.delay || 5) : 0;
   const short = (path: string) => (path ? path.replace(state.install_path, "…") || "…" : "-");
   return (
     <>
@@ -473,22 +471,11 @@ function Advanced({ state, busy, simple, run }: { state: GameState; busy: boolea
           onChange={(option) => simple("Executable", () => api.setExecutable(state.appid, String(option.data)))}
         />
       </PanelSectionRow>
-      {delay > 0 && (
-        <PanelSectionRow>
-          <DropdownItem
-            label="Special K injection delay"
-            disabled={busy}
-            rgOptions={[3, 5, 8, 10, 15, 20, 30].map((seconds) => ({ data: seconds, label: `${seconds} seconds` }))}
-            selectedOption={delay}
-            onChange={(option) => run(state, "Changing delay", () => api.setSpecialKDelay(state.appid, Number(option.data)))}
-          />
-        </PanelSectionRow>
-      )}
       <Buttons>
         {state.install.installed && <DialogButton disabled={busy} onClick={() => simple("Check files", () => api.verify(state.appid))}>Check installed files</DialogButton>}
         {state.install.installed && !state.install.legacy && <DialogButton disabled={busy} onClick={() => run(state, "Repairing", () => api.repair(state.appid))}>Reinstall (repair)</DialogButton>}
         <DialogButton onClick={() => viewLogs(state)}>View logs</DialogButton>
-        <DialogButton onClick={() => viewWiki(state)}>PCGamingWiki fixes</DialogButton>
+        {ctx.pcgw_url && <DialogButton onClick={() => openLink(ctx.pcgw_url)}>Open on PCGamingWiki</DialogButton>}
         <DialogButton disabled={busy} onClick={() => simple("Refreshed", () => api.resetCaches())}>Refresh mod list and wiki data</DialogButton>
         <DialogButton
           disabled={busy}
@@ -524,27 +511,5 @@ async function viewLogs(state: GameState) {
     );
   } catch (error) {
     toast("Logs unavailable", String(error));
-  }
-}
-
-async function viewWiki(state: GameState) {
-  try {
-    const result = await api.pcgwFixes(state.appid);
-    const list = (items?: string[]) => (items?.length ? items.map((item) => `• ${item}`).join("\n") : "No entries.");
-    showModal(
-      <TextModal
-        title={`PCGamingWiki: ${result.page_name || state.title}`}
-        tabs={
-          result.status === "success"
-            ? [
-                { title: "Essential improvements", content: list(result.essential_improvements) },
-                { title: "Issues fixed", content: list(result.issues_fixed) },
-              ]
-            : [{ title: "Error", content: result.message || "Unavailable." }]
-        }
-      />,
-    );
-  } catch (error) {
-    toast("PCGamingWiki unavailable", String(error));
   }
 }

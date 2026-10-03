@@ -37,6 +37,24 @@ class InstallStore:
         if path.exists():
             path.unlink()
 
+    # An in-progress install's journal (see service._install_plan). If one exists
+    # when the plugin starts, the install was interrupted and gets undone.
+    def _pending_path(self, appid: str) -> Path:
+        return self._path(appid).with_suffix(".pending.json")
+
+    def get_pending(self, appid: str) -> dict[str, Any] | None:
+        data = fsutil.read_json(self._pending_path(appid))
+        return data if isinstance(data, dict) else None
+
+    def put_pending(self, appid: str, data: dict[str, Any]) -> None:
+        fsutil.write_json(self._pending_path(appid), data)
+
+    def delete_pending(self, appid: str) -> None:
+        self._pending_path(appid).unlink(missing_ok=True)
+
+    def pending_appids(self) -> list[str]:
+        return sorted(path.name.split(".", 1)[0] for path in self.directory.glob("*.pending.json"))
+
 
 class Settings:
     """Small per-game preferences (executable override, Special K verified)."""

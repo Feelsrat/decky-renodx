@@ -58,7 +58,7 @@ export interface LaunchUpdate {
 export async function updateLaunchOptions(game: GameRef, spec: LaunchSpec | null, previous: (LaunchSpec | null | undefined)[]): Promise<LaunchUpdate> {
   const current = await readLaunchOptions(game);
   if (current === null) {
-    const value = spec?.preview || "";
+    const value = spec ? mergeHdr("", spec) : "";
     return {
       ok: false,
       value,

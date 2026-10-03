@@ -39,7 +39,7 @@ step("launch option tests", process.execPath, ["--experimental-strip-types", "--
 step("TypeScript types", process.execPath, [join(rootDir, "node_modules", "typescript", "bin", "tsc"), "--noEmit", "--skipLibCheck"]);
 step("frontend build", process.execPath, [join(rootDir, "node_modules", "rollup", "dist", "bin", "rollup"), "-c"]);
 step("dev harness build", process.execPath, ["dev/build.mjs"]);
-for (const file of ["dist/index.js", "LICENSE", "defaults/assets/specialk-delayed-launch.sh"]) {
+for (const file of ["dist/index.js", "LICENSE"]) {
   check(existsSync(join(rootDir, file)), `${file} exists`);
 }
 

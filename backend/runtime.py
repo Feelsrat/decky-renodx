@@ -15,13 +15,12 @@ from typing import Any, Callable
 
 from . import fsutil, log, net
 from .config import (
-    AUTOHDR_ADDON_ZIP_URL, DISPLAY_COMMANDER_NAME, DISPLAY_COMMANDER_URL, LILIUM_RELEASES_URL, PUMBO_AUTOHDR_ZIP_URL,
+    AUTOHDR_ADDON_ZIP_URL, LILIUM_RELEASES_URL, PUMBO_AUTOHDR_ZIP_URL,
     RESHADE_FALLBACK_SETUP_URL, RESHADE_FXH_URL, RESHADE_HOME_URL, RESHADE_MIN_VERSION, SEVENZIP_VERSION, SPECIALK_RELEASES_URL,
     Paths,
 )
 
 RESHADE_CHECK_INTERVAL = 7 * 86400
-DISPLAY_COMMANDER_MAX_AGE = 7 * 86400
 
 
 class ComponentError(RuntimeError):
@@ -61,10 +60,9 @@ class Runtime:
                         raise ComponentError("7zz was not found in the 7-Zip archive")
                     fsutil.safe_extract_tar(tar, Path(temp) / "x", members[:1])
                     extracted = Path(temp) / "x" / members[0].name
-                fsutil.makedirs(target.parent)
-                shutil.copyfile(extracted, target)
-            target.chmod(0o755)
-            fsutil.chown(target)
+                # Write under a temporary name and rename, so an interrupted copy
+                # never leaves a truncated 7zz that every later extraction trips over.
+                fsutil.atomic_write_bytes(target, extracted.read_bytes(), mode=0o755)
             return target
 
     def extract(self, archive: Path, target: Path, *, only: list[str] | None = None, flat: bool = False) -> None:
@@ -114,11 +112,7 @@ class Runtime:
                 self.extract(setup, staging, flat=True)
                 if not (staging / "ReShade64.dll").is_file():
                     raise ComponentError("ReShade64.dll was not found in the ReShade installer")
-                if target_dir.exists():
-                    shutil.rmtree(target_dir)
-                fsutil.makedirs(target_dir.parent)
-                shutil.copytree(staging, target_dir)
-            fsutil.chown_tree(self.root)
+                _replace_dir(staging, target_dir)
             meta = {"version": list(version), "dir": str(target_dir), "url": url, "checked_at": time.time()}
             fsutil.write_json(meta_file, meta)
             return self._reshade_info(meta)
@@ -217,7 +211,7 @@ class Runtime:
     def specialk(self) -> Path:
         with self._lock:
             target = self.root / "SpecialK"
-            if any(target.rglob("SpecialK64.dll")) if target.exists() else False:
+            if (target / READY).is_file():
                 return target
             with tempfile.TemporaryDirectory(prefix="decky-renodx-sk-") as temp:
                 archive = self._latest_asset(SPECIALK_RELEASES_URL, (".7z", ".zip"), Path(temp) / "sk")
@@ -225,11 +219,8 @@ class Runtime:
                 self.extract(archive, staging)
                 if not any(staging.rglob("SpecialK64.dll")):
                     raise ComponentError("SpecialK64.dll was not found in the Special K release")
-                if target.exists():
-                    shutil.rmtree(target)
-                fsutil.makedirs(target.parent)
-                shutil.copytree(staging, target)
-            fsutil.chown_tree(target)
+                (staging / READY).write_text("ok", encoding="utf-8")
+                _replace_dir(staging, target)
             return target
 
     def specialk_dll(self, arch: str) -> Path:
@@ -247,18 +238,6 @@ class Runtime:
                 return matches[0]
         return None
 
-    # ------------------------------------------------------------ Display Commander
-    def display_commander(self) -> Path | None:
-        with self._lock:
-            cached = self.paths.bin / DISPLAY_COMMANDER_NAME
-            fresh = cached.is_file() and time.time() - cached.stat().st_mtime < DISPLAY_COMMANDER_MAX_AGE
-            if not fresh:
-                try:
-                    self._download(DISPLAY_COMMANDER_URL, cached, min_size=1024)
-                except Exception as error:
-                    log.plugin().warning("Display Commander download failed: %s", error)
-            return cached if cached.is_file() else None
-
     # ------------------------------------------------------------ status
     def status(self) -> dict[str, Any]:
         meta = fsutil.read_json(self.root / "reshade" / "current.json", {}) or {}
@@ -275,6 +254,30 @@ class Runtime:
             for path in (self.root, self.paths.legacy_runtime, self.paths.bin):
                 if path.exists():
                     shutil.rmtree(path)
+
+
+READY = ".decky-renodx-ready"
+
+
+def _replace_dir(source: Path, target: Path) -> None:
+    """Copy ``source`` next to ``target`` first, then swap it in with renames.
+
+    An interruption leaves either the old folder or a stray temporary one, never a half-copied target.
+    """
+    fsutil.makedirs(target.parent)
+    temp = Path(tempfile.mkdtemp(prefix=f".{target.name}.", dir=str(target.parent)))
+    try:
+        shutil.copytree(source, temp, dirs_exist_ok=True)
+        fsutil.chown_tree(temp)
+        old = target.with_name(f".{target.name}.old")
+        if old.exists():
+            shutil.rmtree(old)
+        if target.exists():
+            target.rename(old)
+        temp.rename(target)
+        shutil.rmtree(old, ignore_errors=True)
+    finally:
+        shutil.rmtree(temp, ignore_errors=True)
 
 
 def _relative_to_shaders(path: Path, root: Path) -> Path:

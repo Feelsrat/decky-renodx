@@ -40,14 +40,12 @@ WIKI = """
 """
 
 PCGW = {
-    "7000": {"native_hdr": "true", "graphics_api": "d3d12", "page_name": "Bright Lights",
-             "essential_improvements": ["Skip intro videos", "Disable chromatic aberration"], "issues_fixed": ["Stutter on first launch"]},
+    "7000": {"native_hdr": "true", "graphics_api": "d3d12", "page_name": "Bright Lights"},
 }
 
 COMPAT = {"games": {
     "8000": {"name": "Old Classic", "tools": {"special_k": {
-        "special_k_delay_seconds": 8,
-        "automation": {"preferred_injection": "global_delayed", "warnings": ["The launcher must be skipped with -nolauncher."]},
+        "automation": {"warnings": ["The launcher must be skipped with -nolauncher."]},
         "launch_options": ["-nolauncher"],
     }}},
     "1000": {"name": "Shippy", "tools": {"renodx": {"automation": {
@@ -76,7 +74,6 @@ def build_library(fake: FakeSteam) -> None:
     (native / "penguin.x86_64").write_bytes(b"\x7fELF")
     game("7000", "Bright Lights", "BrightLights", "Bright.exe", ("d3d12.dll",))
     game("8000", "Old Classic", "OldClassic", "classic.exe", ("d3d11.dll",))
-    fake.compatdata("8000")
     indie = fake.root / "home" / "deck" / "Games" / "IndieDarling"
     exe = make_pe(indie / "IndieDarling.exe", imports=("d3d11.dll",), size=300 * 1024)
     fake.add_shortcut("Indie Darling (non-Steam)", str(exe), str(indie))
@@ -113,9 +110,6 @@ def make_plugin(args: argparse.Namespace):
     service.runtime = OfflineRuntime(fake.paths)
     service.renodx._fetch_text = lambda _url: WIKI
     service.pcgw.game_data = lambda appid: dict(PCGW.get(str(appid), {"native_hdr": "unknown", "graphics_api": "unknown"}))
-    service.pcgw.improvements = lambda appid: (
-        {"status": "success", **PCGW[str(appid)]} if str(appid) in PCGW else {"status": "error", "message": "No PCGamingWiki page (dev data)."}
-    )
     hdr = {"on": (True, True), "off": (True, False), "unknown": (None, None)}[args.hdr]
     service.display_status = lambda: {"status": "success", "supported": hdr[0], "enabled": hdr[1], "game_mode": hdr[0] is not None}
     plugin.updater.check = lambda force=False: {"ok": True, "current": plugin.version, "latest": plugin.version, "elevated": True, "hasUpdate": False, "canInstall": False, "message": "You have the latest version."}
