@@ -287,7 +287,7 @@ export default function HdrPanel() {
                             strTitle="Reset Proton prefix?"
                             strDescription={`This deletes the Proton prefix for ${game?.name || appid}. Steam rebuilds it on the next launch, but settings or saves stored only in the prefix (not Steam Cloud) are lost.`}
                             strOKButtonText="Delete prefix"
-                            onOK={() => simple("Proton prefix", () => api.resetPrefix(appid))}
+                            onOK={() => run(appid, "Proton prefix", () => api.resetPrefix(appid), "remove")}
                           />,
                         )
                       }

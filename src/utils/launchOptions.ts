@@ -157,11 +157,11 @@ export function stripHdr(options: string, specs: (LaunchSpec | null | undefined)
 export function mergeHdr(options: string, spec: LaunchSpec, previous: (LaunchSpec | null | undefined)[] = []): string {
   const parts = split(stripHdr(options, [...previous, spec]));
   const userPrefix: string[] = [];
-  let userOverrides: [string, string][] = [];
+  const userOverrides: [string, string][] = [];
   for (const token of parts.prefix) {
     const parsed = assignment(token);
     if (parsed && parsed[0] === "WINEDLLOVERRIDES") {
-      userOverrides = parseOverrides(parsed[1]);
+      userOverrides.push(...parseOverrides(parsed[1]));
     } else if (!(parsed && parsed[0] in spec.env)) {
       userPrefix.push(token);
     }

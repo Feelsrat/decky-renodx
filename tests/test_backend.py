@@ -221,7 +221,7 @@ class TransactionTests(unittest.TestCase):
         tx.track_artifacts(game, ["ReShade.log"])
         (game / "ReShade.log").write_text("runtime log")
         self.assertNotEqual(tree_digest(game), before)
-        self.assertEqual(transaction.revert(tx.to_record(), LOG), [])
+        self.assertEqual(transaction.revert(tx.to_record(), LOG)[0], [])
         self.assertEqual(tree_digest(game), before)
 
     def test_stash_put_back_and_commit(self):
@@ -247,7 +247,84 @@ class TransactionTests(unittest.TestCase):
         self.assertEqual(tree_digest(game), original)
 
 
+class SteamReinstallTests(unittest.TestCase):
+    """Steam can wipe a game folder (and our backups) while the install record survives."""
+
+    def setUp(self):
+        self.fake = FakeSteam()
+        self.addCleanup(self.fake.cleanup)
+        self.game = self.fake.root / "game"
+        self.game.mkdir()
+        (self.game / "dxgi.dll").write_bytes(b"game original")
+        self.tx = transaction.Transaction(LOG)
+        self.tx.write_text(self.game / "dxgi.dll", "ours")
+        # Steam "verify files": our dll replaced by a fresh original, backups gone.
+        (self.game / ".decky-renodx" / "backup" / "dxgi.dll").unlink()
+        (self.game / "dxgi.dll").write_bytes(b"fresh from steam")
+
+    def test_uninstall_leaves_unprovable_files(self):
+        errors, remaining = transaction.revert(self.tx.to_record(), LOG)
+        self.assertEqual((errors, remaining["replaced"]), ([], {}))
+        self.assertEqual((self.game / "dxgi.dll").read_bytes(), b"fresh from steam")
+
+    def test_switch_commit_never_deletes_it(self):
+        stash = transaction.Stash(self.tx.to_record(), LOG)
+        stash.take_apart()
+        stash.commit()
+        self.assertEqual((self.game / "dxgi.dll").read_bytes(), b"fresh from steam")
+
+    def test_retry_after_partial_failure_keeps_restored_originals(self):
+        tx = transaction.Transaction(LOG)
+        (self.game / "d3d9.dll").write_bytes(b"d3d9 original")
+        tx.write_text(self.game / "d3d9.dll", "ours")
+        record = tx.to_record()
+        errors, remaining = transaction.revert(record, LOG)
+        self.assertEqual(errors, [])
+        transaction.revert(remaining, LOG)
+        self.assertEqual((self.game / "d3d9.dll").read_bytes(), b"d3d9 original")
+
+
 class InstallFlowTests(ServiceCase):
+    def test_failed_switch_keeps_empty_folders_of_previous_install(self):
+        source = self.fake.root / "tree"
+        (source / "sub" / "empty").mkdir(parents=True)
+        game = self.fake.root / "g"
+        game.mkdir()
+        tx = transaction.Transaction(LOG)
+        tx.copy_tree(source, game / "pack")
+        stash = transaction.Stash(tx.to_record(), LOG)
+        stash.take_apart()
+        failing = transaction.Transaction(LOG)
+        failing.write_text(game / "x.ini", "x")
+        failing.rollback()
+        stash.put_back()
+        self.assertTrue((game / "pack" / "sub" / "empty").is_dir())
+
+    def test_import_with_unnamed_archive_keeps_other_imports(self):
+        self.unreal_game()
+        keep = self.fake.paths.imports / "downloads" / "other.addon64"
+        keep.parent.mkdir(parents=True)
+        keep.write_bytes(b"keep")
+        downloads = self.fake.home / "Downloads"
+        downloads.mkdir()
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as handle:
+            handle.writestr("renodx-shippy.addon64", b"addon")
+        (downloads / "(1).zip").write_bytes(buffer.getvalue())
+        self.assertEqual(self.service.import_renodx("1000", str(downloads / "(1).zip"))["status"], "success")
+        self.assertTrue(keep.exists())
+
+    def test_reset_prefix_returns_delayed_launch_to_strip(self):
+        root = self.fake.add_game("3000", "Delayed", "Delayed")
+        make_pe(root / "Delayed.exe", imports=("d3d11.dll",))
+        self.fake.paths.plugin_dir.joinpath("compatibility.json").write_text(json.dumps({"games": {"3000": {"name": "Delayed", "tools": {"special_k": {
+            "automation": {"preferred_injection": "global_delayed"}}}}}}), encoding="utf-8")
+        self.service.compat.reload()
+        self.fake.compatdata("3000")
+        installed = self.service.install("3000", "special_k_delayed")
+        result = self.service.reset_prefix("3000")
+        self.assertEqual(result["launch"], installed["launch"])
+
     def test_reshade_install_and_remove_restores_game(self):
         root, shipping = self.unreal_game()
         exe_dir = shipping.parent

@@ -133,7 +133,7 @@ export const api = {
   setExecutable: callable<[appid: string, path: string], Simple>("set_game_executable"),
   setSpecialKVerified: callable<[appid: string, verified: boolean], Simple>("set_special_k_verified"),
   setSpecialKDelay: callable<[appid: string, seconds: number], ChangeResult>("set_special_k_delay"),
-  resetPrefix: callable<[appid: string], Simple>("reset_game_proton_prefix"),
+  resetPrefix: callable<[appid: string], ChangeResult>("reset_game_proton_prefix"),
   logs: callable<[appid: string], { status: string; plugin_log: string; proton_log: string; proton_log_path: string; message?: string }>("get_per_game_log"),
   pcgwFixes: callable<[appid: string], { status: string; page_name?: string; essential_improvements?: string[]; issues_fixed?: string[]; message?: string }>("get_pcgw_improvements_issues"),
   resetCaches: callable<[], Simple>("reset_plugin_caches"),

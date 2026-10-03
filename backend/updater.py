@@ -43,6 +43,17 @@ class Updater:
         self._cached: dict[str, Any] | None = None
         self._checked_at = 0.0
 
+    @property
+    def work_dir(self) -> Path:
+        """Staging and backup live outside the plugins folder, so Decky never loads them as plugins.
+
+        It must be on the same filesystem as the plugin for the final swap to be two renames.
+        """
+        plugins = self.plugin_dir.resolve().parent
+        if plugins.name == "plugins":
+            return plugins.parent / "data" / PLUGIN_PACKAGE / "update"
+        return plugins / f".{PLUGIN_PACKAGE}-update"
+
     @staticmethod
     def elevated() -> bool:
         return not hasattr(os, "geteuid") or os.geteuid() == 0
@@ -94,7 +105,8 @@ class Updater:
         digest = str(asset.get("digest") or "")
         if not digest.startswith("sha256:"):
             return {**status, "ok": False, "message": "The release has no SHA-256 digest, so it cannot be verified. Update manually."}
-        staging = Path(tempfile.mkdtemp(prefix=f".{self.plugin_dir.name}.update-", dir=str(self.plugin_dir.parent)))
+        self.work_dir.mkdir(parents=True, exist_ok=True)
+        staging = Path(tempfile.mkdtemp(prefix="staging-", dir=str(self.work_dir)))
         try:
             with tempfile.TemporaryDirectory(prefix=f"{PLUGIN_PACKAGE}-update-") as temp:
                 archive = self._download(str(asset["browser_download_url"]), Path(temp) / "release.zip", min_size=10_000, sha256=digest.split(":", 1)[1])
@@ -120,8 +132,8 @@ class Updater:
 
     def _schedule_swap(self, staging: Path) -> str:
         plugin_dir = self.plugin_dir.resolve()
-        backup = plugin_dir.with_name(f"{plugin_dir.name}.previous")
-        log_path = plugin_dir.parent / f".{PLUGIN_PACKAGE}-update.log"
+        backup = self.work_dir / "previous"
+        log_path = self.work_dir / "update.log"
         script = f"""#!/bin/bash
 set -u
 plugin={shlex.quote(str(plugin_dir))}
@@ -144,7 +156,7 @@ fi
 systemctl start plugin_loader.service 2>/dev/null || systemctl --user start plugin_loader.service 2>/dev/null
 rm -f "$0"
 """
-        fd, helper = tempfile.mkstemp(prefix=f".{PLUGIN_PACKAGE}-apply-", suffix=".sh", dir=str(plugin_dir.parent))
+        fd, helper = tempfile.mkstemp(prefix="apply-", suffix=".sh", dir=str(self.work_dir))
         with os.fdopen(fd, "w") as handle:
             handle.write(script)
         os.chmod(helper, 0o700)
@@ -159,8 +171,11 @@ rm -f "$0"
         return "detached helper"
 
     def cleanup_previous(self) -> None:
-        backup = self.plugin_dir.with_name(f"{self.plugin_dir.name}.previous")
-        for path in [backup, *self.plugin_dir.parent.glob(f".{self.plugin_dir.name}.update-*")]:
+        legacy_backup = self.plugin_dir.with_name(f"{self.plugin_dir.name}.previous")
+        leftovers = [legacy_backup, *self.plugin_dir.parent.glob(f".{self.plugin_dir.name}.update-*")]
+        if self.work_dir.is_dir():
+            leftovers += [path for path in self.work_dir.iterdir() if path.name == "previous" or path.name.startswith("staging-")]
+        for path in leftovers:
             try:
                 if path.is_dir():
                     shutil.rmtree(path)

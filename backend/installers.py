@@ -15,7 +15,7 @@ from .transaction import Transaction
 
 AUTOHDR_HOOKS = {"dxgi", "d3d11", "d3d12"}
 RESHADE_ARTIFACTS = ["ReShade.log", "ReShade.log1", "ReShade.log2"]
-SPECIALK_ARTIFACTS = ["logs", "SpecialK.log", "Profiles", "SpecialK.permissions"]
+SPECIALK_ARTIFACTS = ["SpecialK.log", "SpecialK.permissions"]
 
 
 class InstallError(RuntimeError):

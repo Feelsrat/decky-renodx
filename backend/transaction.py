@@ -45,12 +45,12 @@ def _move(source: Path, target: Path) -> None:
 
 
 def _prune_state_dir(directory: Path) -> None:
-    """Remove empty .decky-renodx folders (deepest first)."""
-    if not directory.exists() or directory.name != STATE_DIR_NAME:
+    """Remove an empty .decky-renodx folder and its empty backup/ folder. Stashes are never touched."""
+    if directory.name != STATE_DIR_NAME:
         return
-    for dirpath, _dirnames, _filenames in sorted(os.walk(directory), key=lambda item: -len(item[0])):
+    for path in (directory / "backup", directory):
         try:
-            os.rmdir(dirpath)
+            path.rmdir()
         except OSError:
             pass
 
@@ -58,8 +58,8 @@ def _prune_state_dir(directory: Path) -> None:
 class Transaction:
     def __init__(self, logger: logging.Logger):
         self.log = logger
-        self.created: list[str] = []
-        self.replaced: dict[str, str] = {}
+        self.created: list[str] = []          # paths that did not exist before
+        self.replaced: dict[str, str] = {}    # pre-existing path -> backup of the original
         self.artifacts: list[str] = []
 
     # ------------------------------------------------------------ recording
@@ -69,7 +69,8 @@ class Transaction:
     def _prepare(self, target: Path) -> None:
         for directory in fsutil.makedirs(target.parent):
             self.created.append(str(directory))
-        if str(target) in self.created or self._inside_created(target):
+        key = str(target)
+        if key in self.created or key in self.replaced or self._inside_created(target):
             # Ours already (or inside a folder we created): overwrite without a backup.
             if _exists(target):
                 fsutil.remove_path(target)
@@ -77,10 +78,12 @@ class Transaction:
         if _exists(target):
             backup = _unique(_state_dir(target) / "backup" / target.name)
             _move(target, backup)
+            fsutil.chown(backup.parent.parent)
             fsutil.chown(backup.parent)
-            self.replaced[str(target)] = str(backup)
+            self.replaced[key] = str(backup)
             self.log.info("Backed up %s -> %s", target, backup)
-        self.created.append(str(target))
+        else:
+            self.created.append(key)
 
     def mkdir(self, path: Path) -> Path:
         path = Path(path)
@@ -113,6 +116,7 @@ class Transaction:
         return target
 
     def track_artifacts(self, directory: Path, names: list[str]) -> None:
+        """Log files a tool writes at runtime; removed on uninstall only if they are plain files."""
         for name in names:
             path = Path(directory) / name
             if not _exists(path) and str(path) not in self.artifacts:
@@ -123,21 +127,28 @@ class Transaction:
 
     # ------------------------------------------------------------ undo
     def rollback(self) -> list[str]:
-        return revert(self.to_record(), self.log)
+        errors, _remaining = revert(self.to_record(), self.log)
+        return errors
 
 
-def revert(record: dict[str, Any], logger: logging.Logger) -> list[str]:
-    """Undo a recorded install. Returns errors (empty on success)."""
+def revert(record: dict[str, Any], logger: logging.Logger) -> tuple[list[str], dict[str, Any]]:
+    """Undo a recorded install.
+
+    Returns (errors, remaining) where ``remaining`` lists only what still has
+    to be undone, so a retry never touches what was already restored.
+    """
     errors: list[str] = []
+    remaining: dict[str, Any] = {"created": [], "replaced": {}, "artifacts": []}
     state_dirs: set[Path] = set()
     for item in record.get("artifacts", []):
         path = Path(item)
-        if _exists(path):
+        if path.is_file() or path.is_symlink():
             try:
-                fsutil.remove_path(path)
+                path.unlink()
                 logger.info("Removed runtime artifact %s", path)
             except OSError as error:
                 errors.append(f"{path}: {error}")
+                remaining["artifacts"].append(item)
     for item in reversed(record.get("created", [])):
         path = Path(item)
         if not _exists(path):
@@ -147,11 +158,14 @@ def revert(record: dict[str, Any], logger: logging.Logger) -> list[str]:
             logger.info("Removed %s", path)
         except OSError as error:
             errors.append(f"{path}: {error}")
+            remaining["created"].insert(0, item)
     for original, backup in record.get("replaced", {}).items():
         original_path, backup_path = Path(original), Path(backup)
         state_dirs.add(_state_dir(original_path))
         if not _exists(backup_path):
-            errors.append(f"Backup for {original} is missing ({backup})")
+            # The backup is gone (e.g. Steam reinstalled the game). Whatever is at the
+            # path now is not provably ours, so leave it alone.
+            logger.warning("Backup of %s is gone; leaving the current file in place", original)
             continue
         try:
             if _exists(original_path):
@@ -160,9 +174,10 @@ def revert(record: dict[str, Any], logger: logging.Logger) -> list[str]:
             logger.info("Restored %s", original_path)
         except OSError as error:
             errors.append(f"{original}: {error}")
+            remaining["replaced"][original] = backup
     for directory in state_dirs:
         _prune_state_dir(directory)
-    return errors
+    return errors, remaining
 
 
 class Stash:
@@ -171,12 +186,16 @@ class Stash:
     def __init__(self, record: dict[str, Any], logger: logging.Logger):
         self.record = record
         self.log = logger
-        self.token = f"stash-{int(time.time() * 1000)}"
-        self.moved: list[tuple[str, str]] = []      # (original location, stash location)
-        self.restored: list[tuple[str, str]] = []   # (original file, its backup location)
+        self.token = f"stash-{time.time_ns()}"
+        self.moved: list[tuple[str, str]] = []                # (original location, stash location)
+        self.restored: list[tuple[str, str, str]] = []        # (path, backup location, stash of our file)
+
+    def _stash_path(self, path: Path) -> Path:
+        return _unique(_state_dir(path) / self.token / path.name)
 
     def take_apart(self) -> None:
-        created = [*self.record.get("artifacts", []), *self.record.get("created", [])]
+        artifacts = [item for item in self.record.get("artifacts", []) if Path(item).is_file()]
+        created = [*artifacts, *self.record.get("created", [])]
         # Children of a created folder travel with the folder.
         top_level = [item for item in created if not any(item != other and fsutil.is_within(Path(item), Path(other)) for other in created)]
         try:
@@ -184,21 +203,29 @@ class Stash:
                 path = Path(item)
                 if not _exists(path):
                     continue
-                stash_path = _unique(_state_dir(path) / self.token / path.name)
+                stash_path = self._stash_path(path)
                 _move(path, stash_path)
                 self.moved.append((str(path), str(stash_path)))
             for original, backup in self.record.get("replaced", {}).items():
-                if _exists(Path(backup)) and not _exists(Path(original)):
-                    _move(Path(backup), Path(original))
-                    self.restored.append((original, backup))
+                path, backup_path = Path(original), Path(backup)
+                if not _exists(backup_path):
+                    continue  # nothing provably ours to swap; leave the current file alone
+                ours = ""
+                if _exists(path):
+                    ours = str(self._stash_path(path))
+                    _move(path, Path(ours))
+                _move(backup_path, path)
+                self.restored.append((original, backup, ours))
         except OSError:
             self.put_back()
             raise
 
     def put_back(self) -> None:
-        for original, backup in reversed(self.restored):
+        for original, backup, ours in reversed(self.restored):
             if _exists(Path(original)):
                 _move(Path(original), Path(backup))
+            if ours and _exists(Path(ours)):
+                _move(Path(ours), Path(original))
         for original, stash_path in reversed(self.moved):
             if _exists(Path(stash_path)):
                 if _exists(Path(original)):
@@ -212,11 +239,15 @@ class Stash:
             path = Path(stash_path)
             if _exists(path):
                 fsutil.remove_path(path)
+        for _original, _backup, ours in self.restored:
+            if ours and _exists(Path(ours)):
+                fsutil.remove_path(Path(ours))
         self._cleanup()
 
     def _cleanup(self) -> None:
         dirs = {Path(stash).parent for _original, stash in self.moved}
-        dirs |= {_state_dir(Path(original)) for original, _backup in self.restored}
+        dirs |= {Path(ours).parent for _o, _b, ours in self.restored if ours}
+        dirs |= {_state_dir(Path(original)) / self.token for original, _b, _ours in self.restored}
         for directory in dirs:
             if directory.name == self.token:
                 try:
@@ -224,5 +255,3 @@ class Stash:
                 except OSError:
                     pass
                 _prune_state_dir(directory.parent)
-            else:
-                _prune_state_dir(directory)

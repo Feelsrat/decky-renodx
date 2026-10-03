@@ -51,7 +51,7 @@ def game(appid: str) -> logging.Logger:
         if path is not None:
             try:
                 fsutil.makedirs(path.parent)
-                handler = logging.handlers.RotatingFileHandler(path, maxBytes=512 * 1024, backupCount=1, encoding="utf-8")
+                handler = _OwnedRotatingHandler(path, maxBytes=512 * 1024, backupCount=1, encoding="utf-8")
                 handler.setFormatter(logging.Formatter(FORMAT))
                 logger.addHandler(handler)
                 fsutil.chown(path)
@@ -68,6 +68,15 @@ def close_all() -> None:
                 handler.close()
                 logger.removeHandler(handler)
         _game_loggers.clear()
+
+
+class _OwnedRotatingHandler(logging.handlers.RotatingFileHandler):
+    """Keeps the log owned by the deck user after rollover (the launch wrapper appends to it)."""
+
+    def doRollover(self) -> None:
+        super().doRollover()
+        fsutil.chown(self.baseFilename)
+        fsutil.chown(f"{self.baseFilename}.1")
 
 
 class _ForwardHandler(logging.Handler):

@@ -37,7 +37,8 @@ class Plugin:
         self.service = HdrService(self.paths, self.version)
         self.updater = Updater(plugin_dir, self.version)
         self._locks: dict[str, asyncio.Lock] = {}
-        self._global_lock = asyncio.Lock()
+        self._global_lock = asyncio.Lock()  # plugin update / removing shared downloads
+        self._active_changes = 0
         self._compat_task: asyncio.Task | None = None
 
     async def _main(self):
@@ -66,7 +67,20 @@ class Plugin:
         lock = self._locks.setdefault(str(appid), asyncio.Lock())
         if lock.locked():
             return {"status": "error", "busy": True, "message": "Another change is already running for this game."}
+        if self._global_lock.locked():
+            return {"status": "error", "busy": True, "message": "A plugin update or cleanup is running; try again in a moment."}
         async with lock:
+            self._active_changes += 1
+            try:
+                return await self._call(fn, *args)
+            finally:
+                self._active_changes -= 1
+
+    async def _global(self, fn: Callable[..., dict], *args: Any) -> dict:
+        """Plugin-wide changes wait for no one: refused while any game change is running."""
+        if self._active_changes or self._global_lock.locked():
+            return {"status": "error", "ok": False, "message": "Wait for the running HDR change to finish, then try again."}
+        async with self._global_lock:
             return await self._call(fn, *args)
 
     async def _refresh_compat_db(self):
@@ -141,8 +155,7 @@ class Plugin:
         return await self._call(self.service.runtime_status)
 
     async def remove_runtime(self) -> dict:
-        async with self._global_lock:
-            return await self._call(self.service.remove_runtime)
+        return await self._global(self.service.remove_runtime)
 
     # ------------------------------------------------------------ updates
     async def get_update_status(self) -> dict:
@@ -152,8 +165,7 @@ class Plugin:
         return await asyncio.to_thread(self.updater.check, bool(force))
 
     async def install_update(self) -> dict:
-        async with self._global_lock:
-            return await asyncio.to_thread(self.updater.install)
+        return await self._global(self.updater.install)
 
     async def log_error(self, message: str) -> None:
         decky.logger.error("Frontend: %s", message)

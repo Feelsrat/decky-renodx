@@ -49,6 +49,13 @@ test("user dll overrides are merged, not replaced, and survive removal", () => {
   assert.equal(stripHdr(merged, [reshade]), 'WINEDLLOVERRIDES="winmm=n,b" %command%');
 });
 
+test("several WINEDLLOVERRIDES tokens are combined", () => {
+  assert.equal(
+    mergeHdr('WINEDLLOVERRIDES="winmm=n,b" WINEDLLOVERRIDES="version=n,b" %command%', reshade),
+    `${HDR_PREFIX} WINEDLLOVERRIDES="winmm=n,b;version=n,b;dxgi=n,b" %command%`,
+  );
+});
+
 test("user's own dinput8 override is not touched", () => {
   assert.equal(stripHdr('WINEDLLOVERRIDES="dinput8=n,b" %command%', [reshade]), 'WINEDLLOVERRIDES="dinput8=n,b" %command%');
 });

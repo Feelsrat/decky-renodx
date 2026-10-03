@@ -228,17 +228,18 @@ class HdrService:
         if source.suffix.lower() not in IMPORT_EXTENSIONS:
             return _err("Only .addon64, .addon32, .zip, .7z and .rar files can be imported.")
         scan = self._scan(app)
-        addon = self._addon_from_import(source, scan.architecture)
+        addon = self._addon_from_import(app.appid, source, scan.architecture)
         mod = {"name": addon.name, "match_type": "manual", "source_type": "manual_import", "bitness": "32" if addon.suffix.lower() == ".addon32" else "64", "imported_from": str(source)}
         ctx = self._context(app, scan)
         if ctx["anti_cheat"]:
             return _err(f"Anti-cheat detected ({', '.join(ctx['anti_cheat'])}); injection is blocked.")
         return self._install_plan(app, scan, ctx, ["renodx"], explicit=True, renodx_file=addon, renodx_mod=mod)
 
-    def _addon_from_import(self, source: Path, arch: str) -> Path:
+    def _addon_from_import(self, appid: str, source: Path, arch: str) -> Path:
         if source.suffix.lower() in {".addon64", ".addon32"}:
             return source
-        target = self.paths.imports / renodx.normalize_title(source.stem)[:60]
+        # One extraction folder per game; per-game locks keep imports for a game sequential.
+        target = self.paths.imports / "extracted" / appid
         if target.exists():
             shutil.rmtree(target)
         if source.suffix.lower() == ".zip":
@@ -246,6 +247,7 @@ class HdrService:
                 fsutil.safe_extract_zip(archive, target)
         else:
             self.runtime.extract(source, target)
+        fsutil.chown_tree(self.paths.imports)
         addons = sorted(path for path in target.rglob("*") if path.is_file() and path.suffix.lower() in {".addon64", ".addon32"})
         if not addons:
             raise ServiceError(f"No .addon64/.addon32 file was found inside {source.name}.")
@@ -313,7 +315,10 @@ class HdrService:
             }
             self.store.put(app.appid, record)
             if stash:
-                stash.commit()
+                try:
+                    stash.commit()
+                except OSError as error:
+                    logger.warning("Could not delete the previous install's leftovers: %s", error)
             logger.info("Installed %s: %s", method, result.get("message"))
             meta = self.compat.metadata(app.appid, method)
             return _ok(
@@ -329,7 +334,11 @@ class HdrService:
             )
 
         if stash:
-            stash.put_back()
+            try:
+                stash.put_back()
+            except OSError as error:
+                logger.exception("Restoring the previous install failed")
+                errors.append(f"Restoring the previous install failed: {error}")
         if manual and explicit:
             return {"status": "manual_required", **self._manual_info(manual), "kept_previous": bool(stash)}
         message = "; ".join(errors) or "Nothing could be installed."
@@ -392,9 +401,12 @@ class HdrService:
         errors: list[str] = []
         messages: list[str] = []
         if record:
-            errors += transaction.revert(record, logger)
-            if errors:
-                logger.error("Uninstall problems: %s", errors)
+            revert_errors, remaining = transaction.revert(record, logger)
+            errors += revert_errors
+            if revert_errors:
+                logger.error("Uninstall problems: %s", revert_errors)
+                # Keep only what is still installed, so a retry never touches restored files.
+                self.store.put(appid, {**record, **remaining})
             else:
                 self.store.delete(appid)
                 messages.append(f"Removed {METHOD_LABELS.get(record['method'], record['method'])} and restored the game's original files.")
@@ -485,11 +497,12 @@ class HdrService:
             return _ok(message="This game has no Proton prefix yet.")
         shutil.rmtree(prefix)
         record = self.store.get(appid)
-        note = ""
+        note, removed_launch = "", None
         if record and record.get("method") == "special_k_delayed":
             self.store.delete(appid)
+            removed_launch = record.get("launch")
             note = " Special K Delayed lived in the prefix and was removed with it."
-        return _ok(message=f"Deleted {prefix}. Steam rebuilds it on the next launch.{note}")
+        return _ok(message=f"Deleted {prefix}. Steam rebuilds it on the next launch.{note}", launch=removed_launch)
 
     def reset_caches(self) -> dict[str, Any]:
         self.renodx.clear()

@@ -3,10 +3,14 @@
 # Usage (set by the plugin): bash specialk-delayed-launch.sh <appid> <delay> <injector.exe> -- %command%
 set -u
 
-appid="${1:-}"
-delay="${2:-5}"
-injector="${3:-}"
-shift 3 2>/dev/null || true
+if [ "$#" -lt 4 ]; then
+  echo "usage: $0 <appid> <delay> <injector> -- <game command...>" >&2
+  exit 1
+fi
+appid="$1"
+delay="$2"
+injector="$3"
+shift 3
 [ "${1:-}" = "--" ] && shift
 
 log_dir="${XDG_DATA_HOME:-$HOME/.local/share}/decky-renodx/logs"
