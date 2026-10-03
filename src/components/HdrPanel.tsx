@@ -1,101 +1,112 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { ButtonItem, ConfirmModal, DropdownItem, PanelSection, PanelSectionRow, ToggleField, showModal } from "@decky/ui";
+import { useEffect, useRef, useState } from "react";
+import { ButtonItem, ConfirmModal, DialogButton, DropdownItem, Focusable, Navigation, PanelSection, PanelSectionRow, showModal } from "@decky/ui";
 import { toaster } from "@decky/api";
-import { api, type ChangeResult, type Game, type GameState, type ManualDownload } from "../backend";
-import { readLaunchOptions, updateLaunchOptions } from "../steam";
-import { hasHdr, type LaunchSpec } from "../utils/launchOptions";
-import { GameStatusCard, methodName } from "./GameStatusCard";
+import { api, type ChangeResult, type GameState, type ManualDownload, type MethodOption } from "../backend";
+import { EMPTY, gameRef, useGames } from "../state";
+import { updateLaunchOptions } from "../steam";
+import type { LaunchSpec } from "../utils/launchOptions";
+import { COLORS, Card, Notice, Small, Spin, Steps } from "./parts";
 import { ImportModal, TextModal } from "./Modals";
+import { StatusCard, methodName } from "./StatusCard";
 
-interface Entry {
-  state?: GameState;
-  error?: string;
-  loading: boolean;
-  busy?: string;
-  launchApplied: boolean | null;
+type Run = (state: GameState, label: string, action: () => Promise<ChangeResult>, mode?: "apply" | "remove") => Promise<ChangeResult | null>;
+type Simple = (label: string, action: () => Promise<{ status: string; message: string }>) => Promise<void>;
+
+const toast = (title: string, body: string, duration = 5000) => toaster.toast({ title, body, duration });
+const REPO = "https://github.com/Feelsrat/decky-renodx";
+
+/** What to do in game to see whether HDR is working, per method. */
+const CHECK_STEPS: Record<string, string[]> = {
+  renodx: [
+    "Launch the game; HDR should switch on by itself.",
+    "To tweak it, open ReShade with the Home key (bind Home to a back button in Steam Input) and use the RenoDX tab.",
+  ],
+  reshade: [
+    "Launch the game and open ReShade with the Home key (bind it to a back button in Steam Input).",
+    "Make sure AutoHDR is enabled in the effect list.",
+  ],
+  special_k: [
+    "Launch the game and open Special K with Ctrl+Shift+Backspace (bind it in Steam Input).",
+    "In its HDR section, check that HDR is active and set the peak brightness.",
+  ],
+  special_k_delayed: [
+    "Launch the game and wait a few seconds for Special K to attach.",
+    "Open Special K with Ctrl+Shift+Backspace and check its HDR section.",
+  ],
+};
+
+function reportUrl(state: GameState, version: string) {
+  const ctx = state.context;
+  const body = [
+    `**Game:** ${state.title} (${state.kind === "shortcut" ? "non-Steam" : `AppID ${state.appid}`})`,
+    `**Method:** ${methodName(state.install.method) || "none"}`,
+    `**Detected:** ${ctx.api}, ${ctx.architecture}-bit, engine ${ctx.engine}, hook ${ctx.hook || "-"}`,
+    `**Plugin:** ${version || "unknown"}`,
+    "",
+    "**What happened?**",
+    "",
+  ].join("\n");
+  return `${REPO}/issues/new?${new URLSearchParams({ title: `HDR not working: ${state.title}`, body }).toString()}`;
 }
 
-const EMPTY: Entry = { loading: false, launchApplied: null };
-const toast = (title: string, body: string, duration = 5000) => toaster.toast({ title, body, duration });
+function openLink(url: string) {
+  try {
+    Navigation.NavigateToExternalWeb(url);
+  } catch {
+    api.openUrl(url).catch(() => undefined);
+  }
+}
 
-/** Per-game state lives under its appid, so a slow response can never land on another game. */
-function useGames() {
-  const [entries, setEntries] = useState<Record<string, Entry>>({});
-
-  const patch = useCallback((appid: string, change: Partial<Entry>) => {
-    setEntries((current) => ({ ...current, [appid]: { ...EMPTY, ...current[appid], ...change } }));
-  }, []);
-
-  const refresh = useCallback(async (appid: string) => {
-    patch(appid, { loading: true });
-    try {
-      const result = await api.gameState(appid);
-      if (result.status !== "success") {
-        patch(appid, { loading: false, error: result.message });
-        return;
-      }
-      let launchApplied: boolean | null = null;
-      if (result.install.installed && result.install.launch) {
-        const current = await readLaunchOptions(parseInt(appid, 10));
-        launchApplied = current === null ? null : hasHdr(current, result.install.launch);
-      }
-      patch(appid, { loading: false, error: undefined, state: result, launchApplied });
-    } catch (error) {
-      patch(appid, { loading: false, error: String(error) });
-    }
-  }, [patch]);
-
-  return { entries, patch, refresh };
+function Buttons({ children }: { children: React.ReactNode }) {
+  return (
+    <PanelSectionRow>
+      <Focusable style={{ display: "flex", flexDirection: "column", gap: 6 }}>{children}</Focusable>
+    </PanelSectionRow>
+  );
 }
 
 export default function HdrPanel() {
-  const [games, setGames] = useState<Game[]>([]);
-  const [appid, setAppid] = useState("");
-  const [method, setMethod] = useState("recommended");
-  const [advanced, setAdvanced] = useState(false);
-  const { entries, patch, refresh } = useGames();
+  const { games, appid, setAppid, entries, patch, refresh, loadGames, display, refreshDisplay, running } = useGames();
+  const [section, setSection] = useState<"" | "methods" | "advanced">("");
+  const [version, setVersion] = useState("");
   const entry = entries[appid] || EMPTY;
   const state = entry.state;
-  const game = games.find((item) => item.appid === appid);
   const busy = Boolean(entry.busy);
+  const inFlight = useRef(new Set<string>());
 
-  const loadGames = useCallback(async () => {
-    try {
-      const result = await api.listGames();
-      if (result.status === "success") setGames(result.games);
-      else toast("Game list failed", result.message || "");
-    } catch (error) {
-      toast("Game list failed", String(error));
-    }
+  useEffect(() => {
+    loadGames().catch((error) => toast("Couldn't list games", String(error)));
+    refreshDisplay();
+    api.updateStatus().then((status) => setVersion(status.current || "")).catch(() => undefined);
   }, []);
 
-  useEffect(() => {
-    loadGames();
-  }, [loadGames]);
+  useEffect(() => setSection(""), [appid]);
 
-  useEffect(() => {
-    setMethod("recommended");
-    if (appid) refresh(appid);
-  }, [appid]);
-
-  /** Run one change for a game: one at a time per game, then sync launch options and refresh. */
-  const running = useRef(new Set<string>());
-  const run = async (target: string, label: string, action: () => Promise<ChangeResult>, mode: "apply" | "remove" = "apply"): Promise<ChangeResult | null> => {
-    if (running.current.has(target)) return null;
-    running.current.add(target);
-    patch(target, { busy: label });
+  /** One change per game at a time; then sync Steam's launch options and refresh. */
+  const run: Run = async (target, label, action, mode = "apply") => {
+    const id = target.appid;
+    if (inFlight.current.has(id)) return null;
+    inFlight.current.add(id);
+    patch(id, { busy: label });
     try {
       const result = await action();
       if (result.status === "manual_required") {
         openImport(target, result as unknown as ManualDownload);
       } else if (result.status === "success") {
+        const ref = gameRef(target);
         const launch = mode === "remove"
-          ? await updateLaunchOptions(target, null, [result.launch])
-          : await updateLaunchOptions(target, result.launch ?? null, [result.previous_launch]);
+          ? await updateLaunchOptions(ref, null, [result.launch])
+          : await updateLaunchOptions(ref, result.launch ?? null, [result.previous_launch]);
+        const keep = launch.keep;
+        if (keep && (keep.args.length || keep.dlls.length || keep.env.length)) {
+          await api.setLaunchKeep(id, keep).catch(() => undefined);
+        }
         let body = result.message || "Done.";
         if (!launch.ok && launch.message) body += ` ${launch.message}`;
         toast(label, body, launch.ok ? 5000 : 12000);
-        if (result.renodx_manual) toast("RenoDX", `${result.renodx_manual.mod_name} needs a manual download; a fallback was installed instead.`, 8000);
+        if (result.renodx_manual) {
+          toast("RenoDX", `${result.renodx_manual.mod_name} needs a manual download, so a fallback was installed. Import the mod to switch.`, 9000);
+        }
       } else {
         toast(`${label} failed`, result.message || "Unknown error.", 9000);
       }
@@ -105,212 +116,402 @@ export default function HdrPanel() {
       api.logError(`${label}: ${error}`).catch(() => undefined);
       return null;
     } finally {
-      running.current.delete(target);
-      patch(target, { busy: undefined });
-      refresh(target);
+      inFlight.current.delete(id);
+      patch(id, { busy: undefined });
+      refresh(id);
     }
   };
 
-  const openImport = (target: string, manual: ManualDownload | null) => {
-    const title = games.find((item) => item.appid === target)?.name || target;
+  const openImport = (target: GameState, manual: ManualDownload | null) => {
     showModal(
       <ImportModal
-        title={title}
+        title={target.title}
         manual={manual}
-        onImport={async (file) => {
-          const result = await run(target, "RenoDX import", () => api.importRenodx(target, file));
-          return result?.status === "success";
-        }}
+        onImport={async (file) => (await run(target, "Installing RenoDX", () => api.importRenodx(target.appid, file)))?.status === "success"}
       />,
     );
   };
 
-  const applyLaunch = async (spec: LaunchSpec) => {
-    const result = await updateLaunchOptions(appid, spec, []);
-    toast("Launch options", result.ok ? "HDR launch options applied." : result.message || "Could not update launch options.", result.ok ? 4000 : 12000);
-    refresh(appid);
-  };
-
-  const simple = async (label: string, action: () => Promise<{ status: string; message: string }>) => {
+  const simple: Simple = async (label, action) => {
     try {
       const result = await action();
       toast(label, result.message || (result.status === "success" ? "Done." : "Failed."));
     } catch (error) {
       toast(`${label} failed`, String(error));
     }
-    refresh(appid);
+    if (appid) refresh(appid);
   };
 
-  const options = state?.method_options || [];
-  const selected = options.find((item) => item.method === method) || options[0];
-  const installed = Boolean(state?.install.installed);
-  const removal = method === "sdr" || method === "native_hdr";
-  const actionLabel = !selected ? "Install" : removal ? selected.label : installed ? `Switch to ${selected.label}` : `Install ${selected.label}`;
-  const delay = state?.install.method === "special_k_delayed" ? Number(state.install.extra?.delay || 5) : 0;
+  const applyLaunch = async (target: GameState, spec: LaunchSpec) => {
+    const result = await updateLaunchOptions(gameRef(target), spec, []);
+    toast("Launch options", result.ok ? "HDR launch options added." : result.message || "Could not update launch options.", result.ok ? 4000 : 12000);
+    refresh(target.appid);
+  };
+
+  const gameOptions = games.map((game) => ({
+    data: game.appid,
+    label: `${game.appid === running ? "▶ " : ""}${game.name}${game.kind === "shortcut" && !/non-steam/i.test(game.name) ? " (non-Steam)" : ""}`,
+  }));
 
   return (
-    <PanelSection title="Per-Game HDR">
+    <PanelSection title="HDR for">
       <PanelSectionRow>
         <DropdownItem
-          rgOptions={games.map((item) => ({ data: item.appid, label: item.name }))}
+          rgOptions={gameOptions}
           selectedOption={appid}
-          strDefaultLabel={games.length ? "Select a game…" : "No Steam games found"}
+          strDefaultLabel={games.length ? "Choose a game…" : "No games found"}
           onChange={(option) => setAppid(String(option.data))}
-          onMenuWillOpen={() => loadGames()}
+          onMenuWillOpen={(show) => {
+            loadGames().catch(() => undefined);
+            show();
+          }}
         />
       </PanelSectionRow>
 
-      {appid && (
+      <DisplayWarning supported={display?.supported ?? null} enabled={display?.enabled ?? null} onRecheck={refreshDisplay} />
+
+      {!appid && games.length > 0 && (
+        <Card><Small>Pick a game to see whether HDR can be added and how. The game you're playing is listed first.</Small></Card>
+      )}
+
+      {appid && !state && (
+        <Card>
+          {entry.error
+            ? <div style={{ color: COLORS.bad, fontSize: 13 }}>{entry.error}</div>
+            : <Small><Spin />Checking the game: executable, graphics API and available mods…</Small>}
+        </Card>
+      )}
+
+      {state && (
         <>
-          {entry.error && !state ? (
+          <StatusCard state={state} launchApplied={entry.launchApplied} busy={entry.busy && `${entry.busy}…`} />
+          {busy && (
             <PanelSectionRow>
-              <div style={{ color: "#ff6b6b", fontSize: "0.85em" }}>{entry.error}</div>
+              <Small><Spin />Downloads can take a minute the first time. You can close this menu; it keeps going.</Small>
             </PanelSectionRow>
-          ) : (
-            <GameStatusCard state={state} loading={entry.loading} launchApplied={entry.launchApplied} />
           )}
 
-          {state && (
-            <>
-              <PanelSectionRow>
-                <DropdownItem
-                  label="HDR method"
-                  disabled={busy}
-                  rgOptions={options.map((item) => ({
-                    data: item.method,
-                    label: item.available ? (item.badge ? `${item.label} · ${item.badge}` : item.label) : `${item.label} (unavailable)`,
-                  }))}
-                  selectedOption={selected?.method}
-                  onChange={(option) => setMethod(String(option.data))}
-                />
-              </PanelSectionRow>
-              <PanelSectionRow>
-                <ButtonItem
-                  layout="below"
-                  disabled={busy || entry.loading || !selected?.available}
-                  description={selected?.reason}
-                  onClick={() => run(appid, removal ? methodName(method) : "HDR setup", () => api.install(appid, method))}
-                >
-                  {entry.busy || actionLabel}
-                </ButtonItem>
-              </PanelSectionRow>
+          <Problems
+            state={state}
+            launchApplied={entry.launchApplied}
+            busy={busy}
+            onRepair={() => run(state, "Repairing", () => api.repair(state.appid))}
+            onApplyLaunch={(spec) => applyLaunch(state, spec)}
+            onChooseExe={() => setSection("advanced")}
+          />
 
-              {installed && state.install.launch && entry.launchApplied === false && (
-                <PanelSectionRow>
-                  <ButtonItem layout="below" disabled={busy} onClick={() => applyLaunch(state.install.launch!)}>
-                    Apply launch options
-                  </ButtonItem>
-                </PanelSectionRow>
-              )}
+          {!busy && <MainAction state={state} run={run} onImport={(manual) => openImport(state, manual)} />}
 
-              {installed && !removal && (
-                <PanelSectionRow>
-                  <ButtonItem layout="below" disabled={busy} onClick={() => run(appid, "Remove HDR", () => api.remove(appid), "remove")}>
-                    Remove HDR
-                  </ButtonItem>
-                </PanelSectionRow>
-              )}
-
-              <PanelSectionRow>
-                <ButtonItem layout="below" disabled={busy} onClick={() => openImport(appid, null)} description="Install a RenoDX mod you downloaded yourself (Nexus, Discord).">
-                  Import downloaded RenoDX mod
-                </ButtonItem>
-              </PanelSectionRow>
-
-              <PanelSectionRow>
-                <ToggleField label="Advanced" checked={advanced} onChange={setAdvanced} />
-              </PanelSectionRow>
-
-              {advanced && (
-                <>
-                  <PanelSectionRow>
-                    <DropdownItem
-                      label="Game executable"
-                      description={state.exe_path ? `HDR files go next to: ${state.target_dir}` : "No executable found"}
-                      disabled={busy}
-                      rgOptions={[
-                        { data: "", label: state.exe_override ? "Automatic detection" : `Automatic (${state.exe_candidates[0]?.label || "none"})` },
-                        ...state.exe_candidates.map((item) => ({ data: item.path, label: `${item.label} (${item.arch}-bit)` })),
-                      ]}
-                      selectedOption={state.exe_override ? state.exe_path : ""}
-                      onChange={(option) => simple("Executable", () => api.setExecutable(appid, String(option.data)))}
-                    />
-                  </PanelSectionRow>
-                  <PanelSectionRow>
-                    <ButtonItem layout="below" disabled={busy || !installed} onClick={() => simple("Check install", () => api.verify(appid))}>
-                      Check installed files
-                    </ButtonItem>
-                  </PanelSectionRow>
-                  <PanelSectionRow>
-                    <ToggleField
-                      label="Special K HDR works"
-                      description="Mark after confirming HDR in Special K's in-game menu; ranks Special K higher."
-                      checked={Boolean(state.context.specialk_verified)}
-                      disabled={busy}
-                      onChange={(value) => simple("Special K", () => api.setSpecialKVerified(appid, value))}
-                    />
-                  </PanelSectionRow>
-                  {delay > 0 && (
-                    <PanelSectionRow>
-                      <DropdownItem
-                        label="Special K injection delay"
-                        disabled={busy}
-                        rgOptions={[3, 5, 8, 10, 15, 20, 30].map((seconds) => ({ data: seconds, label: `${seconds}s` }))}
-                        selectedOption={delay}
-                        onChange={(option) => run(appid, "Special K delay", () => api.setSpecialKDelay(appid, Number(option.data)))}
-                      />
-                    </PanelSectionRow>
-                  )}
-                  <PanelSectionRow>
-                    <ButtonItem layout="below" onClick={() => viewLogs(appid, game?.name || appid)}>
-                      View logs
-                    </ButtonItem>
-                  </PanelSectionRow>
-                  <PanelSectionRow>
-                    <ButtonItem layout="below" onClick={() => viewWiki(appid, game?.name || appid)}>
-                      PCGamingWiki fixes
-                    </ButtonItem>
-                  </PanelSectionRow>
-                  <PanelSectionRow>
-                    <ButtonItem layout="below" disabled={busy} onClick={() => simple("Caches", () => api.resetCaches())} description="Re-download the RenoDX mod list and PCGamingWiki data.">
-                      Reset caches
-                    </ButtonItem>
-                  </PanelSectionRow>
-                  <PanelSectionRow>
-                    <ButtonItem
-                      layout="below"
-                      disabled={busy}
-                      description="Last resort. Deletes the game's Proton prefix; saves stored only in the prefix are lost."
-                      onClick={() =>
-                        showModal(
-                          <ConfirmModal
-                            strTitle="Reset Proton prefix?"
-                            strDescription={`This deletes the Proton prefix for ${game?.name || appid}. Steam rebuilds it on the next launch, but settings or saves stored only in the prefix (not Steam Cloud) are lost.`}
-                            strOKButtonText="Delete prefix"
-                            onOK={() => run(appid, "Proton prefix", () => api.resetPrefix(appid), "remove")}
-                          />,
-                        )
-                      }
-                    >
-                      Reset Proton prefix
-                    </ButtonItem>
-                  </PanelSectionRow>
-                </>
-              )}
-            </>
+          {state.install.installed && !state.install.legacy && !busy && (
+            <Feedback
+              state={state}
+              onResult={(result) => simple("Feedback", () => api.setResult(state.appid, result))}
+              onReport={() => openLink(reportUrl(state, version))}
+              onTryOther={() => setSection("methods")}
+            />
           )}
+
+          <SectionToggle open={section === "methods"} disabled={busy} onClick={() => setSection(section === "methods" ? "" : "methods")}>
+            {state.install.installed ? "Switch method" : "Other methods"}
+          </SectionToggle>
+          {section === "methods" && (
+            <MethodList
+              state={state}
+              busy={busy}
+              onPick={(option) => run(state, option.method === "sdr" ? "Removing HDR" : `Installing ${option.label}`, () => api.install(state.appid, option.method))}
+              onImport={() => openImport(state, manualFor(state))}
+            />
+          )}
+
+          <SectionToggle open={section === "advanced"} onClick={() => setSection(section === "advanced" ? "" : "advanced")}>
+            Advanced
+          </SectionToggle>
+          {section === "advanced" && <Advanced state={state} busy={busy} simple={simple} run={run} />}
         </>
       )}
     </PanelSection>
   );
 }
 
-async function viewLogs(appid: string, title: string) {
+// ---------------------------------------------------------------- sections
+
+function DisplayWarning({ supported, enabled, onRecheck }: { supported: boolean | null; enabled: boolean | null; onRecheck: () => void }) {
+  if (supported === false) {
+    return (
+      <PanelSectionRow>
+        <Notice tone="warn" title="This screen doesn't support HDR">
+          Mods still install, but you'll only see HDR on an HDR display (Steam Deck OLED or an HDR TV or monitor).
+        </Notice>
+      </PanelSectionRow>
+    );
+  }
+  if (enabled === false) {
+    return (
+      <>
+        <PanelSectionRow>
+          <Notice tone="warn" title="HDR is turned off in SteamOS">
+            Turn it on in Settings → Display → Enable HDR. Until then games stay SDR whatever you install here.
+          </Notice>
+        </PanelSectionRow>
+        <Buttons>
+          <DialogButton onClick={onRecheck}>I turned it on, check again</DialogButton>
+        </Buttons>
+      </>
+    );
+  }
+  return null;
+}
+
+function Problems({ state, launchApplied, busy, onRepair, onApplyLaunch, onChooseExe }: {
+  state: GameState; launchApplied: boolean | null; busy: boolean;
+  onRepair: () => void; onApplyLaunch: (spec: LaunchSpec) => void; onChooseExe: () => void;
+}) {
+  const install = state.install;
+  const ctx = state.context;
+  const repairable = Boolean(install.installed && (install.legacy || install.needs_repair || install.game_updated));
+  const missingLaunch = Boolean(install.installed && install.launch && launchApplied === false && !repairable);
+  const notices: React.ReactNode[] = [];
+  if (ctx.anti_cheat.length) {
+    notices.push(
+      <Notice tone="bad" title={`${ctx.anti_cheat.join(", ")} detected`}>
+        Injecting into games with anti-cheat can get your account banned, so it's blocked. If the game has its own HDR, use Native HDR under Other methods.
+      </Notice>,
+    );
+  }
+  if (!state.exe_path) {
+    notices.push(
+      <Notice tone="warn" title={ctx.linux_build ? "This is the Linux version of the game" : "Couldn't find the game's .exe"}>
+        {ctx.linux_build
+          ? "HDR mods need the Windows version. In the game's Properties → Compatibility, force a Proton version, launch it once, then come back."
+          : "Pick the game's executable under Advanced."}
+      </Notice>,
+    );
+  }
+  if (install.legacy) {
+    notices.push(<Notice tone="warn" title="Installed by an older plugin version">Repair to reinstall it in the new format, which can be removed cleanly.</Notice>);
+  } else if (repairable) {
+    notices.push(
+      <Notice tone="warn" title={install.files_ok === false ? "Some HDR files are missing" : install.launch_outdated ? "Uses old launch options" : "The game was updated"}>
+        {install.files_ok === false
+          ? "A game update or Steam's file check removed them. Repair puts them back."
+          : install.launch_outdated
+            ? "This was set up by an older plugin version. Repair brings it up to date."
+            : "Updates sometimes undo mods. If HDR stopped working, repair it."}
+      </Notice>,
+    );
+  } else if (missingLaunch) {
+    notices.push(<Notice tone="warn" title="Launch options are missing">The HDR files are installed, but this game's Steam launch options don't include the HDR settings.</Notice>);
+  }
+  if (!notices.length) return null;
+  return (
+    <>
+      {notices.map((notice, index) => <PanelSectionRow key={index}>{notice}</PanelSectionRow>)}
+      {(repairable || missingLaunch || (!state.exe_path && !ctx.linux_build)) && (
+        <Buttons>
+          {repairable && <DialogButton disabled={busy} onClick={onRepair}>Repair</DialogButton>}
+          {missingLaunch && <DialogButton disabled={busy} onClick={() => onApplyLaunch(install.launch!)}>Add launch options</DialogButton>}
+          {!state.exe_path && !ctx.linux_build && <DialogButton onClick={onChooseExe}>Choose executable</DialogButton>}
+        </Buttons>
+      )}
+    </>
+  );
+}
+
+function manualFor(state: GameState): ManualDownload | null {
+  const match = state.context.renodx_match;
+  if (!match?.manual_url) return null;
+  return { manual_download: true, url: match.manual_url, mod_name: match.name, message: `The ${match.name} RenoDX mod is hosted on ${new URL(match.manual_url).hostname.replace("www.", "")}.` };
+}
+
+function MainAction({ state, run, onImport }: { state: GameState; run: Run; onImport: (manual: ManualDownload | null) => void }) {
+  const install = state.install;
+  const top = state.recommendations[0];
+  if (install.installed) {
+    return (
+      <PanelSectionRow>
+        <ButtonItem layout="below" onClick={() => run(state, "Removing HDR", () => api.remove(state.appid), "remove")}
+          description="Puts the game's files and launch options back the way they were.">
+          Remove HDR
+        </ButtonItem>
+      </PanelSectionRow>
+    );
+  }
+  if (state.context.anti_cheat.length || !state.exe_path) return null;
+  if (!top || top.method === "sdr") {
+    return <Card><Small>No automatic HDR method fits this game. If you have a RenoDX mod for it, import it under Other methods.</Small></Card>;
+  }
+  const manual = top.method === "renodx" && top.manual_download;
+  const label = top.method === "native_hdr" ? "Use the game's own HDR" : manual ? "Get the RenoDX mod" : "Enable HDR";
+  const match = state.context.renodx_match;
+  return (
+    <>
+      <Card accent={COLORS.info}>
+        <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5, color: COLORS.dim }}>Recommended</div>
+        <div style={{ fontWeight: 700, marginTop: 2 }}>
+          {methodName(top.method)}{top.method === "renodx" && match ? `: ${match.name}` : ""}
+        </div>
+        <Small style={{ marginTop: 2 }}>{manual ? "This mod is only on Nexus/Discord: download it in Desktop Mode, then import it." : top.reason}</Small>
+        {top.warnings?.length ? (
+          <div style={{ marginTop: 6 }}>
+            <Notice tone="warn" title="Known issues">{top.warnings.map((warning, index) => <div key={index}>• {warning}</div>)}</Notice>
+          </div>
+        ) : null}
+        {top.manual_steps?.length ? <><Small style={{ marginTop: 6 }}>After installing:</Small><Steps items={top.manual_steps} /></> : null}
+      </Card>
+      <PanelSectionRow>
+        <ButtonItem
+          layout="below"
+          onClick={() => (manual ? onImport(manualFor(state)) : run(state, top.method === "native_hdr" ? "Setting up native HDR" : `Installing ${methodName(top.method)}`, () => api.install(state.appid, "recommended")))}
+        >
+          {label}
+        </ButtonItem>
+      </PanelSectionRow>
+    </>
+  );
+}
+
+function Feedback({ state, onResult, onReport, onTryOther }: { state: GameState; onResult: (result: string) => void; onReport: () => void; onTryOther: () => void }) {
+  const steps = CHECK_STEPS[state.install.method || ""];
+  if (state.user_result === "worked") return null;
+  if (state.user_result === "failed") {
+    return (
+      <>
+        <PanelSectionRow>
+          <Notice tone="warn" title="Not working?">
+            Try another method, or look at Advanced → View logs. Reporting it helps improve the compatibility list for everyone.
+          </Notice>
+        </PanelSectionRow>
+        <Buttons>
+          <DialogButton onClick={onTryOther}>Try another method</DialogButton>
+          <DialogButton onClick={onReport}>Report on GitHub</DialogButton>
+          <DialogButton onClick={() => onResult("")}>Never mind</DialogButton>
+        </Buttons>
+      </>
+    );
+  }
+  return (
+    <>
+      {steps && (
+        <Card>
+          <div style={{ fontWeight: 700, fontSize: 13 }}>Check it in game</div>
+          <Steps items={steps} />
+        </Card>
+      )}
+      <PanelSectionRow>
+        <div style={{ fontSize: 13, margin: "2px 0 6px" }}>Did HDR work?</div>
+        <Focusable style={{ display: "flex", gap: 6 }} flow-children="horizontal">
+          <DialogButton style={{ minWidth: 0, flex: 1 }} onClick={() => onResult("worked")}>Yes</DialogButton>
+          <DialogButton style={{ minWidth: 0, flex: 1 }} onClick={() => onResult("failed")}>No</DialogButton>
+        </Focusable>
+      </PanelSectionRow>
+    </>
+  );
+}
+
+function SectionToggle({ open, onClick, disabled, children }: { open: boolean; onClick: () => void; disabled?: boolean; children: string }) {
+  return (
+    <PanelSectionRow>
+      <ButtonItem layout="below" onClick={onClick} disabled={disabled}>
+        {open ? "▾ " : "▸ "}{children}
+      </ButtonItem>
+    </PanelSectionRow>
+  );
+}
+
+function MethodList({ state, busy, onPick, onImport }: { state: GameState; busy: boolean; onPick: (option: MethodOption) => void; onImport: () => void }) {
+  const installed = state.install.installed ? state.install.method : "";
+  // "Remove HDR" already covers SDR, and the delayed mode only matters for the few games that need it.
+  const options = state.method_options.filter((option) =>
+    !["recommended", "sdr", installed].includes(option.method) && !(option.method === "special_k_delayed" && !option.available),
+  );
+  return (
+    <>
+      {options.map((option) => (
+        <PanelSectionRow key={option.method}>
+          <ButtonItem layout="below" disabled={busy || !option.available} onClick={() => onPick(option)} description={option.reason}>
+            {option.label}{option.badge && option.available ? ` · ${option.badge}` : ""}
+          </ButtonItem>
+        </PanelSectionRow>
+      ))}
+      <PanelSectionRow>
+        <ButtonItem layout="below" disabled={busy || !state.exe_path} onClick={onImport}
+          description="For RenoDX mods from Nexus or Discord: download the .addon64/.addon32 (or a zip) to ~/Downloads first.">
+          Import a downloaded RenoDX mod
+        </ButtonItem>
+      </PanelSectionRow>
+    </>
+  );
+}
+
+function Advanced({ state, busy, simple, run }: { state: GameState; busy: boolean; simple: Simple; run: Run }) {
+  const ctx = state.context;
+  const delay = state.install.method === "special_k_delayed" ? Number(state.install.extra?.delay || 5) : 0;
+  const short = (path: string) => (path ? path.replace(state.install_path, "…") || "…" : "-");
+  return (
+    <>
+      <Card>
+        <Small>
+          <div>Executable: {state.exe_path ? short(state.exe_path) : "not found"}</div>
+          <div>Graphics API: {ctx.api} ({ctx.api_source || "not detected"})</div>
+          <div>HDR files go in: {short(state.target_dir)}</div>
+          {ctx.notes.map((note, index) => <div key={index}>{note}</div>)}
+        </Small>
+      </Card>
+      <PanelSectionRow>
+        <DropdownItem
+          label="Game executable"
+          disabled={busy}
+          rgOptions={[
+            { data: "", label: state.exe_override ? "Automatic" : `Automatic (${state.exe_candidates[0]?.label || "none"})` },
+            ...state.exe_candidates.map((item) => ({ data: item.path, label: `${item.label} (${item.arch}-bit)` })),
+          ]}
+          selectedOption={state.exe_override ? state.exe_path : ""}
+          onChange={(option) => simple("Executable", () => api.setExecutable(state.appid, String(option.data)))}
+        />
+      </PanelSectionRow>
+      {delay > 0 && (
+        <PanelSectionRow>
+          <DropdownItem
+            label="Special K injection delay"
+            disabled={busy}
+            rgOptions={[3, 5, 8, 10, 15, 20, 30].map((seconds) => ({ data: seconds, label: `${seconds} seconds` }))}
+            selectedOption={delay}
+            onChange={(option) => run(state, "Changing delay", () => api.setSpecialKDelay(state.appid, Number(option.data)))}
+          />
+        </PanelSectionRow>
+      )}
+      <Buttons>
+        {state.install.installed && <DialogButton disabled={busy} onClick={() => simple("Check files", () => api.verify(state.appid))}>Check installed files</DialogButton>}
+        {state.install.installed && !state.install.legacy && <DialogButton disabled={busy} onClick={() => run(state, "Repairing", () => api.repair(state.appid))}>Reinstall (repair)</DialogButton>}
+        <DialogButton onClick={() => viewLogs(state)}>View logs</DialogButton>
+        <DialogButton onClick={() => viewWiki(state)}>PCGamingWiki fixes</DialogButton>
+        <DialogButton disabled={busy} onClick={() => simple("Refreshed", () => api.resetCaches())}>Refresh mod list and wiki data</DialogButton>
+        <DialogButton
+          disabled={busy}
+          onClick={() =>
+            showModal(
+              <ConfirmModal
+                strTitle="Reset Proton prefix?"
+                strDescription={`This deletes the Proton prefix for ${state.title}. Steam rebuilds it on the next launch, but settings or saves kept only in the prefix (not Steam Cloud) are lost.`}
+                strOKButtonText="Delete prefix"
+                onOK={() => run(state, "Resetting prefix", () => api.resetPrefix(state.appid), "remove")}
+              />,
+            )
+          }
+        >
+          Reset Proton prefix (last resort)
+        </DialogButton>
+      </Buttons>
+    </>
+  );
+}
+
+async function viewLogs(state: GameState) {
   try {
-    const result = await api.logs(appid);
+    const result = await api.logs(state.appid);
     showModal(
       <TextModal
-        title={`Logs: ${title}`}
+        title={`Logs: ${state.title}`}
         tabs={[
           { title: "Plugin", content: result.plugin_log || "Nothing logged for this game yet." },
           { title: "Proton", content: result.proton_log || `No Proton log at ${result.proton_log_path}. Add PROTON_LOG=1 to the launch options and launch once to create one.` },
@@ -322,13 +523,13 @@ async function viewLogs(appid: string, title: string) {
   }
 }
 
-async function viewWiki(appid: string, title: string) {
+async function viewWiki(state: GameState) {
   try {
-    const result = await api.pcgwFixes(appid);
+    const result = await api.pcgwFixes(state.appid);
     const list = (items?: string[]) => (items?.length ? items.map((item) => `• ${item}`).join("\n") : "No entries.");
     showModal(
       <TextModal
-        title={`PCGamingWiki: ${result.page_name || title}`}
+        title={`PCGamingWiki: ${result.page_name || state.title}`}
         tabs={
           result.status === "success"
             ? [

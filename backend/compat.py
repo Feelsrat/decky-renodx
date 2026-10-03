@@ -67,6 +67,11 @@ class CompatDB:
         automation = _dict(tool.get("automation"))
         warnings = [str(item) for item in _list(automation.get("warnings")) + _list(tool.get("warnings")) if str(item).strip()]
         steps = [str(item) for item in _list(automation.get("manual_steps")) + _list(tool.get("manual_steps")) if str(item).strip()]
+        if tool_name == "renodx":
+            for upgrade in _list(_dict(automation.get("renodx_settings")).get("upgrades")):
+                upgrade = _dict(upgrade)
+                if upgrade.get("format") and upgrade.get("mode"):
+                    steps.append(f"In the RenoDX tab, set the {upgrade['format']} upgrade to \"{upgrade['mode']}\".")
         if tool_name == "special_k" and _dict(automation.get("hdr")).get("avoid"):
             warnings.append("Compatibility database marks Special K HDR as avoid for this game.")
         return {"warnings": list(dict.fromkeys(warnings)), "manual_steps": list(dict.fromkeys(steps))}

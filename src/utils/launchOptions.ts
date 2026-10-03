@@ -7,11 +7,20 @@ export interface LaunchSpec {
   args: string[];
   wrapper: string[];
   preview?: string;
+  /** Parts the user already had before HDR was applied; removing HDR leaves them. */
+  keep?: LaunchKeep;
+}
+
+export interface LaunchKeep {
+  args: string[];
+  dlls: string[];
+  env: string[];
 }
 
 const COMMAND = "%command%";
 const PROXY_DLLS = ["dxgi", "d3d9", "d3d8", "d3d11", "d3d12", "ddraw", "dinput8", "opengl32"];
-const HDR_ENV_KEYS = ["PROTON_ENABLE_HDR", "DXVK_HDR", "ENABLE_HDR_WSI", "ENABLE_GAMESCOPE_WSI"];
+// What plugin versions up to 0.0.x always added.
+const LEGACY_ENV_KEYS = ["PROTON_ENABLE_HDR", "DXVK_HDR", "ENABLE_HDR_WSI", "ENABLE_GAMESCOPE_WSI", "PROTON_LOG"];
 const WRAPPER_SCRIPT = "specialk-delayed-launch.sh";
 
 /** Split on whitespace while keeping quoted sections (and the quotes) intact. */
@@ -114,13 +123,14 @@ export function stripHdr(options: string, specs: (LaunchSpec | null | undefined)
   const parts = split(options);
   const known = specs.filter(Boolean) as LaunchSpec[];
   const legacy = hasLegacyTokens(parts.prefix);
-  const ourDlls = new Set(known.flatMap((spec) => Object.keys(spec.dll_overrides || {}).map((dll) => dll.toLowerCase())));
+  const kept = (spec: LaunchSpec, kind: keyof LaunchKeep) => new Set((spec.keep?.[kind] || []).map((item) => (kind === "dlls" ? item.toLowerCase() : item)));
+  const ourDlls = new Set(known.flatMap((spec) => Object.keys(spec.dll_overrides || {}).map((dll) => dll.toLowerCase()).filter((dll) => !kept(spec, "dlls").has(dll))));
   if (legacy) {
     ourDlls.add("d3dcompiler_47");
     PROXY_DLLS.forEach((dll) => ourDlls.add(dll));
   }
-  const ourEnv = new Set([...HDR_ENV_KEYS, ...known.flatMap((spec) => Object.keys(spec.env || {}))]);
-  if (legacy) ourEnv.add("PROTON_LOG");
+  const ourEnv = new Set(known.flatMap((spec) => Object.keys(spec.env || {}).filter((key) => !kept(spec, "env").has(key))));
+  if (legacy) LEGACY_ENV_KEYS.forEach((key) => ourEnv.add(key));
 
   const prefix: string[] = [];
   for (let i = 0; i < parts.prefix.length; i++) {
@@ -145,7 +155,7 @@ export function stripHdr(options: string, specs: (LaunchSpec | null | undefined)
 
   let args = parts.args;
   for (const spec of known) {
-    for (const arg of spec.args || []) {
+    for (const arg of (spec.args || []).filter((item) => !kept(spec, "args").has(item))) {
       const index = args.indexOf(arg);
       if (index >= 0) args = [...args.slice(0, index), ...args.slice(index + 1)];
     }
@@ -178,6 +188,26 @@ export function mergeHdr(options: string, spec: LaunchSpec, previous: (LaunchSpe
   const args = [...parts.args];
   for (const arg of spec.args || []) if (!args.includes(arg)) args.push(arg);
   return join({ prefix, args, hadCommand: true });
+}
+
+/** Which parts of ``spec`` the user already had, so they survive removing HDR later. */
+export function preexisting(options: string, spec: LaunchSpec): LaunchKeep {
+  const parts = split(options);
+  const env = new Map<string, string>();
+  const overrides = new Map<string, string>();
+  for (const token of parts.prefix) {
+    const parsed = assignment(token);
+    if (!parsed) continue;
+    if (parsed[0] === "WINEDLLOVERRIDES") parseOverrides(parsed[1]).forEach(([dll, mode]) => overrides.set(dll, mode));
+    else env.set(parsed[0], parsed[1]);
+  }
+  // Without %command%, every token is a game argument.
+  const args = parts.hadCommand ? parts.args : tokenize(options || "");
+  return {
+    args: (spec.args || []).filter((arg) => args.includes(arg)),
+    dlls: Object.entries(spec.dll_overrides || {}).filter(([dll, mode]) => overrides.get(dll.toLowerCase()) === mode).map(([dll]) => dll.toLowerCase()),
+    env: Object.entries(spec.env || {}).filter(([key, value]) => env.get(key) === value).map(([key]) => key),
+  };
 }
 
 /** True when every part of the spec is present in the current launch options. */

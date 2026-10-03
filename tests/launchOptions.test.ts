@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
-import { hasHdr, mergeHdr, stripHdr, tokenize, type LaunchSpec } from "../src/utils/launchOptions.ts";
+import { hasHdr, mergeHdr, preexisting, stripHdr, tokenize, type LaunchSpec } from "../src/utils/launchOptions.ts";
 
-const ENV = { PROTON_ENABLE_HDR: "1", DXVK_HDR: "1", ENABLE_HDR_WSI: "1", ENABLE_GAMESCOPE_WSI: "1" };
-const HDR_PREFIX = "PROTON_ENABLE_HDR=1 DXVK_HDR=1 ENABLE_HDR_WSI=1 ENABLE_GAMESCOPE_WSI=1";
+const ENV = { PROTON_ENABLE_HDR: "1", DXVK_HDR: "1" };
+const HDR_PREFIX = "PROTON_ENABLE_HDR=1 DXVK_HDR=1";
 const reshade: LaunchSpec = { env: ENV, dll_overrides: { dxgi: "n,b" }, args: [], wrapper: [] };
 const withArgs: LaunchSpec = { env: ENV, dll_overrides: { d3d9: "n,b" }, args: ["-dx11"], wrapper: [] };
 const delayed: LaunchSpec = {
@@ -88,6 +88,28 @@ test("legacy 0.0.x options are cleaned up", () => {
   assert.equal(stripHdr(legacy), "~/lsfg %command%");
   const legacyDelayed = 'STEAM_COMPAT_DATA_PATH="/c/123" PROTON_LOG=1 PROTON_ENABLE_HDR=1 bash "/plugins/decky-renodx/assets/specialk-delayed-launch.sh" "123" "5" "/x/SKIF.exe" %command%';
   assert.equal(stripHdr(legacyDelayed), "");
+});
+
+test("0.1.0 installs (four env vars) are replaced cleanly", () => {
+  const old: LaunchSpec = { env: { ...ENV, ENABLE_HDR_WSI: "1", ENABLE_GAMESCOPE_WSI: "1" }, dll_overrides: { dxgi: "n,b" }, args: [], wrapper: [] };
+  const v010 = mergeHdr("gamemoderun %command%", old);
+  assert.equal(mergeHdr(v010, reshade, [old]), `${HDR_PREFIX} WINEDLLOVERRIDES="dxgi=n,b" gamemoderun %command%`);
+});
+
+test("the user's own ENABLE_GAMESCOPE_WSI=0 workaround survives", () => {
+  assert.equal(stripHdr(mergeHdr("ENABLE_GAMESCOPE_WSI=0 %command%", reshade), [reshade]), "ENABLE_GAMESCOPE_WSI=0 %command%");
+});
+
+test("options the user already had are kept on removal", () => {
+  const before = 'DXVK_HDR=1 WINEDLLOVERRIDES="d3d9=n,b" %command% -dx11';
+  const keep = preexisting(before, withArgs);
+  assert.deepEqual(keep, { args: ["-dx11"], dlls: ["d3d9"], env: ["DXVK_HDR"] });
+  const merged = mergeHdr(before, withArgs);
+  assert.equal(stripHdr(merged, [{ ...withArgs, keep }]), 'DXVK_HDR=1 WINEDLLOVERRIDES="d3d9=n,b" %command% -dx11');
+});
+
+test("preexisting treats options without %command% as arguments", () => {
+  assert.deepEqual(preexisting("-dx11", withArgs).args, ["-dx11"]);
 });
 
 test("PROTON_LOG set by the user is kept", () => {

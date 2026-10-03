@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ButtonItem, DialogButton, DropdownItem, Focusable, ModalRoot, Navigation, PanelSectionRow } from "@decky/ui";
+import { DialogButton, DropdownItem, Focusable, ModalRoot, Navigation, PanelSectionRow } from "@decky/ui";
 import { toaster } from "@decky/api";
 import { api, type DownloadFile, type ManualDownload } from "../backend";
 
@@ -72,24 +72,28 @@ export function ImportModal({
   }, []);
 
   const search = `https://www.google.com/search?q=${encodeURIComponent(`${title} RenoDX`)}`;
+  const step = (n: number, text: string) => (
+    <div style={{ fontWeight: 700, margin: "12px 0 4px" }}>
+      <span style={{ display: "inline-block", width: 20, height: 20, lineHeight: "20px", textAlign: "center", borderRadius: 10, background: "#1a9fff", color: "#fff", fontSize: 12, marginRight: 8 }}>{n}</span>
+      {text}
+    </div>
+  );
 
   return (
     <ModalRoot closeModal={closeModal}>
-      <div style={{ fontWeight: 700, marginBottom: 6 }}>Import a RenoDX mod for {title}</div>
-      <div style={{ fontSize: "0.85em", opacity: 0.8, marginBottom: 8 }}>
-        {manual?.message || "Download the mod's .addon64/.addon32 file (or a .zip/.7z containing it) to ~/Downloads, then import it."}
-        {" "}Game Mode's browser cannot save files; Nexus downloads need Desktop Mode.
+      <div style={{ fontSize: 18, fontWeight: 700 }}>Install a RenoDX mod for {title}</div>
+      {manual?.message && <div style={{ fontSize: 13, opacity: 0.75, marginTop: 4 }}>{manual.message}</div>}
+
+      {step(1, manual?.url ? "Open the mod page" : "Find the mod")}
+      <DialogButton onClick={() => openLink(manual?.url || search)}>{manual?.url ? "Open mod page" : "Search the web for a RenoDX mod"}</DialogButton>
+
+      {step(2, "Download it to ~/Downloads")}
+      <div style={{ fontSize: 13, opacity: 0.75 }}>
+        You want the .addon64 or .addon32 file, or a .zip/.7z that contains it. Steam's Game Mode browser can't save files, so for
+        Nexus or Discord use Desktop Mode.
       </div>
-      {manual?.url && (
-        <ButtonItem layout="below" onClick={() => openLink(manual.url)}>
-          Open mod page
-        </ButtonItem>
-      )}
-      {!manual?.url && (
-        <ButtonItem layout="below" onClick={() => openLink(search)}>
-          Search for a RenoDX mod
-        </ButtonItem>
-      )}
+
+      {step(3, "Import it")}
       <PanelSectionRow>
         {files.length ? (
           <DropdownItem
@@ -99,24 +103,24 @@ export function ImportModal({
             onChange={(option) => setSelected(String(option.data))}
           />
         ) : (
-          <div style={{ fontSize: "0.85em", opacity: 0.6, padding: "8px 0" }}>No addon or archive found in ~/Downloads yet.</div>
+          <div style={{ fontSize: 13, opacity: 0.6, padding: "8px 0" }}>Nothing in ~/Downloads yet.</div>
         )}
       </PanelSectionRow>
-      <ButtonItem layout="below" onClick={scan} disabled={working}>
-        Rescan downloads
-      </ButtonItem>
-      <ButtonItem
-        layout="below"
-        disabled={working || !selected}
-        onClick={async () => {
-          setWorking(true);
-          const ok = await onImport(selected);
-          setWorking(false);
-          if (ok) closeModal?.();
-        }}
-      >
-        {working ? "Importing…" : "Import selected file"}
-      </ButtonItem>
+      <Focusable style={{ display: "flex", gap: 8 }} flow-children="horizontal">
+        <DialogButton style={{ flex: 1, minWidth: 0 }} onClick={scan} disabled={working}>Look again</DialogButton>
+        <DialogButton
+          style={{ flex: 2, minWidth: 0 }}
+          disabled={working || !selected}
+          onClick={async () => {
+            setWorking(true);
+            const ok = await onImport(selected);
+            setWorking(false);
+            if (ok) closeModal?.();
+          }}
+        >
+          {working ? "Installing…" : "Install selected file"}
+        </DialogButton>
+      </Focusable>
     </ModalRoot>
   );
 }

@@ -1,0 +1,26 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Decky RenoDX dev harness</title>
+  <style>
+    body { margin: 0; background: #000; color: #dcdedf; font-family: "Motiva Sans", "Segoe UI", Arial, sans-serif; }
+    .layout { display: flex; gap: 24px; padding: 24px; align-items: flex-start; }
+    .qam { width: 340px; height: 800px; background: #0e141b; overflow-y: auto; border-radius: 4px; box-shadow: 0 0 0 1px #222; }
+    .qam-title { padding: 14px 16px; font-size: 18px; font-weight: 700; border-bottom: 1px solid #ffffff14; }
+    .side { flex: 1; max-width: 620px; font-size: 13px; }
+    .side h3 { margin-top: 0; }
+    .opt { margin-bottom: 8px; } .opt input { width: 100%; background: #1a1f27; color: #dcdedf; border: 1px solid #333; padding: 4px; font-family: monospace; }
+    .dim { color: #8b929a; }
+    #toasts { position: fixed; right: 16px; bottom: 16px; display: flex; flex-direction: column; gap: 8px; width: 360px; }
+    .toast { background: #23262e; border-left: 4px solid #1a9fff; padding: 10px 12px; font-size: 13px; box-shadow: 0 4px 20px #000; }
+    @keyframes dk-spin { to { transform: rotate(360deg); } }
+    select option { background: #23262e; }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+  <div id="toasts"></div>
+  <script src="/dist/harness.js"></script>
+</body>
+</html>

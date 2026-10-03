@@ -1,6 +1,7 @@
-"""Steam library discovery: libraries, installed apps, compatdata and console logs."""
+"""Steam library discovery: Steam games, non-Steam shortcuts, compatdata and console logs."""
 from __future__ import annotations
 
+import binascii
 import os
 import re
 from dataclasses import dataclass
@@ -14,22 +15,23 @@ CONSOLE_LOG_TAIL_BYTES = 4 * 1024 * 1024
 
 @dataclass(frozen=True)
 class SteamApp:
+    """A Steam game or a non-Steam shortcut ("kind" tells which)."""
+
     appid: str
     name: str
-    installdir: str
-    library: Path
+    install_path: Path
+    compatdata: Path
+    kind: str = "steam"
+    exe: str = ""           # shortcuts: the .exe the shortcut launches
+    buildid: str = ""       # Steam games: changes when Steam updates the game
+    launch_options: str = ""  # shortcuts: as last saved in shortcuts.vdf
 
     @property
-    def install_path(self) -> Path:
-        return self.library / "steamapps" / "common" / self.installdir
-
-    @property
-    def compatdata(self) -> Path:
-        # Steam keeps the Proton prefix in the same library as the game.
-        return self.library / "steamapps" / "compatdata" / self.appid
+    def is_shortcut(self) -> bool:
+        return self.kind == "shortcut"
 
     def to_dict(self) -> dict[str, str]:
-        return {"appid": self.appid, "name": self.name, "install_path": str(self.install_path)}
+        return {"appid": self.appid, "name": self.name, "kind": self.kind}
 
 
 def valid_appid(appid: object) -> bool:
@@ -79,8 +81,28 @@ class SteamLibrary:
                     apps[app.appid] = app
         return sorted(apps.values(), key=lambda app: app.name.lower())
 
+    def shortcuts(self) -> list[SteamApp]:
+        """Non-Steam games added to Steam, from every local user's shortcuts.vdf."""
+        roots = self.roots()
+        if not roots:
+            return []
+        found: dict[str, SteamApp] = {}
+        for root in roots:
+            for path in sorted(root.glob("userdata/*/config/shortcuts.vdf")):
+                try:
+                    data = vdf.load_binary(path)
+                except (OSError, ValueError):
+                    continue
+                entries = vdf.get(data, "shortcuts", default={}) or {}
+                for entry in entries.values():
+                    app = _shortcut_app(entry, roots[0]) if isinstance(entry, dict) else None
+                    if app and app.appid not in found:
+                        found[app.appid] = app
+        return sorted(found.values(), key=lambda app: app.name.lower())
+
     def games(self) -> list[SteamApp]:
-        return [app for app in self.apps() if not app.name.startswith(EXCLUDED_NAME_PREFIXES)]
+        steam = [app for app in self.apps() if not app.name.startswith(EXCLUDED_NAME_PREFIXES)]
+        return sorted(steam + self.shortcuts(), key=lambda app: app.name.lower())
 
     def app(self, appid: str) -> SteamApp | None:
         appid = str(appid)
@@ -88,7 +110,7 @@ class SteamLibrary:
             manifest = library / "steamapps" / f"appmanifest_{appid}.acf"
             if manifest.exists():
                 return _read_manifest(manifest, library)
-        return None
+        return next((app for app in self.shortcuts() if app.appid == appid), None)
 
     def launched_executable(self, appid: str, install_path: Path) -> Path | None:
         """Most recent .exe Steam launched for ``appid``, from the console log tail."""
@@ -141,7 +163,46 @@ def _read_manifest(path: Path, library: Path) -> SteamApp | None:
     appid, name, installdir = str(state.get("appid", "")), str(state.get("name", "")), str(state.get("installdir", ""))
     if not (valid_appid(appid) and name and installdir) or "/" in installdir or installdir in {".", ".."}:
         return None
-    return SteamApp(appid=appid, name=name, installdir=installdir, library=library)
+    return SteamApp(
+        appid=appid, name=name,
+        install_path=library / "steamapps" / "common" / installdir,
+        # Steam keeps the Proton prefix in the same library as the game.
+        compatdata=library / "steamapps" / "compatdata" / appid,
+        buildid=str(state.get("buildid", "")),
+    )
+
+
+def _strip_quotes(value: str) -> str:
+    value = (value or "").strip()
+    if len(value) >= 2 and value[0] == value[-1] == '"':
+        return value[1:-1]
+    return value
+
+
+def _shortcut_app(entry: dict, steam_root: Path) -> SteamApp | None:
+    name = str(vdf.get(entry, "AppName", default="") or "").strip()
+    raw_exe = str(vdf.get(entry, "Exe", default="") or "")
+    if not name:
+        return None
+    raw_id = vdf.get(entry, "appid")
+    if not isinstance(raw_id, int):
+        # Old shortcuts have no stored id; Steam derives it the same way.
+        raw_id = binascii.crc32((raw_exe + name).encode("utf-8")) | 0x80000000
+    appid = str(raw_id & 0xFFFFFFFF)
+    exe = _strip_quotes(raw_exe)
+    start_dir = _strip_quotes(str(vdf.get(entry, "StartDir", default="") or ""))
+    install = Path(start_dir) if start_dir else Path(exe).parent if exe else None
+    if exe and install is not None and not _is_within(Path(exe), install):
+        install = Path(exe).parent
+    if install is None or not install.is_absolute():
+        return None
+    return SteamApp(
+        appid=appid, name=name, install_path=install,
+        # Non-Steam games get their Proton prefix in the main Steam library.
+        compatdata=steam_root / "steamapps" / "compatdata" / appid,
+        kind="shortcut", exe=exe if exe.lower().endswith(".exe") else "",
+        launch_options=str(vdf.get(entry, "LaunchOptions", default="") or ""),
+    )
 
 
 def _tail_lines(path: Path, max_bytes: int) -> list[str]:

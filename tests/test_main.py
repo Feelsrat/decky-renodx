@@ -31,7 +31,7 @@ class MainTests(unittest.IsolatedAsyncioTestCase):
         root = self.fake.add_game("10", "Game", "Game")
         make_pe(root / "Game.exe", imports=("d3d11.dll",))
         games = await self.plugin.list_installed_games()
-        self.assertEqual(games["games"], [{"appid": "10", "name": "Game"}])
+        self.assertEqual(games["games"], [{"appid": "10", "name": "Game", "kind": "steam"}])
         with mock.patch.object(self.plugin.service.pcgw, "game_data", return_value={}), \
                 mock.patch.object(self.plugin.service.renodx, "mods", return_value=[]):
             state = await self.plugin.get_game_state("10")

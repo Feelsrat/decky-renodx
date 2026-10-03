@@ -66,6 +66,50 @@ def load(path: Path) -> dict[str, Any]:
     return loads(Path(path).read_text(encoding="utf-8", errors="replace"))
 
 
+def loads_binary(data: bytes) -> dict[str, Any]:
+    """Parse Steam's binary KeyValues (shortcuts.vdf)."""
+    pos = 0
+
+    def cstring() -> str:
+        nonlocal pos
+        end = data.index(b"\0", pos)
+        value = data[pos:end].decode("utf-8", "replace")
+        pos = end + 1
+        return value
+
+    def mapping() -> dict[str, Any]:
+        nonlocal pos
+        result: dict[str, Any] = {}
+        while pos < len(data):
+            kind = data[pos]
+            pos += 1
+            if kind == 0x08:
+                return result
+            key = cstring()
+            if kind == 0x00:
+                result[key] = mapping()
+            elif kind == 0x01:
+                result[key] = cstring()
+            elif kind == 0x02:
+                result[key] = int.from_bytes(data[pos:pos + 4], "little", signed=True)
+                pos += 4
+            elif kind == 0x03:  # float32; never needed, just skipped
+                result[key] = None
+                pos += 4
+            elif kind == 0x07:
+                result[key] = int.from_bytes(data[pos:pos + 8], "little", signed=False)
+                pos += 8
+            else:
+                raise ValueError(f"Unsupported binary VDF type {kind:#x}")
+        return result
+
+    return mapping()
+
+
+def load_binary(path: Path) -> dict[str, Any]:
+    return loads_binary(Path(path).read_bytes())
+
+
 def get(mapping: dict[str, Any], *keys: str, default: Any = None) -> Any:
     """Case-insensitive nested lookup."""
     current: Any = mapping

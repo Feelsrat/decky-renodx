@@ -108,6 +108,15 @@ class Plugin:
     async def remove_hdr(self, appid: str) -> dict:
         return await self._exclusive(appid, self.service.uninstall, str(appid))
 
+    async def repair_hdr(self, appid: str) -> dict:
+        return await self._exclusive(appid, self.service.repair, str(appid))
+
+    async def set_launch_keep(self, appid: str, keep: dict) -> dict:
+        return await self._exclusive(appid, self.service.set_launch_keep, str(appid), keep if isinstance(keep, dict) else {})
+
+    async def get_display_status(self) -> dict:
+        return await self._call(self.service.display_status)
+
     async def import_renodx_for_game(self, appid: str, file_path: str) -> dict:
         return await self._exclusive(appid, self.service.import_renodx, str(appid), file_path)
 
@@ -119,6 +128,9 @@ class Plugin:
 
     async def set_game_executable(self, appid: str, path: str = "") -> dict:
         return await self._exclusive(appid, self.service.set_executable, str(appid), path)
+
+    async def set_game_result(self, appid: str, result: str) -> dict:
+        return await self._call(self.service.set_result, str(appid), str(result))
 
     async def set_special_k_verified(self, appid: str, verified: bool) -> dict:
         return await self._call(self.service.set_specialk_verified, str(appid), bool(verified))

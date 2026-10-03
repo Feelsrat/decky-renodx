@@ -29,13 +29,14 @@ DISPLAY_COMMANDER_NAME = "zzz_display_commander.addon64"
 DISPLAY_COMMANDER_URL = f"https://github.com/pmnoxx/display-commander/releases/download/latest_build/{DISPLAY_COMMANDER_NAME}"
 SEVENZIP_VERSION = "2501"
 
-# Environment variables every HDR launch gets. PROTON_LOG is deliberately not
-# here: it writes a multi-MB log on every launch.
+# Environment variables every HDR launch gets. Deliberately absent:
+# - PROTON_LOG: writes a multi-MB log on every launch.
+# - ENABLE_HDR_WSI: only for the desktop VK_hdr_layer; under gamescope it can wash colours out.
+# - ENABLE_GAMESCOPE_WSI: Game Mode already enables it; forcing it can crash 32-bit games on
+#   some gamescope builds (ValveSoftware/gamescope#1718).
 HDR_ENV = {
     "PROTON_ENABLE_HDR": "1",
     "DXVK_HDR": "1",
-    "ENABLE_HDR_WSI": "1",
-    "ENABLE_GAMESCOPE_WSI": "1",
 }
 
 STATE_DIR_NAME = ".decky-renodx"  # per-directory backups/stash next to game files

@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.2.0
+
+### New
+- **Non-Steam games.** Games you added to Steam yourself (any launcher or folder) show up in the list. HDR is installed next to the shortcut's .exe and launch options are set on the shortcut.
+- **Redesigned panel.** The game you're playing is selected automatically and listed first, followed by recently played games. A status card says plainly whether HDR is set up. There is one main button, a guided "check it in game" step, and a "Did HDR work?" prompt that can open a pre-filled GitHub report. Other methods are listed with plain-language descriptions.
+- **HDR display check.** Warns when HDR is turned off in SteamOS, or when the screen doesn't support HDR.
+- **Repair.** Detects when a game update or Steam's file check removed HDR files, or when an install uses old launch options, and offers one-tap Repair. RenoDX repairs reuse a kept copy of the mod, so no download is needed.
+- RenoDX settings from the compatibility database (e.g. which upgrades to set) are shown as steps after installing.
+- `pnpm dev`: a local browser simulation of the Quick Access Menu that runs the real backend against a fake Steam library, plus `pnpm dev:screens` for screenshots.
+
+### Changed
+- HDR launch options are now just `PROTON_ENABLE_HDR=1 DXVK_HDR=1`. `ENABLE_HDR_WSI` (a desktop-only layer that can wash colours out under gamescope) and the forced `ENABLE_GAMESCOPE_WSI=1` (can crash 32-bit games on some gamescope builds) are gone. Existing installs show "Repair" to update.
+- Launch options you already had (for example `-dx11` or `dxgi=n,b`) are remembered and left in place when HDR is removed.
+
 ## 0.1.0
 
 A ground-up rewrite of the plugin backend and panel, aimed at "it works the same every time" and "removing it puts the game back exactly as it was".

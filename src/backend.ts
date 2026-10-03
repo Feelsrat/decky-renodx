@@ -4,6 +4,7 @@ import type { LaunchSpec } from "./utils/launchOptions";
 export interface Game {
   appid: string;
   name: string;
+  kind: "steam" | "shortcut";
 }
 
 export interface Recommendation {
@@ -51,9 +52,13 @@ export interface InstallStatus {
   dll?: string;
   target_dir?: string;
   installed_version?: string;
+  installed_at?: string;
   outdated?: boolean;
   files_ok?: boolean;
   missing?: string[];
+  game_updated?: boolean;
+  launch_outdated?: boolean;
+  needs_repair?: boolean;
   launch: LaunchSpec | null;
   extra?: Record<string, any>;
   message: string;
@@ -63,6 +68,8 @@ export interface GameState {
   status: "success";
   appid: string;
   title: string;
+  kind: "steam" | "shortcut";
+  launch_options_hint: string | null;
   install_path: string;
   exe_path: string;
   target_dir: string;
@@ -72,6 +79,13 @@ export interface GameState {
   recommendations: Recommendation[];
   method_options: MethodOption[];
   install: InstallStatus;
+  user_result: "" | "worked" | "failed";
+}
+
+export interface DisplayStatus {
+  supported: boolean | null;
+  enabled: boolean | null;
+  game_mode: boolean;
 }
 
 export interface ErrorResult {
@@ -127,6 +141,10 @@ export const api = {
   gameState: callable<[appid: string], GameState | ErrorResult>("get_game_state"),
   install: callable<[appid: string, method: string], ChangeResult>("install_hdr_method"),
   remove: callable<[appid: string], ChangeResult>("remove_hdr"),
+  repair: callable<[appid: string], ChangeResult>("repair_hdr"),
+  setLaunchKeep: callable<[appid: string, keep: { args: string[]; dlls: string[]; env: string[] }], Simple>("set_launch_keep"),
+  setResult: callable<[appid: string, result: string], Simple>("set_game_result"),
+  displayStatus: callable<[], DisplayStatus & { status: string }>("get_display_status"),
   importRenodx: callable<[appid: string, file: string], ChangeResult>("import_renodx_for_game"),
   downloads: callable<[], { status: string; files: DownloadFile[] }>("find_recent_renodx_downloads"),
   verify: callable<[appid: string], Simple>("verify_hdr_installation"),

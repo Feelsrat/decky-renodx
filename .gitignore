@@ -51,3 +51,8 @@ cli/*
 cli/decky
 
 
+
+# Dev harness
+dev/dist/
+dev/.sandbox/
+dev/screens/

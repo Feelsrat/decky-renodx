@@ -128,15 +128,23 @@ def method_options(recs: list[dict[str, Any]], blocked: dict[str, str], ctx: dic
             "confidence": rec.get("confidence", ""),
         }
 
-    renodx_badge = "Experimental" if match.get("match_type") == "generic_engine" else "Best"
+    generic = match.get("match_type") == "generic_engine"
+    renodx_badge = "Experimental" if generic else "Best"
+    renodx_reason = (
+        f"Generic {str(ctx.get('engine', '')).title()} engine mod. Works on many games, but not all." if generic
+        else f"HDR mod made for this game ({match.get('name', '')}). Usually the best result." if match else ""
+    )
+    native = str(ctx.get("native_hdr") or "unknown").lower() in {"true", "limited", "good", "yes"}
     return [
         option("recommended", "Recommended", top["reason"] if top else "No recommendation.", ""),
-        option("renodx", "RenoDX", f"Mod: {match.get('name', '')}" if match else "", renodx_badge),
-        option("special_k", "Special K", str((ctx.get("specialk_local_gate") or {}).get("reason") or "Special K HDR retrofit."), "Verified" if ctx.get("specialk_compat") else ""),
+        option("renodx", "RenoDX", renodx_reason, renodx_badge),
+        option("special_k", "Special K", "Adds HDR to most DX10-12 games. You confirm it in Special K's menu.", "Verified" if ctx.get("specialk_compat") else ""),
         option("special_k_delayed", "Special K Delayed", str((ctx.get("specialk_delayed_gate") or {}).get("reason") or ""), "Experimental"),
-        option("reshade", "ReShade AutoHDR", "AutoHDR shader fallback.", "Fallback"),
-        {"method": "native_hdr", "label": "Native HDR (no injection)", "available": True, "reason": f"PCGamingWiki HDR: {ctx.get('native_hdr', 'unknown')}.", "badge": "", "score": by_method.get("native_hdr", {}).get("score"), "confidence": ""},
-        {"method": "sdr", "label": "SDR (remove injection)", "available": True, "reason": "Remove injected HDR files and launch options.", "badge": "", "score": 0, "confidence": ""},
+        option("reshade", "ReShade AutoHDR", "Converts the SDR image to HDR with shaders. Works on most DirectX games; quality varies.", "Fallback"),
+        {"method": "native_hdr", "label": "Native HDR (no mod)", "available": True,
+         "reason": ("PCGamingWiki says this game has HDR. " if native else "") + "Only turns on Proton's HDR switches; enable HDR in the game's own settings.",
+         "badge": "", "score": by_method.get("native_hdr", {}).get("score"), "confidence": ""},
+        {"method": "sdr", "label": "SDR (no HDR)", "available": True, "reason": "Remove HDR files and launch options.", "badge": "", "score": 0, "confidence": ""},
     ]
 
 

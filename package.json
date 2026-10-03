@@ -1,6 +1,6 @@
 {
   "name": "decky-renodx",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Decky Loader plugin: per-game HDR for Proton games via RenoDX, Special K or ReShade AutoHDR",
   "type": "module",
   "scripts": {
@@ -14,7 +14,10 @@
     "compat:report": "python3 scripts/compat_db.py report",
     "compat:sync": "python3 scripts/compat_db.py sync-renodx",
     "package": "python3 scripts/create_zip.py",
-    "release": "node scripts/release.js"
+    "release": "node scripts/release.js",
+    "dev": "node dev/build.mjs && python3 dev/server.py",
+    "dev:watch": "node dev/build.mjs --watch & python3 dev/server.py",
+    "dev:screens": "node dev/screens.mjs"
   },
   "repository": {
     "type": "git",
@@ -42,6 +45,10 @@
     "@types/react": "19.1.1",
     "@types/react-dom": "19.1.1",
     "@types/webpack": "^5.28.5",
+    "esbuild": "~0.25.12",
+    "playwright-core": "~1.56.1",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
     "rollup": "^4.53.3",
     "typescript": "^5.6.2"
   },

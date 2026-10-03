@@ -96,6 +96,30 @@ class SteamTests(ServiceCase):
         self.assertEqual(data["a"]["q"], 'say "hi"')
 
 
+class ShortcutTests(ServiceCase):
+    def test_non_steam_game_is_listed_and_installable(self):
+        folder = self.fake.root / "Games" / "Indie"
+        exe = make_pe(folder / "bin" / "Indie.exe", imports=("d3d11.dll",))
+        self.fake.add_shortcut("Indie Game", str(exe), str(folder), launch_options="-windowed")
+        games = self.service.list_games()["games"]
+        self.assertEqual(games, [{"appid": str(0x9ABCDEF0), "name": "Indie Game", "kind": "shortcut"}])
+        appid = games[0]["appid"]
+        state_ = self.service.game_state(appid)
+        self.assertEqual((state_["kind"], state_["exe_path"], state_["launch_options_hint"]), ("shortcut", str(exe), "-windowed"))
+        app = self.service.steam.app(appid)
+        self.assertEqual(app.compatdata, self.fake.steam / "steamapps" / "compatdata" / appid)
+        result = self.service.install(appid, "reshade")
+        self.assertEqual(result["status"], "success", result)
+        self.assertTrue((exe.parent / "dxgi.dll").exists())
+
+    def test_shortcut_without_stored_appid_uses_steams_crc(self):
+        import binascii
+        exe = make_pe(self.fake.root / "Old" / "Old.exe")
+        self.fake.add_shortcut("Old", str(exe), str(exe.parent), appid=None)
+        expected = str((binascii.crc32(f'"{exe}"Old'.encode()) | 0x80000000) & 0xFFFFFFFF)
+        self.assertEqual(self.service.list_games()["games"][0]["appid"], expected)
+
+
 class DetectionTests(ServiceCase):
     def test_pe_reader(self):
         info = read_pe(make_pe(self.fake.root / "x.exe", arch="32", imports=("d3d9.dll",)))
@@ -433,6 +457,49 @@ class InstallFlowTests(ServiceCase):
         self.assertEqual(self.service.reset_prefix("4000")["status"], "success")
 
 
+class RepairTests(ServiceCase):
+    def test_repair_after_steam_verify_reinstalls_renodx_from_kept_copy(self):
+        _root, shipping = self.unreal_game()
+        self.assertEqual(self.service.install("1000", "renodx")["status"], "success")
+        addon = shipping.parent / "renodx-shippy.addon64"
+        addon.unlink()  # "verify integrity" removed it
+        status = self.service.install_status("1000")
+        self.assertTrue(status["needs_repair"])
+        self.downloads.clear()
+        result = self.service.repair("1000")
+        self.assertEqual(result["status"], "success", result)
+        self.assertEqual(self.downloads, [], "repair should not need the network")
+        self.assertTrue(addon.exists())
+        self.assertFalse(self.service.install_status("1000")["needs_repair"])
+
+    def test_game_update_and_old_launch_options_are_flagged(self):
+        root, _shipping = self.unreal_game()
+        self.service.install("1000", "reshade")
+        record = self.service.store.get("1000")
+        record["buildid"] = "1"
+        record["launch"]["env"]["ENABLE_HDR_WSI"] = "1"
+        self.service.store.put("1000", record)
+        manifest = self.fake.steam / "steamapps" / "appmanifest_1000.acf"
+        manifest.write_text(manifest.read_text().replace("}", '\t"buildid"\t\t"2"\n}'))
+        status = self.service.install_status("1000")
+        self.assertTrue(status["game_updated"] and status["launch_outdated"] and status["needs_repair"])
+
+    def test_result_is_tied_to_the_installed_method(self):
+        self.unreal_game()
+        self.service.install("1000", "special_k")
+        self.service.set_result("1000", "worked")
+        self.assertEqual(self.service.game_state("1000")["user_result"], "worked")
+        self.assertTrue(self.service.settings.game("1000")["specialk_verified"])
+        self.service.install("1000", "reshade")
+        self.assertEqual(self.service.game_state("1000")["user_result"], "")
+
+    def test_launch_keep_is_stored(self):
+        self.unreal_game()
+        self.service.install("1000", "reshade")
+        self.service.set_launch_keep("1000", {"args": ["-dx11"], "dlls": ["DXGI"], "env": []})
+        self.assertEqual(self.service.store.get("1000")["launch"]["keep"], {"args": ["-dx11"], "dlls": ["dxgi"], "env": []})
+
+
 class LegacyTests(ServiceCase):
     def test_legacy_cleanup_keeps_game_data(self):
         root, shipping = self.unreal_game()
@@ -459,6 +526,24 @@ class MiscTests(unittest.TestCase):
         self.assertTrue(spec["preview"].startswith("PROTON_ENABLE_HDR=1"))
         self.assertIn('"/home/deck/My Mods/w.sh"', spec["preview"])
         self.assertTrue(spec["preview"].endswith("%command% -dx11"))
+
+    def test_hdr_env_is_gamescope_safe(self):
+        env = launch.spec("dxgi")["env"]
+        self.assertEqual(env, {"PROTON_ENABLE_HDR": "1", "DXVK_HDR": "1"})
+
+    def test_display_status_parsing(self):
+        from backend import display
+        out = "GAMESCOPE_DISPLAY_SUPPORTS_HDR(CARDINAL) = 1\nGAMESCOPE_DISPLAY_HDR_ENABLED(CARDINAL) = 0\n"
+        self.assertEqual(display.parse_xprop(out), {"supported": True, "enabled": False})
+        self.assertEqual(display.parse_xprop("GAMESCOPE_DISPLAY_HDR_ENABLED:  not found."), {"supported": None, "enabled": None})
+
+    def test_renodx_settings_become_manual_steps(self):
+        fake = FakeSteam()
+        self.addCleanup(fake.cleanup)
+        (fake.plugin_dir / "compatibility.json").write_text(json.dumps({"games": {"5": {"name": "X", "tools": {"renodx": {
+            "automation": {"renodx_settings": {"upgrades": [{"format": "R10G10B10A2_UNORM", "mode": "Output Size"}]}}}}}}}))
+        db = compat.CompatDB(fake.plugin_dir / "compatibility.json", fake.root / "none.json")
+        self.assertEqual(db.metadata("5", "renodx")["manual_steps"], ['In the RenoDX tab, set the R10G10B10A2_UNORM upgrade to "Output Size".'])
 
     def test_compat_merge_is_per_game(self):
         merged = compat.merge({"games": {"1": {"name": "a"}, "2": {"name": "b"}}}, {"games": {"2": {"name": "B"}}})

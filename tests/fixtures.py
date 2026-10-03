@@ -47,16 +47,16 @@ def make_pe(path: Path, *, arch: str = "64", imports: tuple[str, ...] = (), size
 class FakeSteam:
     """A home folder with an internal library and an "SD card" library."""
 
-    def __init__(self) -> None:
-        self.tmp = tempfile.TemporaryDirectory(prefix="decky-renodx-test-")
-        self.root = Path(self.tmp.name)
+    def __init__(self, root: Path | None = None) -> None:
+        self.tmp = None if root else tempfile.TemporaryDirectory(prefix="decky-renodx-test-")
+        self.root = Path(root) if root else Path(self.tmp.name)
         self.home = self.root / "home" / "deck"
         self.steam = self.home / ".local" / "share" / "Steam"
         self.sdcard = self.root / "run" / "media" / "mmcblk0p1"
         self.plugin_dir = self.root / "plugin"
-        (self.steam / "steamapps").mkdir(parents=True)
-        (self.sdcard / "steamapps").mkdir(parents=True)
-        (self.plugin_dir / "defaults" / "assets").mkdir(parents=True)
+        (self.steam / "steamapps").mkdir(parents=True, exist_ok=True)
+        (self.sdcard / "steamapps").mkdir(parents=True, exist_ok=True)
+        (self.plugin_dir / "defaults" / "assets").mkdir(parents=True, exist_ok=True)
         repo = Path(__file__).resolve().parents[1]
         (self.plugin_dir / "defaults" / "assets" / "specialk-delayed-launch.sh").write_bytes((repo / "defaults" / "assets" / "specialk-delayed-launch.sh").read_bytes())
         (self.plugin_dir / "compatibility.json").write_text('{"games": {}}', encoding="utf-8")
@@ -77,13 +77,33 @@ class FakeSteam:
         path.mkdir(parents=True, exist_ok=True)
         return path
 
+    def add_shortcut(self, name: str, exe: str, start_dir: str, appid: int | None = 0x9ABCDEF0, launch_options: str = "") -> None:
+        """Append a non-Steam game to userdata/1/config/shortcuts.vdf (binary KeyValues)."""
+        path = self.steam / "userdata" / "1" / "config" / "shortcuts.vdf"
+        entries = getattr(self, "_shortcuts", [])
+        entries.append((name, exe, start_dir, appid, launch_options))
+        self._shortcuts = entries
+
+        def string(key: str, value: str) -> bytes:
+            return b"\x01" + key.encode() + b"\0" + value.encode() + b"\0"
+
+        body = b""
+        for index, (n, e, d, a, lo) in enumerate(entries):
+            body += b"\x00" + str(index).encode() + b"\0"
+            if a is not None:
+                body += b"\x02appid\0" + struct.pack("<I", a)
+            body += string("AppName", n) + string("Exe", f'"{e}"') + string("StartDir", f'"{d}"') + string("LaunchOptions", lo) + b"\x08"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"\x00shortcuts\0" + body + b"\x08\x08")
+
     def compatdata(self, appid: str, *, sdcard: bool = False) -> Path:
         prefix = (self.sdcard if sdcard else self.steam) / "steamapps" / "compatdata" / appid / "pfx" / "drive_c"
         prefix.mkdir(parents=True, exist_ok=True)
         return prefix.parents[1]
 
     def cleanup(self) -> None:
-        self.tmp.cleanup()
+        if self.tmp:
+            self.tmp.cleanup()
 
 
 class OfflineRuntime(Runtime):

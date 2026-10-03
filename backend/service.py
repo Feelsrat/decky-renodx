@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from . import detect, fsutil, installers, launch, log, net, recommend, renodx, state, transaction
+from . import detect, display, fsutil, installers, launch, log, net, recommend, renodx, state, transaction
 from .compat import CompatDB
 from .config import Paths
 from .installers import InstallError, Target
@@ -62,7 +62,7 @@ class HdrService:
 
     # ------------------------------------------------------------ games
     def list_games(self) -> dict[str, Any]:
-        return _ok(games=[{"appid": app.appid, "name": app.name} for app in self.steam.games()])
+        return _ok(games=[app.to_dict() for app in self.steam.games()])
 
     def _app(self, appid: str) -> SteamApp:
         if not valid_appid(appid):
@@ -78,6 +78,8 @@ class HdrService:
         note = "Using the executable you selected."
         if not override and record and Path(record.get("exe_path", "")).is_file():
             override, note = record["exe_path"], "Using the executable HDR was installed for."
+        elif not override and app.exe:
+            override, note = app.exe, "Using the shortcut's executable."
         exclude = set(record.get("created", [])) if record else set()
         launched = None if override else self.steam.launched_executable(app.appid, app.install_path)
         scan = detect.scan_game(app.install_path, app.name, exe_override=override, override_note=note, launched_exe=launched, exclude=exclude)
@@ -138,6 +140,8 @@ class HdrService:
         return _ok(
             appid=app.appid,
             title=app.name,
+            kind=app.kind,
+            launch_options_hint=app.launch_options if app.is_shortcut else None,
             install_path=str(app.install_path),
             exe_path=scan.exe_path,
             target_dir=scan.target_dir,
@@ -150,7 +154,16 @@ class HdrService:
             recommendations=recs,
             method_options=options,
             install=self.install_status(appid, app),
+            user_result=self._user_result(appid),
         )
+
+    def _user_result(self, appid: str) -> str:
+        """'worked'/'failed' for the currently installed method, else ''."""
+        saved = self.settings.game(appid).get("result") or {}
+        record = self.store.get(appid)
+        if not isinstance(saved, dict) or not record or saved.get("method") != record.get("method"):
+            return ""
+        return str(saved.get("result") or "")
 
     # ------------------------------------------------------------ status
     def install_status(self, appid: str, app: SteamApp | None = None) -> dict[str, Any]:
@@ -158,9 +171,17 @@ class HdrService:
         if record:
             missing = [path for path in record.get("created", []) if not os.path.lexists(path)]
             older = record.get("plugin_version") != self.version
+            app = app or self.steam.app(appid)
+            game_updated = bool(app and app.buildid and record.get("buildid") and app.buildid != record["buildid"])
+            spec = record.get("launch") or {}
+            launch_outdated = bool(spec.get("env")) and spec.get("env") != launch.spec("")["env"]
             message = f"{METHOD_LABELS.get(record['method'], record['method'])} is installed."
             if missing:
-                message += f" {len(missing)} installed file(s) are missing (Steam may have verified/updated the game). Reinstall to repair."
+                message += f" {len(missing)} installed file(s) are missing; the game was probably updated or verified."
+            elif game_updated:
+                message += " The game was updated since; repair if HDR stopped working."
+            elif launch_outdated:
+                message += " It uses older launch options; repair to update them."
             return {
                 "installed": True,
                 "method": record["method"],
@@ -171,6 +192,9 @@ class HdrService:
                 "outdated": older,
                 "files_ok": not missing,
                 "missing": missing[:5],
+                "game_updated": game_updated,
+                "launch_outdated": launch_outdated,
+                "needs_repair": bool(missing or launch_outdated),
                 "launch": record.get("launch"),
                 "extra": record.get("extra", {}),
                 "legacy": False,
@@ -300,6 +324,8 @@ class HdrService:
             record = {
                 "appid": app.appid,
                 "title": app.name,
+                "kind": app.kind,
+                "buildid": app.buildid,
                 "method": method,
                 "dll": result.get("dll", ""),
                 "exe_path": str(target.exe_path),
@@ -313,6 +339,8 @@ class HdrService:
                 "extra": result.get("extra", {}),
                 **tx.to_record(),
             }
+            if method == "renodx":
+                record["extra"]["source_addon"] = self._keep_addon_source(app.appid, Path(result["extra"]["addon"]))
             self.store.put(app.appid, record)
             if stash:
                 try:
@@ -345,6 +373,48 @@ class HdrService:
         if stash:
             message += " Your previous HDR install was left in place."
         return _err(message, kept_previous=bool(stash), renodx_manual=self._manual_info(manual) if manual else None)
+
+    def _keep_addon_source(self, appid: str, addon: Path) -> str:
+        """Keep a copy of the installed addon so "Repair" works without the wiki or ~/Downloads."""
+        target = self.paths.imports / "sources" / appid / addon.name
+        try:
+            fsutil.atomic_write_bytes(target, addon.read_bytes())
+            return str(target)
+        except OSError as error:
+            log.game(appid).warning("Could not keep a copy of %s: %s", addon, error)
+            return ""
+
+    def repair(self, appid: str) -> dict[str, Any]:
+        """Reinstall the current method (after a game update, a Steam file check, or a plugin update)."""
+        record = self.store.get(appid)
+        if not record:
+            return _err("Nothing is installed for this game.")
+        method = record["method"]
+        source = Path(str(record.get("extra", {}).get("source_addon") or ""))
+        if method == "renodx" and source.is_file():
+            app = self._app(appid)
+            scan = self._scan(app)
+            ctx = self._context(app, scan)
+            mod = record.get("extra", {}).get("mod") or {"name": source.name, "match_type": "manual"}
+            return self._install_plan(app, scan, ctx, ["renodx"], explicit=True, renodx_file=source, renodx_mod=mod)
+        return self.install(appid, method)
+
+    def set_launch_keep(self, appid: str, keep: dict[str, Any]) -> dict[str, Any]:
+        """Remember launch options the user already had, so removing HDR leaves them alone."""
+        record = self.store.get(appid)
+        if not record or not record.get("launch"):
+            return _err("Nothing is installed for this game.")
+        clean = {
+            "args": [str(item) for item in keep.get("args", []) if isinstance(item, str)][:20],
+            "dlls": [str(item).lower() for item in keep.get("dlls", []) if isinstance(item, str)][:20],
+            "env": [str(item) for item in keep.get("env", []) if isinstance(item, str)][:20],
+        }
+        record["launch"]["keep"] = clean
+        self.store.put(appid, record)
+        return _ok(message="Saved.")
+
+    def display_status(self) -> dict[str, Any]:
+        return _ok(**display.hdr_status(self.paths.user))
 
     def _manual_info(self, mod: dict[str, Any]) -> dict[str, Any]:
         url = mod.get("manual_url") or next(iter(mod.get("page_links") or []), "")
@@ -459,6 +529,18 @@ class HdrService:
                 return _err("That executable is not inside the game's install folder.")
         self.settings.set_game(appid, "exe", path or None)
         return _ok(message="Executable override saved." if path else "Using automatic executable detection.")
+
+    def set_result(self, appid: str, result: str) -> dict[str, Any]:
+        """Remember whether the user saw HDR working with the installed method."""
+        if result not in {"worked", "failed", ""}:
+            return _err(f"Unknown result: {result}")
+        self._app(appid)
+        record = self.store.get(appid)
+        method = record["method"] if record else ""
+        self.settings.set_game(appid, "result", {"method": method, "result": result} if result else None)
+        if method.startswith("special_k") and result:
+            self.settings.set_game(appid, "specialk_verified", result == "worked")
+        return _ok(message="Thanks! Noted." if result == "worked" else "Noted." if result else "Cleared.")
 
     def set_specialk_verified(self, appid: str, verified: bool) -> dict[str, Any]:
         self._app(appid)
