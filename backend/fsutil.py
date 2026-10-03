@@ -130,11 +130,11 @@ def is_within(path: Path, root: Path) -> bool:
 
 def safe_extract_zip(archive: zipfile.ZipFile, target: Path) -> None:
     target = Path(target)
-    makedirs(target)
     for member in archive.infolist():
         destination = target / member.filename
         if not is_within(destination, target) or os.path.isabs(member.filename):
             raise ValueError(f"Unsafe path in archive: {member.filename}")
+    makedirs(target)
     archive.extractall(target)
 
 

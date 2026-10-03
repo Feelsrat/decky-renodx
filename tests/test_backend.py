@@ -1,7 +1,6 @@
 import io
 import json
 import logging
-import os
 import sys
 import unittest
 import zipfile
@@ -489,8 +488,13 @@ class MiscTests(unittest.TestCase):
         buffer = io.BytesIO()
         with zipfile.ZipFile(buffer, "w") as handle:
             handle.writestr("../evil", b"x")
+        fake = FakeSteam()
+        self.addCleanup(fake.cleanup)
+        target = fake.root / "extract"
         with zipfile.ZipFile(buffer) as handle, self.assertRaises(ValueError):
-            fsutil.safe_extract_zip(handle, Path(os.devnull).parent / "decky-renodx-test-never")
+            fsutil.safe_extract_zip(handle, target)
+        self.assertFalse(target.exists())
+        self.assertFalse((fake.root / "evil").exists())
 
     def test_install_store_rejects_bad_appid(self):
         with self.assertRaises(ValueError):
