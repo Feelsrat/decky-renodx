@@ -104,6 +104,13 @@ export default function HdrPanel() {
         let body = result.message || "Done.";
         if (!launch.ok && launch.message) body += ` ${launch.message}`;
         toast(label, body, launch.ok ? 5000 : 12000);
+        if (result.failed_attempts?.length && !result.renodx_manual) {
+          toast(
+            `Installed ${methodName(result.method || "")} instead`,
+            `${result.failed_attempts.join(" ")} Check Advanced → View logs, or try again.`,
+            12000,
+          );
+        }
         if (result.renodx_manual) {
           toast("RenoDX", `${result.renodx_manual.mod_name} needs a manual download, so a fallback was installed. Import the mod to switch.`, 9000);
         }

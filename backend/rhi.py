@@ -8,18 +8,14 @@ it can't be fetched or its format changes, matching just falls back to the wiki.
 """
 from __future__ import annotations
 
-import json
 import re
-import time
 from pathlib import Path
 from typing import Any, Callable
 
-from . import fsutil, log
+from .remote import CachedJson
 from .renodx import normalize_title
 
 MANIFEST_URL = "https://raw.githubusercontent.com/RankFTW/RHI/main/manifest.json"
-CACHE_TTL = 24 * 3600
-RETRY_AFTER = 15 * 60
 
 
 def _dict(value: Any) -> dict[str, Any]:
@@ -38,36 +34,12 @@ def _for_deck(text: Any, url: Any = "") -> str:
 
 class RhiManifest:
     def __init__(self, cache_file: Path, fetch_text: Callable[[str], str]):
-        self.cache_file = Path(cache_file)
-        self._fetch_text = fetch_text
-        self._data: dict[str, Any] | None = None
-        self._fetched_at = 0.0
-        self._retry_after = 0.0
+        self.source = CachedJson(cache_file, MANIFEST_URL, fetch_text,
+                                 lambda data: isinstance(data, dict) and isinstance(data.get("wikiNameOverrides"), dict), "RHI manifest")
         self._index: dict[str, dict[str, Any]] = {}
+        self._version = -1
 
-    def data(self) -> dict[str, Any]:
-        if self._data is None:
-            cached = fsutil.read_json(self.cache_file, {}) or {}
-            if isinstance(cached.get("manifest"), dict):
-                self._set(cached["manifest"], float(cached.get("fetched_at", 0)))
-        now = time.time()
-        if self._data is not None and (now - self._fetched_at < CACHE_TTL or now < self._retry_after):
-            return self._data
-        if self._data is None and now < self._retry_after:
-            return {}
-        try:
-            manifest = json.loads(self._fetch_text(MANIFEST_URL))
-            if not isinstance(manifest, dict) or not isinstance(manifest.get("wikiNameOverrides"), dict):
-                raise ValueError("unexpected manifest format")
-            self._set(manifest, time.time())
-            fsutil.write_json(self.cache_file, {"fetched_at": self._fetched_at, "manifest": manifest})
-        except Exception as error:
-            self._retry_after = time.time() + RETRY_AFTER
-            log.plugin().warning("RHI manifest unavailable%s: %s", ", using cached copy" if self._data else "", error)
-        return self._data or {}
-
-    def _set(self, manifest: dict[str, Any], fetched_at: float) -> None:
-        self._data, self._fetched_at = manifest, fetched_at
+    def _build(self, manifest: dict[str, Any]) -> None:
         index: dict[str, dict[str, Any]] = {}
 
         def entry(name: str) -> dict[str, Any]:
@@ -96,16 +68,16 @@ class RhiManifest:
 
     def game(self, title: str) -> dict[str, Any]:
         """RHI's fixes for a game, looked up by its Steam name."""
-        try:
-            self.data()
-        except Exception:  # never let an optional source break the panel
-            return {}
+        manifest = self.source.get()
+        if self.source.version != self._version:
+            self._version = self.source.version
+            self._index = {}
+            if manifest:
+                self._build(manifest)
         return self._index.get(normalize_title(title), {})
 
     def clear(self) -> None:
-        self._data, self._fetched_at, self._retry_after, self._index = None, 0.0, 0.0, {}
-        if self.cache_file.exists():
-            self.cache_file.unlink()
+        self.source.clear()
 
 
 def apply(match: dict[str, Any] | None, fixes: dict[str, Any], title: str) -> dict[str, Any] | None:

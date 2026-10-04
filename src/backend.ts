@@ -124,6 +124,8 @@ export interface ChangeResult {
   warnings?: string[];
   manual_steps?: string[];
   renodx_manual?: ManualDownload | null;
+  /** Methods tried before the one that got installed, with why they failed. */
+  failed_attempts?: string[];
   url?: string;
   mod_name?: string;
   busy?: boolean;

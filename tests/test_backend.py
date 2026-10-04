@@ -9,7 +9,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from backend import compat, fsutil, installers, launch, pcgw, recommend, renodx, rhi, state, transaction, updater, vdf  # noqa: E402
+from backend import compat, fsutil, installers, launch, pcgw, recommend, renodx, renodx_index, rhi, state, transaction, updater, vdf  # noqa: E402
 from backend.pe import read_pe  # noqa: E402
 from backend.service import HdrService  # noqa: E402
 from backend.steam import SteamLibrary  # noqa: E402
@@ -43,6 +43,8 @@ class ServiceCase(unittest.TestCase):
         self.service.runtime = OfflineRuntime(self.fake.paths)
         self.service.renodx = renodx.RenoDXCatalog(self.fake.paths.cache / "mods.json", lambda _url: WIKI)
         self.service.rhi = rhi.RhiManifest(self.fake.paths.cache / "rhi.json", lambda _url: "{}")
+        self.index = {"games": []}
+        self.service.renodx_index = renodx_index.RenoDXIndex(self.fake.paths.cache, lambda url: json.dumps(self.index) if "clshortfuse" in url else '{"games": []}')
         self.service.pcgw.game_data = lambda appid: {"native_hdr": "unknown", "graphics_api": "unknown"}
         self.downloads: list[str] = []
 
@@ -191,6 +193,55 @@ class BadgeTests(ServiceCase):
         self.assertEqual(self.level("1000"), "on")
         marks = {game["name"]: game["renodx"] for game in self.service.list_games()["games"]}
         self.assertEqual(marks, {"Shippy": True, "Mystery Unreal Game": False, "Sand Land": True, "Plain Game": False})
+
+
+INDEX_GAME = {"id": "wobbly-life", "title": "Wobbly Life", "steam_appid": 1211020, "mods": [
+    {"id": "wobblylife-old", "title": "Wobbly Life", "category": "game", "notes": ["Superseded by Generic Unity mod"],
+     "artifacts": [{"name": "renodx-wobblylife-old.addon64", "arch": "x64"}]},
+    {"id": "wobblylife", "title": "Wobbly Life", "category": "game", "status": "stable", "maintainers": ["Voosh"], "notes": ["Turn bloom down."],
+     "artifacts": [{"name": "renodx-wobblylife.addon32", "arch": "x86"}, {"name": "renodx-wobblylife.addon64", "arch": "x64"}]},
+    {"id": "unityengine", "title": "Unity Engine", "category": "engine", "support": "generic",
+     "artifacts": [{"name": "renodx-unityengine.addon64", "arch": "x64"}]},
+]}
+
+
+class RenoDXIndexTests(ServiceCase):
+    def unity_game(self, appid="1211020", name="Wobbly Life"):
+        root = self.fake.add_game(appid, name, name)
+        make_pe(root / f"{name}.exe", size=600 * 1024)
+        make_pe(root / "UnityPlayer.dll", imports=("d3d11.dll",), size=900 * 1024)
+        return root
+
+    def test_find_prefers_game_mod_for_the_right_arch(self):
+        self.index = {"games": [INDEX_GAME]}
+        found = self.service.renodx_index.find("1211020", [], "64")
+        self.assertEqual((found["addon_url"], found["status"], found["match_type"], found["bitness"]),
+                         ("https://github.com/clshortfuse/renodx/releases/download/snapshot/renodx-wobblylife.addon64", "working", "specific", "64"))
+        self.assertEqual(self.service.renodx_index.find("", ["Wobbly Life"], "32")["bitness"], "32")
+        self.assertIsNone(self.service.renodx_index.find("1", ["Other Game"], "64"))
+
+    def test_game_missing_from_the_wiki_installs_the_indexed_mod(self):
+        self.index = {"games": [INDEX_GAME]}
+        self.unity_game()
+        state_ = self.service.game_state("1211020")
+        self.assertEqual(state_["context"]["renodx_match"]["name"], "Wobbly Life")
+        self.assertEqual(state_["recommendations"][0]["method"], "renodx")
+        self.assertEqual(state_["recommendations"][0]["wiki_notes"], ["Turn bloom down."])
+        result = self.service.install("1211020", "recommended")
+        self.assertEqual((result["status"], result["method"]), ("success", "renodx"), result)
+        self.assertEqual(self.downloads[-1], "https://github.com/clshortfuse/renodx/releases/download/snapshot/renodx-wobblylife.addon64")
+        self.assertEqual(self.service.badge("1211020")["level"], "on")
+        self.assertTrue(self.service.list_games()["games"][0]["renodx"])
+
+    def test_without_an_index_entry_the_generic_unity_addon_is_used(self):
+        self.unity_game("5", "Some Unity Game")
+        self.assertEqual(self.service.game_state("5")["context"]["renodx_match"]["match_type"], "generic_engine")
+
+    def test_pages_links_try_the_github_release_first(self):
+        self.assertEqual(renodx.addon_url_candidates("https://notvoosh.github.io/renodx-unity/renodx-unityengine.addon64")[:2], [
+            "https://github.com/notvoosh/renodx-unity/releases/download/snapshot/renodx-unityengine.addon64",
+            "https://notvoosh.github.io/renodx-unity/renodx-unityengine.addon64",
+        ])
 
 
 class RenoDXTests(unittest.TestCase):

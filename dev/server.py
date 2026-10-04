@@ -44,6 +44,11 @@ PCGW = {
     "9000": {"engine": "Unreal Engine 5"},
 }
 
+# Stand-in for RenoDX's build index (backend/renodx_index.py): a mod the wiki doesn't list.
+INDEX = {"games": [{"id": "bright-lights", "title": "Bright Lights", "steam_appid": 7000, "mods": [
+    {"id": "brightlights", "title": "Bright Lights", "category": "game", "notes": [], "artifacts": [{"name": "renodx-brightlights.addon64", "arch": "x64"}]},
+]}]}
+
 # Stand-in for RHI's manifest (backend/rhi.py).
 RHI = {"wikiNameOverrides": {}, "installWarnings": {"Shippy": {"renodx": "DLSS sharpening must be turned off each session."}}}
 
@@ -109,7 +114,9 @@ def make_plugin(args: argparse.Namespace):
     service = plugin.service
     service.runtime = OfflineRuntime(fake.paths)
     service.renodx._fetch_text = lambda _url: WIKI
-    service.rhi._fetch_text = lambda _url: json.dumps(RHI)
+    service.rhi.source._fetch_text = lambda _url: json.dumps(RHI)
+    for _repo, source in service.renodx_index.sources:
+        source._fetch_text = lambda _url: json.dumps(INDEX)
     service.compat.refresh_due = lambda now=None: False  # keep the fake compatibility.json; stay offline
     service.pcgw.game_data = lambda appid: dict(PCGW.get(str(appid), {"native_hdr": "unknown", "graphics_api": "unknown"}))
     hdr = {"on": (True, True), "off": (True, False), "unknown": (None, None)}[args.hdr]

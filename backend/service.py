@@ -15,6 +15,7 @@ from .config import Paths
 from .installers import InstallError, Target
 from .pcgw import PCGamingWiki
 from .renodx import RenoDXCatalog
+from .renodx_index import RenoDXIndex
 from .runtime import Runtime
 from .steam import SteamApp, SteamLibrary, running_appids, valid_appid
 
@@ -57,6 +58,7 @@ class HdrService:
         self.renodx = RenoDXCatalog(paths.cache / "renodx_mods.json", lambda url: net.fetch_text(url, timeout=20))
         self._engines: dict[str, tuple[tuple[str, str], str]] = {}
         self.rhi = rhi.RhiManifest(paths.cache / "rhi_manifest.json", lambda url: net.fetch_text(url, timeout=20))
+        self.renodx_index = RenoDXIndex(paths.cache, lambda url: net.fetch_text(url, timeout=20))
         self.pcgw = PCGamingWiki(paths.cache / "pcgamingwiki.json", net.fetch_json)
         self.runtime = Runtime(paths)
         self.store = state.InstallStore(paths.installs)
@@ -70,7 +72,9 @@ class HdrService:
             game["renodx"] = False
         try:
             for game in games:
-                game["renodx"] = self.renodx.listed([game["name"], *self.rhi.game(game["name"]).get("aliases", [])]) is not None
+                titles = [game["name"], *self.rhi.game(game["name"]).get("aliases", [])]
+                appid = game["appid"] if game["kind"] == "steam" else ""
+                game["renodx"] = self.renodx.listed(titles) is not None or self.renodx_index.has(appid, titles)
         except Exception as error:  # mod list unavailable: just no marks
             log.plugin().info("No RenoDX marks for the game list: %s", error)
         return _ok(games=games)
@@ -86,16 +90,19 @@ class HdrService:
         app = self.steam.app(appid)
         title = app.name if app else title
         match = None
+        fixes = self.rhi.game(title) if title else {}
         if title:
-            fixes = self.rhi.game(title)
             try:
                 match = rhi.apply(self.renodx.match(title, aliases=fixes.get("aliases")), fixes, title)
             except Exception:  # mod list unavailable
                 match = None
+        if not match or match.get("match_type") not in {"specific", "generic_listed"}:
+            shortcut = bool(app and app.is_shortcut)
+            match = self.renodx_index.find("" if shortcut else appid, [title, *fixes.get("aliases", [])] if title else []) or match
         if match and match.get("match_type") in {"specific", "generic_listed"}:
             wip = match.get("status") == "in_progress"
             return _ok(level="renodx", label="RenoDX WIP" if wip else "RenoDX",
-                       detail=f"The RenoDX wiki lists a mod{' (work in progress)' if wip else ''}: {match.get('name', title)}.")
+                       detail=f"RenoDX has a mod for this game{' (work in progress)' if wip else ''}: {match.get('name', title)}.")
         wiki = {} if app and app.is_shortcut else self.pcgw.game_data(appid)
         if str(wiki.get("native_hdr", "")).lower() in {"true", "limited", "good", "yes"}:
             return _ok(level="native", label="Native HDR", detail="PCGamingWiki says the game has its own HDR.")
@@ -156,6 +163,10 @@ class HdrService:
         except Exception as error:
             renodx_error = f"RenoDX mod list unavailable: {error}"
         match = rhi.apply(match, fixes, app.name)
+        if not match or match.get("match_type") == "generic_engine":
+            # Not on the wiki: RenoDX's build index knows mods by Steam AppID.
+            indexed = self.renodx_index.find("" if app.is_shortcut else app.appid, [app.name, *fixes.get("aliases", [])], scan.architecture)
+            match = indexed or match
         settings = self.settings.game(app.appid)
         ctx = {
             "appid": app.appid,
@@ -695,6 +706,7 @@ class HdrService:
     def reset_caches(self) -> dict[str, Any]:
         self.renodx.clear()
         self.rhi.clear()
+        self.renodx_index.clear()
         self.pcgw.clear()
         meta = self.paths.runtime / "reshade" / "current.json"
         data = fsutil.read_json(meta, {}) or {}

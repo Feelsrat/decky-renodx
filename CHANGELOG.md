@@ -11,6 +11,11 @@
 
   Turn the badges off under Plugin → "Badges on game pages".
 - Games with a RenoDX mod are marked with ★ in the panel's game list.
+- **RenoDX's own build index.** Every RenoDX build repo (clshortfuse/renodx, NotVoosh/renodx-unity, OopyDoopy/renodx) publishes a list of its mods by Steam AppID. The plugin now reads these lists too. That finds mods the wiki doesn't list yet, such as Wobbly Life's, which used to get only the experimental generic Unity addon. Steam games are matched by AppID instead of by name.
+
+### Fixes
+- RenoDX addons now download from the GitHub release first, then GitHub Pages. The generic Unity addon has grown past 100 MB, more than GitHub Pages is meant to serve.
+- When "Enable HDR" can't install RenoDX and falls back to another method (for example Special K), the panel now says so and shows why. Before, the fallback was silent, so the game could look like it launched without HDR.
 
 ## 0.3.0
 

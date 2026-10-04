@@ -245,9 +245,21 @@ def generic_fallback(engine: str) -> dict[str, Any]:
 
 
 def addon_url_candidates(addon_url: str) -> list[str]:
-    name = Path(urllib.parse.unquote(urllib.parse.urlparse(addon_url).path)).name.lower()
-    candidates = [addon_url, *ADDON_MIRRORS.get(name, [])]
-    if re.search(r"\.addon(?:32|64)$", name) and "github.io" in addon_url.lower():
+    """Where to try downloading an addon, best first.
+
+    RenoDX repos publish each snapshot both as a GitHub release and on GitHub Pages
+    (<owner>.github.io/<repo>/). The release is tried first: Pages can lag behind or
+    refuse large files (the generic Unity addon is over 100 MB).
+    """
+    parsed = urllib.parse.urlparse(addon_url)
+    name = Path(urllib.parse.unquote(parsed.path)).name
+    candidates = [addon_url]
+    pages = re.fullmatch(r"([a-z0-9-]+)\.github\.io", parsed.netloc.lower())
+    parts = [part for part in parsed.path.split("/") if part]
+    if pages and len(parts) == 2 and re.search(r"\.addon(?:32|64)$", name.lower()):
+        candidates.insert(0, f"https://github.com/{pages.group(1)}/{parts[0]}/releases/download/snapshot/{name}")
+    candidates += ADDON_MIRRORS.get(name.lower(), [])
+    if pages and re.search(r"\.addon(?:32|64)$", name.lower()):
         candidates.append(f"https://github.com/clshortfuse/renodx/releases/download/snapshot/{name}")
     return list(dict.fromkeys(candidates))
 

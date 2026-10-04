@@ -74,7 +74,7 @@ Layout:
 | `backend/installers.py` | One installer per method, writing only through `transaction.py` |
 | `backend/transaction.py` | Records and reverses file changes |
 | `backend/runtime.py` | Shared downloads |
-| `backend/renodx.py`, `rhi.py` | RenoDX mod list from the wiki, plus RHI's per-game fixes (see below) |
+| `backend/renodx.py`, `renodx_index.py`, `rhi.py` | RenoDX mods from the wiki and RenoDX's build indexes, plus RHI's per-game fixes (see below) |
 | `backend/pcgw.py`, `compat.py` | PCGamingWiki (native HDR, API, engine); Special K settings from `compatibility.json` |
 | `src/components/HdrPanel.tsx` | The per-game panel |
 | `src/library.tsx`, `components/LibraryBadge.tsx` | The badge on library game pages (patches Steam's `/library/app/:appid` route, like ProtonDB Badges) |
@@ -100,6 +100,7 @@ You can also run the **Release** workflow by hand (Actions → Release → Run w
 - `pnpm dev` to work on the UI, `pnpm test` before pushing (CI runs the same).
 - Where per-game data comes from, all fetched live and cached for a day, so fixes reach players without a release:
   - **RenoDX**: the [wiki's mod list](https://github.com/clshortfuse/renodx/wiki/Mods) (download links, status, notes). Fix wrong data on the wiki itself.
+  - **RenoDX build indexes**: `games-index.json` from each RenoDX repo's snapshot release (generated from the `metadata.json` next to each mod's source). Used by Steam AppID when the wiki has no entry for a game.
   - **RHI's [manifest.json](https://github.com/RankFTW/RHI/blob/main/manifest.json)**, maintained for the Windows installer: wiki name fixes, addon URL fixes, Nexus/Discord-only mods and per-game warnings. It's optional; without it the wiki is used as is.
   - **Special K**: `compatibility.json` in this repo. Edit it with `python scripts/compat_db.py add …` (the format is documented at the top of that script); `pnpm test` validates it. The plugin picks up changes from `main` within a day.
 - `backend/cache.py` and `defaults/assets/specialk-delayed-launch.sh` are only shipped because older versions' self-updaters require them in release zips. Remove them after a release or two.
