@@ -19,7 +19,7 @@ GENERIC_FALLBACK_URLS = {
     "unreal": "https://clshortfuse.github.io/renodx/renodx-unrealengine.addon64",
     "unity": "https://notvoosh.github.io/renodx-unity/renodx-unityengine.addon64",
 }
-# Known mirrors per addon filename (RenoDX Commander parity).
+# Known mirrors per addon filename, tried when the wiki's link fails.
 ADDON_MIRRORS: dict[str, list[str]] = {
     "renodx-ue-extended.addon64": ["https://marat569.github.io/renodx/renodx-ue-extended.addon64"],
     "renodx-unityengine.addon64": [
@@ -44,9 +44,11 @@ STOP_WORDS = {"the", "a", "an"}
 # ---------------------------------------------------------------- normalization
 
 def title_words(title: str) -> list[str]:
-    text = unicodedata.normalize("NFKD", title or "")
+    # Strip trademark signs first: NFKD would turn "™" into the letters "TM".
+    text = re.sub(r"[™®©]", " ", title or "")
+    text = unicodedata.normalize("NFKD", text)
     text = "".join(ch for ch in text if not unicodedata.combining(ch)).lower()
-    text = text.replace("&", " and ").replace("™", " ").replace("®", " ").replace("'", "")
+    text = text.replace("&", " and ").replace("'", "").replace("’", "")
     text = re.sub(r"\([^)]*\)", " ", text)
     return [word for word in re.split(r"[^a-z0-9]+", text) if word and word not in STOP_WORDS]
 

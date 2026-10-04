@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from . import detect, display, fsutil, installers, launch, log, net, recommend, renodx, state, transaction
+from . import detect, display, fsutil, installers, launch, log, net, recommend, renodx, rhi, state, transaction
 from .compat import CompatDB
 from .config import Paths
 from .installers import InstallError, Target
@@ -55,6 +55,7 @@ class HdrService:
         self.steam = SteamLibrary(paths.home)
         self.compat = CompatDB(paths.plugin_dir / "compatibility.json", paths.compat_cache)
         self.renodx = RenoDXCatalog(paths.cache / "renodx_mods.json", lambda url: net.fetch_text(url, timeout=20))
+        self.rhi = rhi.RhiManifest(paths.cache / "rhi_manifest.json", lambda url: net.fetch_text(url, timeout=20))
         self.pcgw = PCGamingWiki(paths.cache / "pcgamingwiki.json", net.fetch_json)
         self.runtime = Runtime(paths)
         self.store = state.InstallStore(paths.installs)
@@ -98,10 +99,12 @@ class HdrService:
         engine = scan.engine if scan.engine != "unknown" else (renodx.engine_bucket(wiki.get("engine", "")) or "unknown")
         match: dict[str, Any] | None = None
         renodx_error = ""
+        fixes = self.rhi.game(app.name)
         try:
-            match = self.renodx.match(app.name, aliases=self.compat.renodx_aliases(app.appid), engine=engine, architecture=scan.architecture)
+            match = self.renodx.match(app.name, aliases=fixes.get("aliases"), engine=engine, architecture=scan.architecture)
         except Exception as error:
             renodx_error = f"RenoDX mod list unavailable: {error}"
+        match = rhi.apply(match, fixes, app.name)
         settings = self.settings.game(app.appid)
         ctx = {
             "appid": app.appid,
@@ -121,6 +124,7 @@ class HdrService:
             "pcgw_error": wiki.get("error", ""),
             "renodx_match": match,
             "renodx_error": renodx_error,
+            "renodx_warnings": fixes.get("warnings", []),
             "specialk_local_gate": self.compat.specialk_local_gate(app.appid),
             "specialk_verified": bool(settings.get("specialk_verified")),
             "specialk_wiki": bool(wiki.get("special_k")),
@@ -136,7 +140,7 @@ class HdrService:
         ctx = self._context(app, scan)
         recs, options = recommend.evaluate(ctx)
         for rec in recs:
-            rec.update({key: value for key, value in self.compat.metadata(appid, rec["method"]).items() if value})
+            rec.update({key: value for key, value in self._metadata(app.appid, rec["method"], ctx).items() if value})
         match = ctx.get("renodx_match") or {}
         return _ok(
             appid=app.appid,
@@ -149,7 +153,7 @@ class HdrService:
             exe_override=bool(self.settings.game(appid).get("exe")),
             exe_candidates=[{"path": c.path, "label": os.path.relpath(c.path, app.install_path), "arch": c.arch} for c in scan.candidates[:10]],
             context={
-                **{key: value for key, value in ctx.items() if key not in {"renodx_match", "specialk_local_gate"}},
+                **{key: value for key, value in ctx.items() if key not in {"renodx_match", "renodx_warnings", "specialk_local_gate"}},
                 "renodx_match": {key: match.get(key) for key in ("name", "status", "match_type", "addon_url", "manual_url", "bitness", "notes")} if match else None,
             },
             recommendations=recs,
@@ -157,6 +161,14 @@ class HdrService:
             install=self.install_status(appid, app),
             user_result=self._user_result(appid),
         )
+
+    def _metadata(self, appid: str, method: str, ctx: dict[str, Any]) -> dict[str, list[str]]:
+        """Warnings, steps and notes to show for a method."""
+        if method != "renodx":
+            return self.compat.metadata(appid, method)
+        match = ctx.get("renodx_match") or {}
+        notes = [note.replace("`", "") for note in match.get("notes") or []]
+        return {"warnings": list(ctx.get("renodx_warnings") or []), "manual_steps": [], "wiki_notes": notes}
 
     def _user_result(self, appid: str) -> str:
         """'worked'/'failed' for the currently installed method, else ''."""
@@ -374,7 +386,7 @@ class HdrService:
                 except OSError as error:
                     logger.warning("Could not delete the previous install's leftovers: %s", error)
             logger.info("Installed %s: %s", method, result.get("message"))
-            meta = self.compat.metadata(app.appid, method)
+            meta = self._metadata(app.appid, method, ctx)
             return _ok(
                 method=method,
                 message=result.get("message", ""),
@@ -631,6 +643,7 @@ class HdrService:
 
     def reset_caches(self) -> dict[str, Any]:
         self.renodx.clear()
+        self.rhi.clear()
         self.pcgw.clear()
         meta = self.paths.runtime / "reshade" / "current.json"
         data = fsutil.read_json(meta, {}) or {}

@@ -9,7 +9,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from backend import compat, fsutil, installers, launch, pcgw, recommend, renodx, state, transaction, updater, vdf  # noqa: E402
+from backend import compat, fsutil, installers, launch, pcgw, recommend, renodx, rhi, state, transaction, updater, vdf  # noqa: E402
 from backend.pe import read_pe  # noqa: E402
 from backend.service import HdrService  # noqa: E402
 from backend.steam import SteamLibrary  # noqa: E402
@@ -26,7 +26,7 @@ WIKI = """
 | Final Fantasy X | Dev | [![Snapshot](badge)](https://example.com/renodx-ffx.addon64) | :white_check_mark: |
 | Code Vein | Dev | [![Snapshot](badge)](https://example.com/renodx-codevein.addon64) | :white_check_mark: |
 | Manual Game | Dev | [![Nexus Mods](badge)](https://www.nexusmods.com/game/mods/1) | :construction: |
-| Shippy | Dev | [![Snapshot](badge)](https://example.com/renodx-shippy.addon64) | :white_check_mark: |
+| Shippy | Dev | [![Snapshot](badge)](https://example.com/renodx-shippy.addon64) | :white_check_mark: [i](# "`B8G8R8A8_TYPELESS` `Output Size`") |
 
 ## Multi-Game Mods
 ### Unreal Engine [![Snapshot](badge)](https://example.com/renodx-unrealengine.addon64)
@@ -42,6 +42,7 @@ class ServiceCase(unittest.TestCase):
         self.service = HdrService(self.fake.paths, "1.0.0")
         self.service.runtime = OfflineRuntime(self.fake.paths)
         self.service.renodx = renodx.RenoDXCatalog(self.fake.paths.cache / "mods.json", lambda _url: WIKI)
+        self.service.rhi = rhi.RhiManifest(self.fake.paths.cache / "rhi.json", lambda _url: "{}")
         self.service.pcgw.game_data = lambda appid: {"native_hdr": "unknown", "graphics_api": "unknown"}
         self.downloads: list[str] = []
 
@@ -141,6 +142,8 @@ class DetectionTests(ServiceCase):
         self.assertEqual(state_["exe_path"], str(shipping))
         ctx = state_["context"]
         self.assertEqual((ctx["api"], ctx["hook"], ctx["engine"], ctx["architecture"]), ("d3d12", "dxgi", "unreal", "64"))
+        renodx_rec = next(rec for rec in state_["recommendations"] if rec["method"] == "renodx")
+        self.assertEqual(renodx_rec["wiki_notes"], ["B8G8R8A8_TYPELESS Output Size"])
 
     def test_anti_cheat_found_at_install_root(self):
         root, _shipping = self.unreal_game()
@@ -599,13 +602,46 @@ class MiscTests(unittest.TestCase):
         self.assertEqual(display.parse_xprop(out), {"supported": True, "enabled": False})
         self.assertEqual(display.parse_xprop("GAMESCOPE_DISPLAY_HDR_ENABLED:  not found."), {"supported": None, "enabled": None})
 
-    def test_renodx_settings_become_manual_steps(self):
+    def test_special_k_injection_modes(self):
         fake = FakeSteam()
         self.addCleanup(fake.cleanup)
-        (fake.plugin_dir / "compatibility.json").write_text(json.dumps({"games": {"5": {"name": "X", "tools": {"renodx": {
-            "automation": {"renodx_settings": {"upgrades": [{"format": "R10G10B10A2_UNORM", "mode": "Output Size"}]}}}}}}}))
+        modes = {"1": {"preferred_injection": "avoid"}, "2": {"preferred_injection": "global_or_local"},
+                 "3": {"preferred_injection": "global", "local_dll": {"target": "dinput8.dll"}}, "4": {"preferred_injection": "made_up"},
+                 "5": {"preferred_injection": "hybrid_local_dinput8_plus_global", "local_dll": {"target": "dinput8.dll"}}}
+        (fake.plugin_dir / "compatibility.json").write_text(json.dumps({"games": {
+            appid: {"name": appid, "tools": {"special_k": {"automation": automation}}} for appid, automation in modes.items()}}))
         db = compat.CompatDB(fake.plugin_dir / "compatibility.json", fake.root / "none.json")
-        self.assertEqual(db.metadata("5", "renodx")["manual_steps"], ['In the RenoDX tab, set the R10G10B10A2_UNORM upgrade to "Output Size".'])
+        self.assertEqual({appid: db.specialk_local_gate(appid)["available"] for appid in modes},
+                         {"1": False, "2": True, "3": True, "4": False, "5": False})
+
+    def test_bundled_compat_db_is_valid(self):
+        from scripts.compat_db import load_db, validate_db
+        self.assertEqual(validate_db(load_db()), [])
+
+    def test_rhi_manifest_fixes(self):
+        fake = FakeSteam()
+        self.addCleanup(fake.cleanup)
+        manifest = {
+            "wikiNameOverrides": {"Shippy™": "Shippy Remastered"},
+            "snapshotOverrides": {"Shippy™": "https://example.com/fixed.addon64", "Bad": "http://insecure.addon64"},
+            "installWarnings": {"Shippy™": {"renodx": "Turn off DLSS. RHI sets this for you.", "reshade": "ignored"}},
+            "gameNotes": {"Shippy™": {"notes": "ℹ️ Uses UE-Extended for HDR."}},
+            "forceExternalOnly": {"Discord Game": {"url": "https://discord.gg/x", "label": "Get on Discord"}},
+        }
+        manifest_rhi = rhi.RhiManifest(fake.root / "rhi.json", lambda _url: json.dumps(manifest))
+        fixes = manifest_rhi.game("Shippy")
+        self.assertEqual(fixes["aliases"], ["Shippy Remastered"])
+        self.assertEqual(renodx.match_score("Batman™: Arkham Knight", "Batman: Arkham Knight"), 100)
+        self.assertEqual(fixes["warnings"], ["Turn off DLSS."])
+        self.assertEqual(manifest_rhi.game("Bad"), {})
+        match = rhi.apply({"name": "Shippy", "match_type": "generic_listed", "addon_url": "https://x/generic.addon64", "notes": []}, fixes, "Shippy")
+        self.assertEqual((match["addon_url"], match["match_type"]), ("https://example.com/fixed.addon64", "specific"))
+        external = rhi.apply({"name": "Discord Game", "addon_url": "https://x/a.addon64"}, manifest_rhi.game("Discord Game"), "Discord Game")
+        self.assertEqual((external["addon_url"], external["manual_url"]), ("", "https://discord.gg/x"))
+        # Offline with no cache: no fixes, no exception, and no retry on the next lookup.
+        calls = []
+        offline = rhi.RhiManifest(fake.root / "none.json", lambda url: calls.append(url) or (_ for _ in ()).throw(OSError("offline")))
+        self.assertEqual((offline.game("Shippy"), offline.game("Shippy"), len(calls)), ({}, {}, 1))
 
     def test_compat_merge_is_per_game(self):
         merged = compat.merge({"games": {"1": {"name": "a"}, "2": {"name": "b"}}}, {"games": {"2": {"name": "B"}}})

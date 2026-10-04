@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.3.0
+
+### RenoDX data straight from the source
+- The panel now shows the RenoDX wiki's own notes for the matched mod, such as which upgrades to set and in-game options to change. They appear before installing and on the "Check it in game" card. These replace the copy of the wiki that was stored in `compatibility.json`, which covered about 300 of the wiki's 950+ mods and went out of date.
+- Per-game fixes are read from the manifest of [RHI](https://github.com/RankFTW/RHI), the Windows RenoDX installer: wiki name fixes, corrected addon download links, mods that are only on Nexus or Discord, and per-game warnings. They're fetched daily like the wiki. If the manifest can't be fetched, the plugin uses the wiki alone.
+
+### Fixes
+- Special K is no longer offered for games the compatibility list says not to inject (Star Wars Battlefront II, Far Cry 3 Blood Dragon, Far Cry 4, No Man's Sky, Rainbow Six Siege, Dead by Daylight). It's also no longer offered for games that need a separate anti-cheat-free executable, or Special K's global injector alongside a local DLL.
+- Steam names with ™, ® or curly apostrophes now match their RenoDX wiki entry (for example "Batman™: Arkham Knight").
+
+### Project
+- `compatibility.json` now only holds Special K settings: 95 games, down from 400, and about 11% of its old size. Unused fields are gone. Its format is documented in `scripts/compat_db.py`, which rejects unknown injection modes. `docs/COMPATIBILITY.md` and the `sync-renodx` command were removed.
+- The local dev harness no longer downloads the real compatibility list.
+
 ## 0.2.1
 
 ### Fixes

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ButtonItem, ConfirmModal, DialogButton, DropdownItem, Focusable, Navigation, PanelSection, PanelSectionRow, showModal, useQuickAccessVisible } from "@decky/ui";
 import { toaster } from "@decky/api";
-import { api, type ChangeResult, type GameState, type ManualDownload, type MethodOption } from "../backend";
+import { api, type ChangeResult, type GameState, type ManualDownload, type MethodOption, type Recommendation } from "../backend";
 import { EMPTY, gameRef, useGames } from "../state";
 import { updateLaunchOptions } from "../steam";
 import type { LaunchSpec } from "../utils/launchOptions";
@@ -360,6 +360,7 @@ function MainAction({ state, run, onImport }: { state: GameState; run: Run; onIm
           </div>
         ) : null}
         {top.manual_steps?.length ? <><Small style={{ marginTop: 6 }}>After installing:</Small><Steps items={top.manual_steps} /></> : null}
+        <WikiNotes rec={top} />
       </Card>
       <PanelSectionRow>
         <ButtonItem
@@ -373,8 +374,20 @@ function MainAction({ state, run, onImport }: { state: GameState; run: Run; onIm
   );
 }
 
+/** Per-game notes from the RenoDX wiki: upgrade settings, in-game options, known issues. */
+function WikiNotes({ rec }: { rec: Recommendation }) {
+  if (!rec.wiki_notes?.length) return null;
+  return (
+    <>
+      <Small style={{ marginTop: 6 }}>From the RenoDX wiki:</Small>
+      {rec.wiki_notes.map((note, index) => <Small key={index} style={{ marginTop: 2 }}>• {note}</Small>)}
+    </>
+  );
+}
+
 function Feedback({ state, onResult, onReport, onTryOther }: { state: GameState; onResult: (result: string) => void; onReport: () => void; onTryOther: () => void }) {
-  const steps = CHECK_STEPS[state.install.method || ""];
+  const rec = state.recommendations.find((item) => item.method === state.install.method);
+  const steps = CHECK_STEPS[state.install.method || ""] && [...CHECK_STEPS[state.install.method || ""], ...(rec?.manual_steps || [])];
   if (state.user_result === "worked") return null;
   if (state.user_result === "failed") {
     return (
@@ -398,6 +411,7 @@ function Feedback({ state, onResult, onReport, onTryOther }: { state: GameState;
         <Card>
           <div style={{ fontWeight: 700, fontSize: 13 }}>Check it in game</div>
           <Steps items={steps} />
+          {rec && <WikiNotes rec={rec} />}
         </Card>
       )}
       <PanelSectionRow>

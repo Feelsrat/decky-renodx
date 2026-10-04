@@ -34,7 +34,7 @@ WIKI = """
 # List
 | Name | Maintainer | Links | Status |
 | --- | --- | --- | --- |
-| Shippy | Dev | [![Snapshot](badge)](https://example.com/renodx-shippy.addon64) | :white_check_mark: |
+| Shippy | Dev | [![Snapshot](badge)](https://example.com/renodx-shippy.addon64) | :white_check_mark: [ⓘ](# "`R10G10B10A2_UNORM` `Output Size`. Disable in-game HDR.") |
 | Retro Racer | Dev | [![Snapshot](badge)](https://example.com/renodx-retroracer.addon32) | :construction: |
 | Manual Game | Dev | [![Nexus Mods](badge)](https://www.nexusmods.com/game/mods/1) | :white_check_mark: |
 """
@@ -43,15 +43,14 @@ PCGW = {
     "7000": {"native_hdr": "true", "graphics_api": "d3d12", "page_name": "Bright Lights"},
 }
 
+# Stand-in for RHI's manifest (backend/rhi.py).
+RHI = {"wikiNameOverrides": {}, "installWarnings": {"Shippy": {"renodx": "DLSS sharpening must be turned off each session."}}}
+
 COMPAT = {"games": {
     "8000": {"name": "Old Classic", "tools": {"special_k": {
         "automation": {"warnings": ["The launcher must be skipped with -nolauncher."]},
         "launch_options": ["-nolauncher"],
     }}},
-    "1000": {"name": "Shippy", "tools": {"renodx": {"automation": {
-        "renodx_settings": {"upgrades": [{"format": "R10G10B10A2_UNORM", "mode": "Output Size"}]},
-        "warnings": ["DLSS sharpening must be turned off each session."],
-    }}}},
 }}
 
 
@@ -109,6 +108,8 @@ def make_plugin(args: argparse.Namespace):
     service = plugin.service
     service.runtime = OfflineRuntime(fake.paths)
     service.renodx._fetch_text = lambda _url: WIKI
+    service.rhi._fetch_text = lambda _url: json.dumps(RHI)
+    service.compat.refresh_due = lambda now=None: False  # keep the fake compatibility.json; stay offline
     service.pcgw.game_data = lambda appid: dict(PCGW.get(str(appid), {"native_hdr": "unknown", "graphics_api": "unknown"}))
     hdr = {"on": (True, True), "off": (True, False), "unknown": (None, None)}[args.hdr]
     service.display_status = lambda: {"status": "success", "supported": hdr[0], "enabled": hdr[1], "game_mode": hdr[0] is not None}

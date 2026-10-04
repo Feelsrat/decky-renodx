@@ -33,6 +33,7 @@ class MainTests(unittest.IsolatedAsyncioTestCase):
         games = await self.plugin.list_installed_games()
         self.assertEqual(games["games"], [{"appid": "10", "name": "Game", "kind": "steam"}])
         with mock.patch.object(self.plugin.service.pcgw, "game_data", return_value={}), \
+                mock.patch.object(self.plugin.service.rhi, "game", return_value={}), \
                 mock.patch.object(self.plugin.service.renodx, "mods", return_value=[]):
             state = await self.plugin.get_game_state("10")
         self.assertEqual(state["status"], "success", state)

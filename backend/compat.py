@@ -1,4 +1,8 @@
-"""The bundled/remote per-game compatibility database (compatibility.json)."""
+"""Per-game Special K knowledge (compatibility.json), bundled and refreshed daily from GitHub.
+
+RenoDX data isn't kept here: it's read live from the RenoDX wiki (renodx.py) and
+RHI's manifest (rhi.py). The file format is described in scripts/compat_db.py.
+"""
 from __future__ import annotations
 
 import json
@@ -9,6 +13,25 @@ from typing import Any
 from . import fsutil, log
 
 SK_HOOKS = {"dxgi", "d3d11", "d3d9", "d3d8", "opengl32", "dinput8", "ddraw"}
+# Every allowed ``automation.preferred_injection`` value -> why the plugin's local
+# (proxy DLL) Special K install can't be used, or "" when it can.
+PREFERRED_INJECTION = {
+    "": "",
+    "local": "",
+    "local_or_global": "",
+    "global_or_local": "",
+    "global_delayed_or_local": "",
+    "game_exe_only": "",
+    "global": "Needs Special K's global injector, which this plugin doesn't set up.",
+    "global_delayed": "Needs Special K injected after launch (global injector), which this plugin doesn't set up.",
+    "global_after_launcher": "Needs Special K injected after the launcher (global injector), which this plugin doesn't set up.",
+    "hybrid_local_dinput8_plus_global": "Needs Special K's global injector as well as a local DLL, which this plugin doesn't set up.",
+    "anti_cheat_disabled_exe": "Needs a separate executable with anti-cheat disabled.",
+    "avoid": "The compatibility database says not to inject Special K into this game.",
+    "avoid_or_blocked": "The compatibility database says not to inject Special K into this game.",
+}
+# Injection modes a ``local_dll`` entry can turn into a local install.
+LOCAL_DLL_REPLACES = {"global", "global_delayed"}
 FORCED_API = [("12", "d3d12"), ("11", "d3d11"), ("10", "d3d10"), ("9", "d3d9"), ("vulkan", "vulkan"), ("opengl", "opengl")]
 
 
@@ -78,13 +101,9 @@ class CompatDB:
     def automation(self, appid: str, name: str) -> dict[str, Any]:
         return _dict(self.tool(appid, name).get("automation"))
 
-    def renodx_aliases(self, appid: str) -> list[str]:
-        name = self.tool(appid, "renodx").get("name") or self.game(appid).get("name")
-        return [str(name)] if name else []
-
     def game_args(self, appid: str, method: str) -> list[str]:
         """Extra arguments the game needs (placed after %command%)."""
-        tool = "special_k" if method.startswith("special_k") else "renodx" if method == "renodx" else method
+        tool = "special_k" if method.startswith("special_k") else method
         return [str(item) for item in _list(self.tool(appid, tool).get("launch_options")) if str(item).strip()]
 
     def metadata(self, appid: str, method: str) -> dict[str, list[str]]:
@@ -93,11 +112,6 @@ class CompatDB:
         automation = _dict(tool.get("automation"))
         warnings = [str(item) for item in _list(automation.get("warnings")) + _list(tool.get("warnings")) if str(item).strip()]
         steps = [str(item) for item in _list(automation.get("manual_steps")) + _list(tool.get("manual_steps")) if str(item).strip()]
-        if tool_name == "renodx":
-            for upgrade in _list(_dict(automation.get("renodx_settings")).get("upgrades")):
-                upgrade = _dict(upgrade)
-                if upgrade.get("format") and upgrade.get("mode"):
-                    steps.append(f"In the RenoDX tab, set the {upgrade['format']} upgrade to \"{upgrade['mode']}\".")
         if tool_name == "special_k" and _dict(automation.get("hdr")).get("avoid"):
             warnings.append("Compatibility database marks Special K HDR as avoid for this game.")
         return {"warnings": list(dict.fromkeys(warnings)), "manual_steps": list(dict.fromkeys(steps))}
@@ -166,9 +180,10 @@ class CompatDB:
         if "local" in avoid_modes:
             return {"available": False, "reason": "Compatibility database says local Special K injection should be avoided."}
         if automation.get("avoid_injection_at_launch") and not local_dll:
-            return {"available": False, "reason": "Needs Special K injected after launch (global injector), which this plugin doesn't set up. See the game's notes."}
-        if preferred.startswith("global") and "local" not in preferred and not local_dll:
-            return {"available": False, "reason": f"Needs {preferred.replace('_', ' ')} Special K injection, which this plugin doesn't set up. See the game's notes."}
+            return {"available": False, "reason": PREFERRED_INJECTION["global_delayed"]}
+        blocked = PREFERRED_INJECTION.get(preferred, f"Unknown injection mode '{preferred}' in the compatibility database.")
+        if blocked and not (local_dll and preferred in LOCAL_DLL_REPLACES):
+            return {"available": False, "reason": blocked}
         if automation.get("anti_cheat"):
             return {"available": False, "reason": "Needs anti-cheat changes before Special K is safe."}
         return {"available": True, "reason": "Local Special K install is allowed by the compatibility database."}

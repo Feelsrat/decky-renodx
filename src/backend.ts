@@ -15,6 +15,8 @@ export interface Recommendation {
   notes?: string[];
   warnings?: string[];
   manual_steps?: string[];
+  /** The RenoDX wiki's notes for the matched mod (settings, known issues). */
+  wiki_notes?: string[];
   renodx_status?: string;
   renodx_match_type?: string;
   manual_download?: boolean;

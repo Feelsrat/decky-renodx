@@ -2,9 +2,9 @@
 
 A [Decky Loader](https://decky.xyz) plugin that adds HDR to Proton games on the Steam Deck OLED (and other HDR SteamOS setups). Pick a game and the plugin finds the best way to get HDR:
 
-1. **RenoDX**: a per-game HDR mod from the [RenoDX wiki](https://github.com/clshortfuse/renodx/wiki/Mods), loaded through ReShade. Generic Unreal/Unity addons are offered as an experimental option.
+1. **RenoDX**: a per-game HDR mod from the [RenoDX wiki](https://github.com/clshortfuse/renodx/wiki/Mods), loaded through ReShade, like the Windows installers (RenoDX Commander / [RHI](https://github.com/RankFTW/RHI)) do. The wiki's notes for the mod (upgrade settings, in-game options) are shown in the panel. Generic Unreal/Unity addons are offered as an experimental option.
 2. **Native HDR**: if the game has its own HDR, the plugin only sets Proton's HDR switches.
-3. **Special K**: HDR retrofit for DX10-12 games, or games listed in the compatibility database.
+3. **Special K**: HDR retrofit for DX10-12 games, with per-game settings from `compatibility.json`.
 4. **ReShade AutoHDR**: AutoHDR, Lilium and Pumbo shaders as a fallback.
 
 It also sets the matching Steam launch options for you. Steam games and non-Steam games you've added to Steam are both supported.
@@ -74,11 +74,12 @@ Layout:
 | `backend/installers.py` | One installer per method, writing only through `transaction.py` |
 | `backend/transaction.py` | Records and reverses file changes |
 | `backend/runtime.py` | Shared downloads |
-| `backend/renodx.py`, `pcgw.py`, `compat.py` | RenoDX wiki, PCGamingWiki (native HDR, API, engine), compatibility database |
+| `backend/renodx.py`, `rhi.py` | RenoDX mod list from the wiki, plus RHI's per-game fixes (see below) |
+| `backend/pcgw.py`, `compat.py` | PCGamingWiki (native HDR, API, engine); Special K settings from `compatibility.json` |
 | `src/components/HdrPanel.tsx` | The per-game panel |
 | `src/utils/launchOptions.ts` | Merging and removing launch options |
 | `dev/` | Local UI harness (see above) |
-| `compatibility.json` | Per-game knowledge base; see [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) |
+| `compatibility.json` | Per-game Special K settings; format in `scripts/compat_db.py` |
 
 ## Releasing
 
@@ -96,7 +97,10 @@ You can also run the **Release** workflow by hand (Actions → Release → Run w
 ## Maintainer notes
 
 - `pnpm dev` to work on the UI, `pnpm test` before pushing (CI runs the same).
-- Never hand-edit `compatibility.json`; use `scripts/compat_db.py` (see [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md)). The running plugin picks up changes from `main` within a day, no release needed.
+- Where per-game data comes from, all fetched live and cached for a day, so fixes reach players without a release:
+  - **RenoDX**: the [wiki's mod list](https://github.com/clshortfuse/renodx/wiki/Mods) (download links, status, notes). Fix wrong data on the wiki itself.
+  - **RHI's [manifest.json](https://github.com/RankFTW/RHI/blob/main/manifest.json)**, maintained for the Windows installer: wiki name fixes, addon URL fixes, Nexus/Discord-only mods and per-game warnings. It's optional; without it the wiki is used as is.
+  - **Special K**: `compatibility.json` in this repo. Edit it with `python scripts/compat_db.py add …` (the format is documented at the top of that script); `pnpm test` validates it. The plugin picks up changes from `main` within a day.
 - `backend/cache.py` and `defaults/assets/specialk-delayed-launch.sh` are only shipped because older versions' self-updaters require them in release zips. Remove them after a release or two.
 - Cleanup for installs made by 0.0.x (`state.find_legacy`/`remove_legacy`) can go after 0.3.
 
