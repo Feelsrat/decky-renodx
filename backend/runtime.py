@@ -15,7 +15,7 @@ from typing import Any, Callable
 from . import fsutil, log, net
 from .config import (
     AUTOHDR_ADDON_ZIP_URL, LILIUM_RELEASES_URL, PUMBO_AUTOHDR_ZIP_URL,
-    RESHADE_FXH_URL, RESHADE_SETUP_URL, RESHADE_VERSION, SEVENZIP_VERSION, SPECIALK_RELEASES_URL,
+    DGVOODOO_SHA256, DGVOODOO_URL, RESHADE_FXH_URL, RESHADE_SETUP_URL, RESHADE_VERSION, SEVENZIP_VERSION, SPECIALK_RELEASES_URL,
     Paths,
 )
 
@@ -214,6 +214,24 @@ class Runtime:
             if matches:
                 return matches[0]
         return None
+
+    # ------------------------------------------------------------ dgVoodoo2
+    def dgvoodoo(self) -> Path:
+        """The unpacked dgVoodoo2 release (MS/x86, MS/x64 DLLs and its default dgVoodoo.conf)."""
+        with self._lock:
+            target = self.root / "dgvoodoo" / Path(DGVOODOO_URL).stem
+            if (target / READY).is_file():
+                return target
+            with tempfile.TemporaryDirectory(prefix="decky-renodx-dgvoodoo-") as temp:
+                archive = self._download(DGVOODOO_URL, Path(temp) / "dgvoodoo.zip", min_size=1_000_000, sha256=DGVOODOO_SHA256)
+                staging = Path(temp) / "x"
+                with zipfile.ZipFile(archive) as handle:
+                    fsutil.safe_extract_zip(handle, staging)
+                if not (staging / "MS" / "x86" / "D3D9.dll").is_file() or not (staging / "dgVoodoo.conf").is_file():
+                    raise ComponentError("dgVoodoo2 download is missing D3D9.dll or dgVoodoo.conf")
+                (staging / READY).write_text("ok", encoding="utf-8")
+                _replace_dir(staging, target)
+            return target
 
     # ------------------------------------------------------------ status
     def status(self) -> dict[str, Any]:

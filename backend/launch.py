@@ -11,10 +11,11 @@ from typing import Any
 from .config import HDR_ENV
 
 
-def spec(hook: str = "", *, args: list[str] | None = None) -> dict[str, Any]:
+def spec(hook: str = "", *, args: list[str] | None = None, extra_dlls: list[str] | None = None) -> dict[str, Any]:
+    dlls = [name for name in [hook, *(extra_dlls or [])] if name]
     return {
         "env": dict(HDR_ENV),
-        "dll_overrides": {hook: "n,b"} if hook else {},
+        "dll_overrides": {name: "n,b" for name in dlls},
         "args": list(args or []),
         "wrapper": [],
     }

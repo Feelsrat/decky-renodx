@@ -7,6 +7,7 @@ import shutil
 import threading
 import time
 import zipfile
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -186,13 +187,38 @@ class HdrService:
         elif not override and app.exe:
             override, note = app.exe, "Using the shortcut's executable."
         exclude = set(record.get("created", [])) if record else set()
+        fixes = self.rhi.game(app.name)
+        if not override:
+            override = self._rhi_exe(app, fixes, exclude)
+            note = "Using the executable RHI's game data names."
         launched = None if override else self.steam.launched_executable(app.appid, app.install_path)
         scan = detect.scan_game(app.install_path, app.name, exe_override=override, override_note=note, launched_exe=launched, exclude=exclude)
+        if fixes.get("arch") and scan.exe_path and scan.architecture != fixes["arch"]:
+            scan.architecture = fixes["arch"]
+        if fixes.get("api") and scan.exe_path and scan.api != fixes["api"]:
+            scan.api, scan.api_confidence, scan.api_source = fixes["api"], "high", "rhi"
+            scan.hook = detect.hook_for_api(scan.api)
         forced = self.compat.forced_api(app.appid)
         if forced:
             scan.api, scan.api_confidence, scan.api_source = forced, "high", "compatibility_db"
             scan.hook = detect.hook_for_api(forced)
         return scan
+
+    def _rhi_exe(self, app: SteamApp, fixes: dict[str, Any], exclude: set[str]) -> str:
+        """The executable RHI's data points at: a named .exe, or the best .exe in a named folder."""
+        if not (fixes.get("exe_name") or fixes.get("install_dirs")):
+            return ""
+        candidates = detect.find_executables(app.install_path, app.name, exclude)
+        if fixes.get("exe_name"):
+            named = [c for c in candidates if Path(c.path).name.lower() == fixes["exe_name"].lower()]
+            if named:
+                return named[0].path
+        for folder in fixes.get("install_dirs") or []:
+            directory = (app.install_path / folder).resolve()
+            inside = [c for c in candidates if Path(c.path).parent.resolve() == directory]
+            if inside:
+                return inside[0].path
+        return ""
 
     def _context(self, app: SteamApp, scan: detect.GameScan) -> dict[str, Any]:
         # Non-Steam shortcut ids mean nothing to PCGamingWiki.
@@ -235,7 +261,8 @@ class HdrService:
             "renodx_match": match,
             "renodx_error": renodx_error,
             "renodx_warnings": fixes.get("warnings", []),
-            "specialk_local_gate": self.compat.specialk_local_gate(app.appid),
+            "specialk_local_gate": self.compat.specialk_local_gate(app.appid, translated=installers.can_translate(scan.api, scan.architecture)),
+            "dx_translation": installers.can_translate(scan.api, scan.architecture),
             "specialk_verified": bool(settings.get("specialk_verified")),
             "specialk_wiki": bool(wiki.get("special_k")),
             "specialk_compat": bool(self.compat.tool(app.appid, "special_k")),
@@ -664,14 +691,21 @@ class HdrService:
             if not mod:
                 raise InstallError("No RenoDX mod matched this game.")
             addon = renodx_file or self._download_addon(mod, target)
+            target = self._rhi_hook(target)
             auto, notes, engine_ini = self._renodx_auto(target, ctx, mod, addon)
             return installers.install_renodx(tx, target, self.runtime, self.compat, addon, mod,
-                                             auto=auto, keep=ctx.get("renodx_keep"), notes=notes, engine_ini=engine_ini)
+                                             auto=auto, keep=ctx.get("renodx_keep"), notes=notes, engine_ini=engine_ini,
+                                             engine_ini_dirs=self.rhi.game(target.title).get("engine_ini_dirs"))
         if method == "special_k":
             return installers.install_specialk(tx, target, self.runtime, self.compat, peak_nits=self._peak_nits(ctx))
         if method == "reshade":
-            return installers.install_reshade(tx, target, self.runtime, self.compat, keep=ctx.get("renodx_keep"))
+            return installers.install_reshade(tx, self._rhi_hook(target), self.runtime, self.compat, keep=ctx.get("renodx_keep"))
         raise InstallError(f"Unhandled method {method}")
+
+    def _rhi_hook(self, target: Target) -> Target:
+        """ReShade's DLL name from RHI, for games where the detected hook doesn't load."""
+        dll = self.rhi.game(target.title).get("reshade_dll")
+        return replace(target, hook=dll) if dll and target.api != "vulkan" else target
 
     def _renodx_auto(self, target: Target, ctx: dict[str, Any], mod: dict[str, Any], addon: Path) -> tuple[dict[str, dict[str, str]], list[str], str]:
         """Settings worked out for this game and screen: brightness, the wiki's resource upgrades,

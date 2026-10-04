@@ -160,7 +160,10 @@ class CompatDB:
     def specialk_avoid_hdr(self, appid: str) -> bool:
         return bool(_dict(self.automation(appid, "special_k").get("hdr")).get("avoid"))
 
-    def specialk_local_gate(self, appid: str) -> dict[str, Any]:
+    def specialk_local_gate(self, appid: str, *, translated: bool = False) -> dict[str, Any]:
+        """Whether the plugin's local Special K install may be used. ``translated``: the game runs
+        through dgVoodoo2 and Special K hooks dxgi, so notes about global or delayed injection
+        (which work around d3d9 hooks crashing) don't apply."""
         if not self.tool(appid, "special_k"):
             return {"available": True, "reason": "No compatibility notes; Special K HDR must be checked in game."}
         automation = self.automation(appid, "special_k")
@@ -179,6 +182,8 @@ class CompatDB:
             return {"available": False, "reason": f"Needs extra Special K files this plugin does not install: {files}."}
         if "local" in avoid_modes:
             return {"available": False, "reason": "Compatibility database says local Special K injection should be avoided."}
+        if translated and (preferred.startswith("global") or automation.get("avoid_injection_at_launch")):
+            return {"available": True, "reason": "Experimental: the game runs through dgVoodoo2 (DirectX 11), so Special K hooks dxgi instead of the d3d9 injection that the compatibility list says fails."}
         if automation.get("avoid_injection_at_launch") and not local_dll:
             return {"available": False, "reason": PREFERRED_INJECTION["global_delayed"]}
         blocked = PREFERRED_INJECTION.get(preferred, f"Unknown injection mode '{preferred}' in the compatibility database.")

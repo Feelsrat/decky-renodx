@@ -486,6 +486,75 @@ class AutoSettingsTests(ServiceCase):
         self.assertIn("ToneMapPeakNits=800", ini)  # brightness follows the screen, not the snapshot
 
 
+class LegacyDirectXTests(ServiceCase):
+    def ff13(self):
+        root = self.fake.add_game("292120", "FINAL FANTASY XIII", "FINAL FANTASY XIII")
+        exe = make_pe(root / "white_data" / "prog" / "win" / "bin" / "ffxiiiimg.exe", arch="32", imports=("d3d9.dll",), size=900 * 1024)
+        (self.fake.plugin_dir / "compatibility.json").write_text(json.dumps({"games": {"292120": {"name": "Final Fantasy XIII", "tools": {"special_k": {
+            "automation": {"avoid_injection_at_launch": True, "preferred_injection": "global_delayed", "warnings": ["Local d3d9.dll injection crashes."]}}}}}}))
+        self.service.compat.reload()
+        return exe
+
+    def test_ff13_gets_special_k_through_dgvoodoo(self):
+        exe = self.ff13()
+        state_ = self.service.game_state("292120")
+        self.assertEqual(state_["recommendations"][0]["method"], "special_k")
+        self.assertIn("dgVoodoo2", " ".join(state_["recommendations"][0]["notes"]))
+        result = self.service.install("292120", "recommended")
+        self.assertEqual((result["status"], result["method"]), ("success", "special_k"), result)
+        folder = exe.parent
+        self.assertTrue((folder / "d3d9.dll").is_file() and (folder / "dxgi.dll").is_file())
+        conf = (folder / "dgVoodoo.conf").read_bytes().decode()
+        self.assertIn("OutputAPI=d3d11_fl11_0", conf)
+        self.assertIn("dgVoodooWatermark=false", conf)
+        self.assertIn("[Glide]\r\nResolution                          = unforced", conf)  # other sections untouched
+        self.assertEqual(result["launch"]["dll_overrides"], {"dxgi": "n,b", "d3d9": "n,b"})
+        self.service.uninstall("292120")
+        self.assertFalse((folder / "d3d9.dll").exists() or (folder / "dgVoodoo.conf").exists())
+
+    def test_autohdr_on_dx9_uses_the_addon_through_dgvoodoo(self):
+        exe = self.ff13()
+        result = self.service.install("292120", "reshade")
+        self.assertEqual(result["status"], "success", result)
+        self.assertTrue((exe.parent / "AutoHDR.addon32").is_file())
+        self.assertEqual(self.service.store.get("292120")["dll"], "dxgi")
+
+    def test_special_k_still_blocked_where_the_list_says_avoid(self):
+        self.ff13()
+        (self.fake.plugin_dir / "compatibility.json").write_text(json.dumps({"games": {"292120": {"name": "x", "tools": {"special_k": {
+            "automation": {"preferred_injection": "avoid"}}}}}}))
+        self.service.compat.reload()
+        self.assertEqual(self.service.install("292120", "special_k")["status"], "error")
+
+
+class RhiInstallFixTests(ServiceCase):
+    def manifest(self, data):
+        self.service.rhi = rhi.RhiManifest(self.fake.paths.cache / "rhi3.json", lambda _url: json.dumps({"wikiNameOverrides": {}, **data}))
+
+    def test_install_folder_api_arch_and_dll_fixes(self):
+        root = self.fake.add_game("70", "Tricky Game", "Tricky")
+        make_pe(root / "Launcher.exe", imports=("d3d11.dll",), size=2000 * 1024)
+        real = make_pe(root / "Bin" / "Win64" / "Tricky.exe", imports=("kernel32.dll",), size=900 * 1024)
+        self.manifest({
+            "installPathOverrides": {"Tricky Game": "Bin\\Win64"},
+            "graphicsApiOverrides": {"Tricky Game": "DX12"},
+            "dllNameOverrides": {"Tricky Game": {"reshade": "d3d12.dll", "dc": ""}},
+        })
+        state_ = self.service.game_state("70")
+        self.assertEqual(state_["exe_path"], str(real))
+        self.assertEqual((state_["context"]["api"], state_["context"]["api_source"]), ("d3d12", "rhi"))
+        self.assertEqual(self.service.install("70", "reshade")["status"], "success")
+        self.assertTrue((real.parent / "d3d12.dll").is_file())
+
+    def test_engine_ini_folder_from_rhi(self):
+        _root, shipping = self.unreal_game("5000", "Ini Game")
+        local = self.fake.compatdata("5000") / "pfx" / "drive_c" / "users" / "steamuser" / "AppData" / "Local"
+        (local / "Other" / "Saved" / "Config" / "WindowsClient").mkdir(parents=True)
+        self.manifest({"engineIniPathOverrides": {"Ini Game": "%LOCALAPPDATA%\\Other\\Saved\\Config\\WindowsClient"}})
+        self.service.install("5000", "renodx")
+        self.assertIn("r.HDR.EnableHDROutput=1", (local / "Other" / "Saved" / "Config" / "WindowsClient" / "Engine.ini").read_text())
+
+
 class RenoDXTests(unittest.TestCase):
     def setUp(self):
         self.mods = renodx.parse_mods(WIKI)

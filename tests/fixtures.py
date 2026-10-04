@@ -150,6 +150,19 @@ class OfflineRuntime(Runtime):
         make_pe(root / "SKIF.exe", size=4096)
         return root
 
+    def dgvoodoo(self):
+        self._check("dgvoodoo")
+        root = self.store / "dgVoodoo2"
+        for arch, bits in (("x86", "32"), ("x64", "64")):
+            make_pe(root / "MS" / arch / "D3D9.dll", arch=bits, marker=b"dgVoodoo", size=4096)
+        make_pe(root / "MS" / "x86" / "D3D8.dll", arch="32", marker=b"dgVoodoo", size=4096)
+        (root / "dgVoodoo.conf").write_text(
+            "[General]\r\nOutputAPI                            = bestavailable\r\nFullScreenMode                       = true\r\n\r\n"
+            "[Glide]\r\nResolution                          = unforced\r\n\r\n"
+            "[DirectX]\r\nVRAM                                = 256\r\nResolution                          = unforced\r\n"
+            "dgVoodooWatermark                   = true\r\n", encoding="utf-8")
+        return root
+
 
 def tree_digest(root: Path) -> dict[str, str]:
     """Relative path -> content hash (dirs map to 'dir'), for byte-identical comparisons."""

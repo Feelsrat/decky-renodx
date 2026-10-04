@@ -21,6 +21,9 @@ def evaluate(ctx: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, 
     match = ctx.get("renodx_match") or {}
     exe_found = bool(ctx.get("exe_found"))
     sk_local = ctx.get("specialk_local_gate") or {"available": True, "reason": ""}
+    # DX8/DX9 games can run through dgVoodoo2's DX11 output, which Special K and AutoHDR need.
+    translation = bool(ctx.get("dx_translation"))
+    notes_translation = ["DirectX 9 game: dgVoodoo2 translates it to DirectX 11 first so HDR tools can hook it. Experimental."] if translation else []
 
     blocked: dict[str, str] = {}
     if anti_cheat:
@@ -69,7 +72,7 @@ def evaluate(ctx: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, 
     elif api == "vulkan":
         blocked.setdefault("special_k", "Special K HDR does not support Vulkan games.")
     elif ctx.get("specialk_verified") or ctx.get("specialk_wiki") or ctx.get("specialk_compat"):
-        sk_score = 78
+        sk_score = 72 if translation and not ctx.get("specialk_verified") else 78
         if ctx.get("specialk_verified"):
             sk_notes.append("You marked Special K HDR as working for this game.")
         if ctx.get("specialk_wiki"):
@@ -79,22 +82,25 @@ def evaluate(ctx: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, 
     elif api in DX_MODERN:
         sk_score = 65
         sk_notes.append("DX10-12 games usually work with Special K HDR, but check it in game.")
+    elif translation:
+        sk_score = 60
     else:
         blocked.setdefault("special_k", f"Special K HDR needs a DX10-12 game or a verified entry (detected API: {api}).")
     if sk_score:
-        recs.append(_rec("special_k", sk_score, "Special K can retrofit HDR into this game.", "medium" if sk_score > 70 else "low", sk_notes + notes_32))
+        recs.append(_rec("special_k", sk_score, "Special K can retrofit HDR into this game." + (" (through dgVoodoo2)" if translation else ""),
+                         "medium" if sk_score > 70 else "low", notes_translation + sk_notes + notes_32))
 
     # ReShade AutoHDR
     if api == "vulkan":
         blocked.setdefault("reshade", "ReShade proxy DLLs cannot hook Vulkan games.")
     else:
-        modern = api in DX_MODERN or api == "unknown"
+        modern = api in DX_MODERN or api == "unknown" or translation
         recs.append(_rec(
             "reshade", 50 if modern else 30,
             "ReShade AutoHDR shaders: a fallback when no RenoDX mod or Special K path exists." if modern
             else f"ReShade can load, but AutoHDR only works on DX10-12 ({api} detected).",
             "medium" if api != "unknown" else "low",
-            [f"Detected API: {api}.", *notes_32],
+            [f"Detected API: {api}.", *notes_translation, *notes_32],
         ))
 
     recs.append(_rec("sdr", 0, "Leave the game in SDR.", "high"))
@@ -132,7 +138,8 @@ def method_options(recs: list[dict[str, Any]], blocked: dict[str, str], ctx: dic
     return [
         option("recommended", "Recommended", top["reason"] if top else "No recommendation.", ""),
         option("renodx", "RenoDX", renodx_reason, renodx_badge),
-        option("special_k", "Special K", "Adds HDR to most DX10-12 games. You confirm it in Special K's menu.", "Verified" if ctx.get("specialk_compat") else ""),
+        option("special_k", "Special K", ("Adds HDR through dgVoodoo2 (DirectX 9 → 11). Experimental. " if ctx.get("dx_translation") else "Adds HDR to most DX10-12 games. ")
+               + "You confirm it in Special K's menu.", "Verified" if ctx.get("specialk_compat") else ""),
         option("reshade", "ReShade AutoHDR", "Converts the SDR image to HDR with shaders. Works on most DirectX games; quality varies.", "Fallback"),
         {"method": "native_hdr", "label": "Native HDR (no mod)", "available": True,
          "reason": ("PCGamingWiki says this game has HDR. " if native else "") + "Only turns on Proton's HDR switches; enable HDR in the game's own settings.",

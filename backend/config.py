@@ -28,6 +28,10 @@ LILIUM_RELEASES_URL = "https://api.github.com/repos/EndlesslyFlowering/ReShade_H
 PUMBO_AUTOHDR_ZIP_URL = "https://github.com/Filoppi/PumboAutoHDR/archive/refs/heads/master.zip"
 AUTOHDR_ADDON_ZIP_URL = "https://github.com/MajorPainTheCactus/AutoHDR-ReShade/archive/refs/heads/main.zip"
 SEVENZIP_VERSION = "2501"
+# dgVoodoo2 translates DirectX 8/9 (and DirectDraw) to DirectX 11, so Special K's HDR and the
+# AutoHDR addon, which need DX10+, work in older games. Pinned with its checksum.
+DGVOODOO_URL = "https://github.com/dege-diosg/dgVoodoo2/releases/download/v2.87.5/dgVoodoo2_87_5.zip"
+DGVOODOO_SHA256 = "5ffde6927f7355ca3fdd5d785b581256a8e6539fa13e395a891ade6ba1040850"
 
 # Environment variables every HDR launch gets: the set the 0.0.x/0.1.0 plugin used and that
 # is known to work on a Deck OLED (RenoDX in Wobbly Life, Against the Storm). 0.2.0-0.4.2 dropped

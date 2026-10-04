@@ -16,6 +16,7 @@ from .remote import CachedJson
 from .renodx import normalize_title
 
 MANIFEST_URL = "https://raw.githubusercontent.com/RankFTW/RHI/main/manifest.json"
+RHI_API = {"DX9": "d3d9", "DX10": "d3d10", "DX11": "d3d11", "DX12": "d3d12", "VLK": "vulkan", "OGL": "opengl"}
 
 
 def _dict(value: Any) -> dict[str, Any]:
@@ -63,6 +64,30 @@ class RhiManifest:
             clean = {str(k): str(v) for k, v in _dict(values).items() if re.fullmatch(r"[A-Za-z0-9_]+", str(k)) and re.fullmatch(r"[0-9.]+", str(v))}
             if clean:
                 entry(name)["ini"] = clean
+        # Install fixes RHI keeps for games its detection gets wrong.
+        for name, value in _dict(manifest.get("graphicsApiOverrides")).items():
+            api = RHI_API.get(str(value).split(",")[0].strip().upper())
+            if api:
+                entry(name)["api"] = api
+        for name, value in _dict(manifest.get("dllNameOverrides")).items():
+            dll = str(_dict(value).get("reshade") or "").lower()
+            if re.fullmatch(r"(dxgi|d3d9|d3d11|d3d12|d3d8|ddraw|dinput8|opengl32)\.dll", dll):
+                entry(name)["reshade_dll"] = dll[:-4]
+        for name, value in _dict(manifest.get("installPathOverrides")).items():
+            paths = [p.replace("\\", "/").strip("/") for p in str(value).split("|") if p.strip() and ".." not in p]
+            if paths:
+                entry(name)["install_dirs"] = paths
+        for name, value in _dict(manifest.get("launchExeOverrides")).items():
+            if str(value).lower().endswith(".exe") and "/" not in str(value) and "\\" not in str(value):
+                entry(name)["exe_name"] = str(value)
+        for key, arch in (("thirtyTwoBitGames", "32"), ("sixtyFourBitGames", "64")):
+            for name in manifest.get(key) or []:
+                if isinstance(name, str):
+                    entry(name)["arch"] = arch
+        for name, value in _dict(manifest.get("engineIniPathOverrides")).items():
+            paths = [p.strip() for p in str(value).split("|") if p.strip() and ".." not in p]
+            if paths:
+                entry(name)["engine_ini_dirs"] = paths
         for name, external in _dict(manifest.get("forceExternalOnly")).items():
             url = str(_dict(external).get("url") or "")
             if url.startswith("https://"):

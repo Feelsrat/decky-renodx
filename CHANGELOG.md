@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.7.0
+
+### New
+- **HDR for DirectX 8/9 games through dgVoodoo2** (for example Final Fantasy XIII). Special K's HDR and the AutoHDR addon need DirectX 10 or newer, so on DX9 games (and 32-bit DX8/DirectDraw games) they're now installed together with dgVoodoo2. dgVoodoo2 translates the game to DirectX 11, using a pinned, checksum-verified download.
+  - dgVoodoo2 is set up for DX11 output, no watermark, more video memory, and windowed mode, which gamescope scales.
+  - Special K then hooks `dxgi` instead of the `d3d9` injection that crashes in games like FF13. That's why the compatibility list's "needs delayed global injection" no longer blocks it there.
+  - This is experimental and untested on a Deck. Remove HDR takes dgVoodoo2 out again.
+- **RHI's install fixes are applied:**
+  - which executable to use, or which folder it's in (e.g. Borderlands 4's `OakGame/Binaries/Win64`);
+  - the graphics API when detection gets it wrong;
+  - the DLL name ReShade needs in some games;
+  - 32/64-bit;
+  - where Unreal games keep their `Engine.ini`.
+
 ## 0.6.0
 
 ### New: best settings set up automatically

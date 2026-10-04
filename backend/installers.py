@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import re
 import shutil
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -173,17 +173,34 @@ ENGINE_INI_HDR = {
 ENGINE_INI_OUTPUT_ONLY = {"SystemSettings": {"r.HDR.EnableHDROutput": "1"}}
 
 
-def engine_ini_path(target: Target) -> Path | None:
+def _windows_dir(prefix: Path, value: str) -> Path | None:
+    """%LOCALAPPDATA%\\X or %USERPROFILE%\\X (RHI's notation) inside the Proton prefix."""
+    user = prefix / "pfx" / "drive_c" / "users" / "steamuser"
+    value = value.replace("\\", "/")
+    for variable, base in (("%LOCALAPPDATA%", user / "AppData" / "Local"), ("%USERPROFILE%", user)):
+        if value.upper().startswith(variable):
+            return base / value[len(variable):].strip("/")
+    return None
+
+
+def engine_ini_path(target: Target, overrides: list[str] | None = None) -> Path | None:
     """<prefix>/AppData/Local/<Project>/Saved/Config/<Windows|WindowsNoEditor|WinGDK>/Engine.ini,
     where <Project> is the folder holding Binaries/ (the *-Shipping.exe's grandparent's parent)."""
     parts = target.exe_path.parts
     lowered = [part.lower() for part in parts]
-    if "binaries" not in lowered:
-        return None
-    project = parts[lowered.index("binaries") - 1]
+    project = parts[lowered.index("binaries") - 1] if "binaries" in lowered[1:] else ""
     local = target.compatdata / "pfx" / "drive_c" / "users" / "steamuser" / "AppData" / "Local"
     if not local.is_dir():
         return None  # never launched: the prefix doesn't exist yet
+    # RHI's per-game fixes: a full config folder, or the project name when it isn't the folder's.
+    folders = [d for d in (_windows_dir(target.compatdata, value) for value in overrides or []) if d]
+    if folders:
+        return next((d / "Engine.ini" for d in folders if d.is_dir()), folders[0] / "Engine.ini")
+    names = [value for value in overrides or [] if "%" not in value and "/" not in value and "\\" not in value]
+    if names:
+        project = names[0]
+    if not project:
+        raise InstallError("no Unreal project folder")
     config = local / project / "Saved" / "Config"
     platforms = ["Windows", "WindowsNoEditor", "WinGDK"]
     for name in platforms:
@@ -195,10 +212,13 @@ def engine_ini_path(target: Target) -> Path | None:
     return config / "Windows" / "Engine.ini"
 
 
-def apply_engine_ini(tx: Transaction, target: Target, mode: str) -> str:
+def apply_engine_ini(tx: Transaction, target: Target, mode: str, overrides: list[str] | None = None) -> str:
     """Add the wiki's HDR lines to the game's Engine.ini (backed up; undone on removal) and make it
     read-only, as the wiki says, so the game can't drop them. Returns a note for the user."""
-    path = engine_ini_path(target)
+    try:
+        path = engine_ini_path(target, overrides)
+    except InstallError:
+        return "Couldn't find the game's Unreal project folder; add the Engine.ini lines from the RenoDX wiki by hand."
     if path is None:
         return "Launch the game once, then Repair, to add the Engine.ini HDR settings this game needs."
     text = path.read_text(encoding="utf-8", errors="replace") if path.is_file() else ""
@@ -211,6 +231,10 @@ def apply_engine_ini(tx: Transaction, target: Target, mode: str) -> str:
 def install_reshade(tx: Transaction, target: Target, runtime: Runtime, compat: CompatDB, *, keep: dict[str, dict[str, str]] | None = None) -> dict[str, Any]:
     if target.api == "vulkan":
         raise InstallError("ReShade proxy DLLs cannot hook Vulkan games.")
+    translated = ""
+    if can_translate(target.api, target.arch):
+        # AutoHDR needs DX10+: run the game through dgVoodoo2's DX11 output.
+        target, translated = translate_to_d3d11(tx, target, runtime)
     hook = target.hook or "dxgi"
     pack = runtime.autohdr_pack()
     reshade = _reshade_host(tx, target, runtime, hook, effects=True, sections=keep)
@@ -225,9 +249,10 @@ def install_reshade(tx: Transaction, target: Target, runtime: Runtime, compat: C
     return {
         "method": "reshade",
         "dll": hook,
-        "launch": launch.spec(hook, args=compat.game_args(target.appid, "reshade")),
-        "extra": {"reshade_version": reshade["version"], "autohdr_addon": bool(modern and addon)},
-        "message": f"ReShade {reshade['version']} with AutoHDR installed as {hook}.dll." + (f" {notes[0]}" if notes else ""),
+        "launch": launch.spec(hook, args=compat.game_args(target.appid, "reshade"), extra_dlls=[translated] if translated else None),
+        "extra": {"reshade_version": reshade["version"], "autohdr_addon": bool(modern and addon), "dgvoodoo": translated},
+        "message": f"ReShade {reshade['version']} with AutoHDR installed as {hook}.dll"
+                   + (" with dgVoodoo2 (DirectX 9 → 11)" if translated else "") + "." + (f" {notes[0]}" if notes else ""),
     }
 
 
@@ -235,7 +260,7 @@ def install_reshade(tx: Transaction, target: Target, runtime: Runtime, compat: C
 
 def install_renodx(tx: Transaction, target: Target, runtime: Runtime, compat: CompatDB, addon_file: Path, mod: dict[str, Any],
                    *, auto: dict[str, dict[str, str]] | None = None, keep: dict[str, dict[str, str]] | None = None,
-                   notes: list[str] | None = None, engine_ini: str = "") -> dict[str, Any]:
+                   notes: list[str] | None = None, engine_ini: str = "", engine_ini_dirs: list[str] | None = None) -> dict[str, Any]:
     """``auto``: values chosen for this game and screen; ``keep``: the user's own settings (win);
     ``engine_ini``: 'full'/'output' to add the wiki's Unreal Engine.ini lines."""
     if target.api == "vulkan":
@@ -250,8 +275,11 @@ def install_renodx(tx: Transaction, target: Target, runtime: Runtime, compat: Co
     notes = list(notes or [])
     pending_engine_ini = ""
     if engine_ini:
-        notes.append(apply_engine_ini(tx, target, engine_ini))
-        pending_engine_ini = engine_ini if engine_ini_path(target) is None else ""
+        notes.append(apply_engine_ini(tx, target, engine_ini, engine_ini_dirs))
+        try:
+            pending_engine_ini = engine_ini if engine_ini_path(target, engine_ini_dirs) is None else ""
+        except InstallError:
+            pending_engine_ini = ""
     return {
         "method": "renodx",
         "dll": hook,
@@ -290,13 +318,51 @@ def specialk_ini(text: str, tweaks: dict[str, dict[str, str]], peak_nits: float 
     return text
 
 
+# ---------------------------------------------------------------- dgVoodoo2 (DX8/DX9 -> DX11)
+
+DGVOODOO_DLLS = {"d3d9": "D3D9.dll", "d3d8": "D3D8.dll", "ddraw": "DDraw.dll"}
+DGVOODOO_CONF = {
+    "General": {"OutputAPI": "d3d11_fl11_0", "FullScreenMode": "false"},  # windowed: gamescope scales it
+    "DirectX": {"dgVoodooWatermark": "false", "VRAM": "2048"},
+}
+
+
+def can_translate(api: str, arch: str) -> bool:
+    """dgVoodoo2 ships D3D9 for x86 and x64; D3D8 and DirectDraw for x86 only."""
+    return api == "d3d9" or (api in {"d3d8", "ddraw"} and arch == "32")
+
+
+def translate_to_d3d11(tx: Transaction, target: Target, runtime: Runtime) -> tuple[Target, str]:
+    """Install dgVoodoo2's DLL for the game's old API (configured for DX11 output), so tools that
+    need DX10+ can hook dxgi. Returns the game as a DX11 target and the DLL to override."""
+    root = runtime.dgvoodoo()
+    arch = "x64" if target.bits == "64" else "x86"
+    name = DGVOODOO_DLLS[target.api]
+    source = root / "MS" / arch / name
+    if not source.is_file():
+        raise InstallError(f"dgVoodoo2 has no {arch} {name}.")
+    dll = name.split(".")[0].lower()
+    tx.copy_file(source, target.dir / f"{dll}.dll")
+    if target.api == "ddraw" and (root / "MS" / arch / "D3DImm.dll").is_file():
+        tx.copy_file(root / "MS" / arch / "D3DImm.dll", target.dir / "d3dimm.dll")
+    conf = (root / "dgVoodoo.conf").read_text(encoding="utf-8", errors="replace")
+    for section, values in DGVOODOO_CONF.items():
+        conf = upsert_ini(conf, section, values)
+    tx.write_text(target.dir / "dgVoodoo.conf", conf.replace("\r\n", "\n").replace("\n", "\r\n"))  # keep Windows line ends
+    return replace(target, api="d3d11", hook="dxgi"), dll
+
+
 def install_specialk(tx: Transaction, target: Target, runtime: Runtime, compat: CompatDB, *, peak_nits: float | None = None) -> dict[str, Any]:
-    gate = compat.specialk_local_gate(target.appid)
+    translated = ""
+    if can_translate(target.api, target.arch):
+        # Special K's HDR needs DX10+; FF13-style games also crash with a d3d9 hook.
+        target, translated = translate_to_d3d11(tx, target, runtime)
+    gate = compat.specialk_local_gate(target.appid, translated=bool(translated))
     if not gate["available"]:
         raise InstallError(gate["reason"])
     if target.api == "vulkan":
         raise InstallError("Special K HDR does not support Vulkan games.")
-    hook = compat.specialk_hook(target.appid) or target.hook or "dxgi"
+    hook = "dxgi" if translated else compat.specialk_hook(target.appid) or target.hook or "dxgi"
     directory = target.dir
     subdir = compat.specialk_subdir(target.appid)
     if subdir:
@@ -312,8 +378,9 @@ def install_specialk(tx: Transaction, target: Target, runtime: Runtime, compat: 
     return {
         "method": "special_k",
         "dll": hook,
-        "launch": launch.spec(hook, args=compat.game_args(target.appid, "special_k")),
-        "extra": {"specialk_dir": str(directory), "peak_nits": peak_nits},
-        "message": f"Special K installed as {hook}.dll. Open its menu in game (Ctrl+Shift+Backspace) to confirm HDR.",
+        "launch": launch.spec(hook, args=compat.game_args(target.appid, "special_k"), extra_dlls=[translated] if translated else None),
+        "extra": {"specialk_dir": str(directory), "peak_nits": peak_nits, "dgvoodoo": translated},
+        "message": f"Special K installed as {hook}.dll" + (" with dgVoodoo2 (DirectX 9 → 11)" if translated else "")
+                   + ". Open its menu in game (Ctrl+Shift+Backspace) to confirm HDR.",
     }
 
