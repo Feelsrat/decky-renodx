@@ -5,6 +5,16 @@ export interface Game {
   appid: string;
   name: string;
   kind: "steam" | "shortcut";
+  /** The RenoDX wiki lists a mod for this game. */
+  renodx?: boolean;
+}
+
+export interface Badge {
+  status: string;
+  level: "on" | "renodx" | "native" | "engine" | "none";
+  label?: string;
+  detail?: string;
+  message?: string;
 }
 
 export interface Recommendation {
@@ -142,6 +152,7 @@ type Simple = { status: "success" | "error"; message: string };
 export const api = {
   listGames: callable<[], { status: string; games: Game[]; message?: string }>("list_installed_games"),
   gameState: callable<[appid: string], GameState | ErrorResult>("get_game_state"),
+  libraryBadge: callable<[appid: string, title: string], Badge>("get_library_badge"),
   install: callable<[appid: string, method: string], ChangeResult>("install_hdr_method"),
   remove: callable<[appid: string], ChangeResult>("remove_hdr"),
   repair: callable<[appid: string], ChangeResult>("repair_hdr"),

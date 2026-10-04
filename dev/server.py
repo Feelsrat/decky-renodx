@@ -41,6 +41,7 @@ WIKI = """
 
 PCGW = {
     "7000": {"native_hdr": "true", "graphics_api": "d3d12", "page_name": "Bright Lights"},
+    "9000": {"engine": "Unreal Engine 5"},
 }
 
 # Stand-in for RHI's manifest (backend/rhi.py).

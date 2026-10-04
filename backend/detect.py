@@ -192,6 +192,19 @@ def detect_engine(exe_dir: Path, install_path: Path) -> str:
     return "unknown"
 
 
+def quick_engine(install_path: Path) -> str:
+    """Unreal/Unity from a shallow look at the install folder, without picking an executable."""
+    for dirpath, depth, filenames in walk(install_path, max_depth=4):
+        names = {name.lower() for name in filenames}
+        if "unityplayer.dll" in names or "gameassembly.dll" in names or "globalgamemanagers" in names:
+            return "unity"
+        if any(name.endswith("-shipping.exe") or name.endswith(".uproject") for name in names):
+            return "unreal"
+        if depth and dirpath.name.lower() == "binaries" and (dirpath / "Win64").is_dir():
+            return "unreal"
+    return "unknown"
+
+
 def detect_api(exe: Path, exclude: set[str] | None = None) -> tuple[str, str, str]:
     """Return (api, confidence, source) from the exe's imports, then sibling DLLs."""
     exclude = exclude or set()

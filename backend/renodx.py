@@ -268,6 +268,7 @@ class RenoDXCatalog:
         self._mods: list[dict[str, Any]] | None = None
         self._fetched_at = 0.0
         self._retry_after = 0.0
+        self._by_name: tuple[list[dict[str, Any]], dict[str, dict[str, Any]]] | None = None
 
     def mods(self, refresh: bool = False) -> list[dict[str, Any]]:
         """Cached mod list; a stale cache is used when the wiki cannot be reached."""
@@ -292,6 +293,14 @@ class RenoDXCatalog:
                 raise
             log.plugin().warning("RenoDX wiki unavailable, using cached list: %s", error)
         return self._mods or []
+
+    def listed(self, titles: list[str]) -> dict[str, Any] | None:
+        """Exact-name lookup of a game-specific or engine-listed mod; fast enough for a whole library."""
+        mods = self.mods()
+        if self._by_name is None or self._by_name[0] is not mods:
+            index = {m["normalized"]: m for m in mods if m.get("match_type") in {"specific", "generic_listed"} and m.get("normalized")}
+            self._by_name = (mods, index)
+        return next((self._by_name[1][key] for key in map(normalize_title, titles) if key in self._by_name[1]), None)
 
     def clear(self) -> None:
         self._mods, self._fetched_at, self._retry_after = None, 0.0, 0.0

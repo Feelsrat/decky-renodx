@@ -109,7 +109,7 @@ class ShortcutTests(ServiceCase):
         exe = make_pe(folder / "bin" / "Indie.exe", imports=("d3d11.dll",))
         self.fake.add_shortcut("Indie Game", str(exe), str(folder), launch_options="-windowed")
         games = self.service.list_games()["games"]
-        self.assertEqual(games, [{"appid": str(0x9ABCDEF0), "name": "Indie Game", "kind": "shortcut"}])
+        self.assertEqual(games, [{"appid": str(0x9ABCDEF0), "name": "Indie Game", "kind": "shortcut", "renodx": False}])
         appid = games[0]["appid"]
         state_ = self.service.game_state(appid)
         self.assertEqual((state_["kind"], state_["exe_path"], state_["launch_options_hint"]), ("shortcut", str(exe), "-windowed"))
@@ -167,6 +167,30 @@ class DetectionTests(ServiceCase):
         state_ = self.service.game_state("6")
         self.assertTrue(state_["context"]["linux_build"])
         self.assertIn("Linux", next(o for o in state_["method_options"] if o["method"] == "reshade")["reason"])
+
+
+class BadgeTests(ServiceCase):
+    def level(self, appid, title=""):
+        return self.service.badge(appid, title)["level"]
+
+    def test_badge_levels(self):
+        self.unreal_game("1000", "Shippy")
+        self.unreal_game("2000", "Mystery Unreal Game")
+        self.unreal_game("3000", "Sand Land")
+        plain = self.fake.add_game("4000", "Plain Game", "Plain")
+        make_pe(plain / "Plain.exe", imports=("d3d11.dll",))
+        self.service.pcgw.game_data = lambda appid: {"native_hdr": "true"} if appid == "5000" else {"engine": "Unity"} if appid == "6000" else {}
+        self.assertEqual(self.level("1000"), "renodx")
+        self.assertEqual(self.level("3000"), "renodx")  # listed under the Unreal generic addon
+        self.assertEqual(self.level("2000"), "engine")
+        self.assertEqual(self.level("4000"), "none")
+        self.assertEqual(self.level("5000", "Not Installed"), "native")
+        self.assertEqual(self.level("6000"), "engine")  # engine from PCGamingWiki, even without a title
+        self.assertEqual(self.level("7000", "Shippy"), "renodx")  # not installed: matched by the library's title
+        self.assertEqual(self.service.install("1000", "reshade")["status"], "success")
+        self.assertEqual(self.level("1000"), "on")
+        marks = {game["name"]: game["renodx"] for game in self.service.list_games()["games"]}
+        self.assertEqual(marks, {"Shippy": True, "Mystery Unreal Game": False, "Sand Land": True, "Plain Game": False})
 
 
 class RenoDXTests(unittest.TestCase):

@@ -153,7 +153,7 @@ export default function HdrPanel() {
 
   const gameOptions = games.map((game) => ({
     data: game.appid,
-    label: `${game.appid === running ? "▶ " : ""}${game.name}${game.kind === "shortcut" && !/non-steam/i.test(game.name) ? " (non-Steam)" : ""}`,
+    label: `${game.appid === running ? "▶ " : ""}${game.name}${game.kind === "shortcut" && !/non-steam/i.test(game.name) ? " (non-Steam)" : ""}${game.renodx ? "  ★" : ""}`,
   }));
 
   return (

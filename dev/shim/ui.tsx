@@ -162,10 +162,15 @@ export function showModal(modal: ReactNode) {
 
 // ---------------------------------------------------------------- navigation / router
 
+export enum QuickAccessTab {
+  Decky = 999,
+}
+
 export const Navigation = {
   NavigateToExternalWeb(url: string) {
     window.open(url, "_blank");
   },
+  OpenQuickAccessMenu() {},
   Navigate() {},
   CloseSideMenus() {},
 };
@@ -181,4 +186,18 @@ export function useQuickAccessVisible() {
   const [visible] = useState(true);
   useEffect(() => undefined, []);
   return visible;
+}
+
+// ---------------------------------------------------------------- library page patching (unused in the harness)
+
+export const appDetailsClasses = { Header: "dk-app-header", InnerContainer: "dk-app-inner" } as Record<string, string>;
+export const appDetailsHeaderClasses = { TopCapsule: "dk-top-capsule" } as Record<string, string>;
+export function findInReactTree(_tree: any, _filter: (node: any) => boolean): any {
+  return null;
+}
+export function afterPatch() {
+  return { unpatch() {} };
+}
+export function createReactTreePatcher(_steps: unknown[], handler: unknown) {
+  return handler;
 }

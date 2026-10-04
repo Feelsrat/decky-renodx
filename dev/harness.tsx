@@ -47,6 +47,28 @@ function LaunchOptionsPanel() {
   );
 }
 
+/** What src/library.tsx adds to each game's library page, for every game in the fake library. */
+function LibraryPreview() {
+  const [badge, setBadge] = useState<any>(null);
+  useEffect(() => {
+    import("../src/components/LibraryBadge").then((module) => setBadge(() => module.LibraryBadge));
+  }, []);
+  const appids = ["1000", "2000", "3000", "4000", "7000", "8000", "9000"];
+  const Badge = badge;
+  return (
+    <div className="side">
+      <h3>Library page badges</h3>
+      {Badge && appids.map((appid) => (
+        <div key={appid} style={{ display: "flex", alignItems: "center", gap: 12, margin: "6px 0" }}>
+          <code style={{ width: 48 }}>{appid}</code>
+          <Badge appid={appid} inline />
+        </div>
+      ))}
+      <p className="dim">9000 is an uninstalled game that PCGamingWiki says uses Unreal.</p>
+    </div>
+  );
+}
+
 async function main() {
   const plugin = (await import("../src/index")).default as any;
   createRoot(document.getElementById("app")!).render(
@@ -55,7 +77,10 @@ async function main() {
         <div className="qam-title">{plugin.titleView}</div>
         <div className="qam-body">{plugin.content}</div>
       </div>
-      <LaunchOptionsPanel />
+      <div>
+        <LaunchOptionsPanel />
+        <LibraryPreview />
+      </div>
     </div>,
   );
 }

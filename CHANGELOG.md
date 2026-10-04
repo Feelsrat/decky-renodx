@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### New
+- **Badges on game pages.** Each game's library page shows a small badge with its HDR status. It works for games you haven't installed too. Selecting the badge opens the plugin on that game.
+  - **● HDR on**: Decky RenoDX has set HDR up.
+  - **★ RenoDX**: the RenoDX wiki lists a mod for the game ("RenoDX WIP" for one marked in progress).
+  - **◆ Native HDR**: PCGamingWiki says the game has its own HDR.
+  - **◇ RenoDX? (Unreal/Unity)**: no game-specific mod, but the game uses Unreal or Unity, so RenoDX's experimental generic addon may work. The engine comes from the game's files, or from PCGamingWiki for games you haven't installed.
+
+  Turn the badges off under Plugin → "Badges on game pages".
+- Games with a RenoDX mod are marked with ★ in the panel's game list.
+
 ## 0.3.0
 
 ### RenoDX data straight from the source

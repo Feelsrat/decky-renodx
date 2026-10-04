@@ -30,14 +30,16 @@ class MainTests(unittest.IsolatedAsyncioTestCase):
     async def test_rpc_surface(self):
         root = self.fake.add_game("10", "Game", "Game")
         make_pe(root / "Game.exe", imports=("d3d11.dll",))
-        games = await self.plugin.list_installed_games()
-        self.assertEqual(games["games"], [{"appid": "10", "name": "Game", "kind": "steam"}])
         with mock.patch.object(self.plugin.service.pcgw, "game_data", return_value={}), \
                 mock.patch.object(self.plugin.service.rhi, "game", return_value={}), \
                 mock.patch.object(self.plugin.service.renodx, "mods", return_value=[]):
+            games = await self.plugin.list_installed_games()
+            self.assertEqual(games["games"], [{"appid": "10", "name": "Game", "kind": "steam", "renodx": False}])
             state = await self.plugin.get_game_state("10")
+            badge = await self.plugin.get_library_badge("10")
         self.assertEqual(state["status"], "success", state)
         self.assertEqual(state["context"]["api"], "d3d11")
+        self.assertEqual(badge, {"status": "success", "level": "none"})
         missing = await self.plugin.get_game_state("999")
         self.assertEqual(missing["status"], "error")
 

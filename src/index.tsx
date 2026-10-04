@@ -1,13 +1,16 @@
 import { useEffect, useState } from "react";
-import { ButtonItem, ConfirmModal, Field, PanelSection, PanelSectionRow, showModal, staticClasses } from "@decky/ui";
+import { ButtonItem, ConfirmModal, Field, PanelSection, PanelSectionRow, ToggleField, showModal, staticClasses } from "@decky/ui";
 import { definePlugin, toaster } from "@decky/api";
 import { IoMdColorPalette } from "react-icons/io";
 import { api, type UpdateStatus } from "./backend";
 import HdrPanel from "./components/HdrPanel";
+import { BADGES_SETTING, badgesEnabled } from "./components/LibraryBadge";
+import { patchLibrary, unpatchLibrary } from "./library";
 
 function PluginSection() {
   const [status, setStatus] = useState<UpdateStatus>();
   const [busy, setBusy] = useState(false);
+  const [badges, setBadges] = useState(badgesEnabled());
   const [runtime, setRuntime] = useState<{ installed: boolean; components: Record<string, string | boolean> } | null>(null);
 
   const refreshRuntime = () =>
@@ -64,6 +67,21 @@ function PluginSection() {
         </ButtonItem>
       </PanelSectionRow>
       <PanelSectionRow>
+        <ToggleField
+          label="Badges on game pages"
+          description="Shows on each game's library page whether HDR is set up, a RenoDX mod exists (★), the game has its own HDR (◆), or a generic Unreal/Unity addon may work (◇)."
+          checked={badges}
+          onChange={(value) => {
+            try {
+              localStorage.setItem(BADGES_SETTING, value ? "on" : "off");
+            } catch {
+              // storage unavailable: the setting just won't stick
+            }
+            setBadges(value);
+          }}
+        />
+      </PanelSectionRow>
+      <PanelSectionRow>
         <Field focusable label="Shared downloads" description={runtimeText} />
       </PanelSectionRow>
       {runtime?.installed && (
@@ -77,15 +95,21 @@ function PluginSection() {
   );
 }
 
-export default definePlugin(() => ({
-  name: "Decky RenoDX",
-  titleView: <div className={staticClasses.Title}>Decky RenoDX</div>,
-  alwaysRender: true,
-  content: (
-    <>
-      <HdrPanel />
-      <PluginSection />
-    </>
-  ),
-  icon: <IoMdColorPalette />,
-}));
+export default definePlugin(() => {
+  const libraryPatch = patchLibrary();
+  return {
+    name: "Decky RenoDX",
+    titleView: <div className={staticClasses.Title}>Decky RenoDX</div>,
+    alwaysRender: true,
+    content: (
+      <>
+        <HdrPanel />
+        <PluginSection />
+      </>
+    ),
+    icon: <IoMdColorPalette />,
+    onDismount() {
+      unpatchLibrary(libraryPatch);
+    },
+  };
+});

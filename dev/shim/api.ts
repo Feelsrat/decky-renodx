@@ -25,4 +25,10 @@ export function definePlugin<T>(factory: () => T): T {
   return factory();
 }
 
-export function routerHook() {}
+// Steam's library routes don't exist in the harness; dev/harness.tsx renders the badge directly.
+export const routerHook = {
+  addPatch(_path: string, patch: unknown) {
+    return patch;
+  },
+  removePatch() {},
+};

@@ -55,6 +55,7 @@ class HdrService:
         self.steam = SteamLibrary(paths.home)
         self.compat = CompatDB(paths.plugin_dir / "compatibility.json", paths.compat_cache)
         self.renodx = RenoDXCatalog(paths.cache / "renodx_mods.json", lambda url: net.fetch_text(url, timeout=20))
+        self._engines: dict[str, tuple[tuple[str, str], str]] = {}
         self.rhi = rhi.RhiManifest(paths.cache / "rhi_manifest.json", lambda url: net.fetch_text(url, timeout=20))
         self.pcgw = PCGamingWiki(paths.cache / "pcgamingwiki.json", net.fetch_json)
         self.runtime = Runtime(paths)
@@ -63,14 +64,64 @@ class HdrService:
 
     # ------------------------------------------------------------ games
     def list_games(self) -> dict[str, Any]:
-        return _ok(games=[app.to_dict() for app in self.steam.games()])
+        """Installed games, each marked when the RenoDX wiki lists a mod for it (exact name)."""
+        games = [app.to_dict() for app in self.steam.games()]
+        for game in games:
+            game["renodx"] = False
+        try:
+            for game in games:
+                game["renodx"] = self.renodx.listed([game["name"], *self.rhi.game(game["name"]).get("aliases", [])]) is not None
+        except Exception as error:  # mod list unavailable: just no marks
+            log.plugin().info("No RenoDX marks for the game list: %s", error)
+        return _ok(games=games)
+
+    def badge(self, appid: str, title: str = "") -> dict[str, Any]:
+        """What the library badge shows: HDR set up, a RenoDX mod, likely via an engine addon, or native HDR."""
+        if not valid_appid(appid):
+            return _err(f"Invalid AppID: {appid}")
+        record = self.store.get(appid)
+        if record:
+            name = METHOD_LABELS.get(record["method"], record["method"])
+            return _ok(level="on", label="HDR on", detail=f"{name} is set up by Decky RenoDX.")
+        app = self.steam.app(appid)
+        title = app.name if app else title
+        match = None
+        if title:
+            fixes = self.rhi.game(title)
+            try:
+                match = rhi.apply(self.renodx.match(title, aliases=fixes.get("aliases")), fixes, title)
+            except Exception:  # mod list unavailable
+                match = None
+        if match and match.get("match_type") in {"specific", "generic_listed"}:
+            wip = match.get("status") == "in_progress"
+            return _ok(level="renodx", label="RenoDX WIP" if wip else "RenoDX",
+                       detail=f"The RenoDX wiki lists a mod{' (work in progress)' if wip else ''}: {match.get('name', title)}.")
+        wiki = {} if app and app.is_shortcut else self.pcgw.game_data(appid)
+        if str(wiki.get("native_hdr", "")).lower() in {"true", "limited", "good", "yes"}:
+            return _ok(level="native", label="Native HDR", detail="PCGamingWiki says the game has its own HDR.")
+        engine = self._engine(app) if app else "unknown"
+        if engine == "unknown":
+            engine = renodx.engine_bucket(wiki.get("engine", "")) or "unknown"
+        if engine in {"unreal", "unity"}:
+            return _ok(level="engine", label=f"RenoDX? ({engine.title()})",
+                       detail=f"No game-specific mod, but RenoDX's generic {engine.title()} addon often works (experimental).")
+        return _ok(level="none")
+
+    def _engine(self, app: SteamApp) -> str:
+        key = (str(app.install_path), app.buildid)
+        cached = self._engines.get(app.appid)
+        if cached and cached[0] == key:
+            return cached[1]
+        engine = detect.quick_engine(app.install_path) if app.install_path.is_dir() else "unknown"
+        self._engines[app.appid] = (key, engine)
+        return engine
 
     def _app(self, appid: str) -> SteamApp:
         if not valid_appid(appid):
             raise ServiceError(f"Invalid AppID: {appid}")
         app = self.steam.app(appid)
         if app is None:
-            raise ServiceError(f"AppID {appid} is not installed in any Steam library.")
+            raise ServiceError(f"AppID {appid} is not installed in any Steam library. Install the game, then set up HDR here.")
         return app
 
     def _scan(self, app: SteamApp) -> detect.GameScan:

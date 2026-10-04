@@ -3,6 +3,7 @@ import { Router } from "@decky/ui";
 import { api, type DisplayStatus, type Game, type GameState } from "./backend";
 import { readLaunchOptions, type GameRef } from "./steam";
 import { hasHdr } from "./utils/launchOptions";
+import { SELECT_EVENT } from "./components/LibraryBadge";
 
 export interface Entry {
   state?: GameState;
@@ -129,6 +130,16 @@ export function useGames() {
   useEffect(() => {
     if (appid) refresh(appid);
   }, [appid, refresh]);
+
+  // The library badge asks for its game before opening the Quick Access Menu.
+  useEffect(() => {
+    const select = (event: Event) => {
+      const id = String((event as CustomEvent).detail || "");
+      if (id) setAppid(id);
+    };
+    window.addEventListener(SELECT_EVENT, select);
+    return () => window.removeEventListener(SELECT_EVENT, select);
+  }, [setAppid]);
 
   return { games, appid, setAppid, entries, patch, refresh, loadGames, display, refreshDisplay, running, opened };
 }
