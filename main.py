@@ -107,6 +107,9 @@ class Plugin:
     async def get_library_badge(self, appid: str, title: str = "") -> dict:
         return await self._call(self.service.badge, str(appid), str(title or ""))
 
+    async def get_library_badges(self, items: list) -> dict:
+        return await self._call(self.service.badges, list(items or []))
+
     async def get_game_state(self, appid: str) -> dict:
         return await self._call(self.service.game_state, str(appid))
 

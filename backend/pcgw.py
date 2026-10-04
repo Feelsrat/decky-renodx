@@ -48,6 +48,11 @@ class PCGamingWiki:
         except OSError as error:
             log.plugin().warning("Could not write PCGamingWiki cache: %s", error)
 
+    def cached(self, appid: str) -> dict[str, Any]:
+        """What's already known about a game, without a network request."""
+        with self._lock:
+            return {**(self._get(f"game:{appid}") or {})}
+
     def clear(self) -> None:
         with self._lock:
             self._cache = {}

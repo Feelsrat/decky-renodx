@@ -8,6 +8,8 @@ import type { LaunchSpec } from "../utils/launchOptions";
 import { COLORS, Card, Notice, Small, Spin, Steps } from "./parts";
 import { ImportModal, TextModal } from "./Modals";
 import { StatusCard, methodName } from "./StatusCard";
+import { forgetBadge } from "./LibraryBadge";
+import { refreshGridBadges } from "../gridBadges";
 
 type Run = (state: GameState, label: string, action: () => Promise<ChangeResult>, mode?: "apply" | "remove") => Promise<ChangeResult | null>;
 type Simple = (label: string, action: () => Promise<{ status: string; message: string }>) => Promise<void>;
@@ -126,6 +128,8 @@ export default function HdrPanel() {
       inFlight.current.delete(id);
       patch(id, { busy: undefined });
       refresh(id);
+      forgetBadge(id);
+      refreshGridBadges(id);
     }
   };
 

@@ -155,6 +155,7 @@ export const api = {
   listGames: callable<[], { status: string; games: Game[]; message?: string }>("list_installed_games"),
   gameState: callable<[appid: string], GameState | ErrorResult>("get_game_state"),
   libraryBadge: callable<[appid: string, title: string], Badge>("get_library_badge"),
+  libraryBadges: callable<[items: { appid: string; title: string }[]], { status: string; badges: Record<string, Pick<Badge, "level" | "label">>; message?: string }>("get_library_badges"),
   install: callable<[appid: string, method: string], ChangeResult>("install_hdr_method"),
   remove: callable<[appid: string], ChangeResult>("remove_hdr"),
   repair: callable<[appid: string], ChangeResult>("repair_hdr"),

@@ -201,3 +201,9 @@ export function afterPatch() {
 export function createReactTreePatcher(_steps: unknown[], handler: unknown) {
   return handler;
 }
+
+export const libraryAssetImageClasses = { Container: "dk-capsule" } as Record<string, string>;
+// The harness page stands in for Big Picture's window.
+export function findSP(): Window {
+  return window;
+}

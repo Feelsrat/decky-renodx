@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.1
+
+### New
+- **Badges in the library grid.** Cover art tiles in the library (and Home's recent games) get a small corner icon: ● HDR set up, ★ RenoDX mod, ◆ native HDR, ◇ Unreal/Unity game where the generic addon may work. Tiles only use data the plugin already has, so ◆ appears once you've opened the game's page or panel (PCGamingWiki isn't asked about every tile). The "Library badges" switch under Plugin turns off both the tile icons and the game page badge.
+
 ## 0.4.0
 
 ### New

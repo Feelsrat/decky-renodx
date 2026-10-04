@@ -7,7 +7,7 @@ A [Decky Loader](https://decky.xyz) plugin that adds HDR to Proton games on the 
 3. **Special K**: HDR retrofit for DX10-12 games, with per-game settings from `compatibility.json`.
 4. **ReShade AutoHDR**: AutoHDR, Lilium and Pumbo shaders as a fallback.
 
-It also sets the matching Steam launch options for you, and puts a small badge on each game's library page: ★ a RenoDX mod exists, ◆ the game has native HDR, ◇ it's an Unreal/Unity game where the generic RenoDX addon may work, ● HDR is set up. The badges can be turned off under Plugin. Steam games and non-Steam games you've added to Steam are both supported.
+It also sets the matching Steam launch options for you, and marks games in the library grid and on each game's page: ★ a RenoDX mod exists, ◆ the game has native HDR, ◇ it's an Unreal/Unity game where the generic RenoDX addon may work, ● HDR is set up. The badges can be turned off under Plugin. Steam games and non-Steam games you've added to Steam are both supported.
 
 ## What it changes, and how it undoes it
 
@@ -78,6 +78,7 @@ Layout:
 | `backend/pcgw.py`, `compat.py` | PCGamingWiki (native HDR, API, engine); Special K settings from `compatibility.json` |
 | `src/components/HdrPanel.tsx` | The per-game panel |
 | `src/library.tsx`, `components/LibraryBadge.tsx` | The badge on library game pages (patches Steam's `/library/app/:appid` route, like ProtonDB Badges) |
+| `src/gridBadges.ts` | Corner icons on library tiles (watches Big Picture's page for cover art and reads the AppID from the image URL) |
 | `src/utils/launchOptions.ts` | Merging and removing launch options |
 | `dev/` | Local UI harness (see above) |
 | `compatibility.json` | Per-game Special K settings; format in `scripts/compat_db.py` |

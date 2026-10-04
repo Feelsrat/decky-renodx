@@ -6,6 +6,7 @@ import { api, type UpdateStatus } from "./backend";
 import HdrPanel from "./components/HdrPanel";
 import { BADGES_SETTING, badgesEnabled } from "./components/LibraryBadge";
 import { patchLibrary, unpatchLibrary } from "./library";
+import { startGridBadges, stopGridBadges } from "./gridBadges";
 
 function PluginSection() {
   const [status, setStatus] = useState<UpdateStatus>();
@@ -68,8 +69,8 @@ function PluginSection() {
       </PanelSectionRow>
       <PanelSectionRow>
         <ToggleField
-          label="Badges on game pages"
-          description="Shows on each game's library page whether HDR is set up, a RenoDX mod exists (★), the game has its own HDR (◆), or a generic Unreal/Unity addon may work (◇)."
+          label="Library badges"
+          description="Marks games in the library and on their pages: HDR set up (●), a RenoDX mod exists (★), the game has its own HDR (◆), or a generic Unreal/Unity addon may work (◇)."
           checked={badges}
           onChange={(value) => {
             try {
@@ -78,6 +79,8 @@ function PluginSection() {
               // storage unavailable: the setting just won't stick
             }
             setBadges(value);
+            if (value) startGridBadges();
+            else stopGridBadges();
           }}
         />
       </PanelSectionRow>
@@ -97,6 +100,7 @@ function PluginSection() {
 
 export default definePlugin(() => {
   const libraryPatch = patchLibrary();
+  if (badgesEnabled()) startGridBadges();
   return {
     name: "Decky RenoDX",
     titleView: <div className={staticClasses.Title}>Decky RenoDX</div>,
@@ -110,6 +114,7 @@ export default definePlugin(() => {
     icon: <IoMdColorPalette />,
     onDismount() {
       unpatchLibrary(libraryPatch);
+      stopGridBadges();
     },
   };
 });

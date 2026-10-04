@@ -191,6 +191,9 @@ class BadgeTests(ServiceCase):
         self.assertEqual(self.level("7000", "Shippy"), "renodx")  # not installed: matched by the library's title
         self.assertEqual(self.service.install("1000", "reshade")["status"], "success")
         self.assertEqual(self.level("1000"), "on")
+        grid = self.service.badges([{"appid": "1000"}, {"appid": "2000"}, {"appid": "5000", "title": "Not Installed"}, {"appid": "7000", "title": "Shippy"}, {"appid": "x"}])["badges"]
+        # The grid never asks PCGamingWiki; 5000's native HDR shows once the game page has looked it up.
+        self.assertEqual({appid: badge["level"] for appid, badge in grid.items()}, {"1000": "on", "2000": "engine", "5000": "none", "7000": "renodx"})
         marks = {game["name"]: game["renodx"] for game in self.service.list_games()["games"]}
         self.assertEqual(marks, {"Shippy": True, "Mystery Unreal Game": False, "Sand Land": True, "Plain Game": False})
 

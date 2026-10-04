@@ -25,6 +25,11 @@ export const BADGE_STYLES: Record<Badge["level"], { color: string; border: strin
 // Session cache: badges are cheap to recompute, but the page re-renders often.
 const cache = new Map<string, Badge>();
 
+/** Drop a game's cached badge after HDR is installed or removed. */
+export function forgetBadge(appid: string) {
+  cache.delete(appid);
+}
+
 function titleOf(appid: string): string {
   try {
     return (window as any).appStore?.GetAppOverviewByAppID?.(Number(appid))?.display_name || "";

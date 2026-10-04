@@ -83,17 +83,33 @@ class HdrService:
         """What the library badge shows: HDR set up, a RenoDX mod, likely via an engine addon, or native HDR."""
         if not valid_appid(appid):
             return _err(f"Invalid AppID: {appid}")
+        return _ok(**self._badge(appid, title, self.steam.app(appid), cached_only=False))
+
+    def badges(self, items: list[dict[str, Any]]) -> dict[str, Any]:
+        """Badges for the library grid, many at once. Only uses data already at hand
+        (no PCGamingWiki requests), so a screen of tiles stays quick."""
+        apps = {app.appid: app for app in self.steam.games()}
+        result: dict[str, dict[str, Any]] = {}
+        for item in items[:200]:
+            appid = str((item or {}).get("appid", ""))
+            if valid_appid(appid) and appid not in result:
+                badge = self._badge(appid, str(item.get("title") or ""), apps.get(appid), cached_only=True)
+                result[appid] = {"level": badge["level"], "label": badge.get("label", "")}
+        return _ok(badges=result)
+
+    def _badge(self, appid: str, title: str, app: SteamApp | None, *, cached_only: bool) -> dict[str, Any]:
         record = self.store.get(appid)
         if record:
             name = METHOD_LABELS.get(record["method"], record["method"])
-            return _ok(level="on", label="HDR on", detail=f"{name} is set up by Decky RenoDX.")
-        app = self.steam.app(appid)
+            return {"level": "on", "label": "HDR on", "detail": f"{name} is set up by Decky RenoDX."}
         title = app.name if app else title
         match = None
         fixes = self.rhi.game(title) if title else {}
         if title:
             try:
-                match = rhi.apply(self.renodx.match(title, aliases=fixes.get("aliases")), fixes, title)
+                # The grid asks for dozens at once: exact names only there; the game page also matches editions.
+                found = self.renodx.listed([title, *fixes.get("aliases", [])]) if cached_only else self.renodx.match(title, aliases=fixes.get("aliases"))
+                match = rhi.apply(found, fixes, title)
             except Exception:  # mod list unavailable
                 match = None
         if not match or match.get("match_type") not in {"specific", "generic_listed"}:
@@ -101,18 +117,21 @@ class HdrService:
             match = self.renodx_index.find("" if shortcut else appid, [title, *fixes.get("aliases", [])] if title else []) or match
         if match and match.get("match_type") in {"specific", "generic_listed"}:
             wip = match.get("status") == "in_progress"
-            return _ok(level="renodx", label="RenoDX WIP" if wip else "RenoDX",
-                       detail=f"RenoDX has a mod for this game{' (work in progress)' if wip else ''}: {match.get('name', title)}.")
-        wiki = {} if app and app.is_shortcut else self.pcgw.game_data(appid)
+            return dict(level="renodx", label="RenoDX WIP" if wip else "RenoDX",
+                        detail=f"RenoDX has a mod for this game{' (work in progress)' if wip else ''}: {match.get('name', title)}.")
+        if app and app.is_shortcut:
+            wiki = {}
+        else:
+            wiki = self.pcgw.cached(appid) if cached_only else self.pcgw.game_data(appid)
         if str(wiki.get("native_hdr", "")).lower() in {"true", "limited", "good", "yes"}:
-            return _ok(level="native", label="Native HDR", detail="PCGamingWiki says the game has its own HDR.")
+            return {"level": "native", "label": "Native HDR", "detail": "PCGamingWiki says the game has its own HDR."}
         engine = self._engine(app) if app else "unknown"
         if engine == "unknown":
             engine = renodx.engine_bucket(wiki.get("engine", "")) or "unknown"
         if engine in {"unreal", "unity"}:
-            return _ok(level="engine", label=f"RenoDX? ({engine.title()})",
-                       detail=f"No game-specific mod, but RenoDX's generic {engine.title()} addon often works (experimental).")
-        return _ok(level="none")
+            return {"level": "engine", "label": f"RenoDX? ({engine.title()})",
+                    "detail": f"No game-specific mod, but RenoDX's generic {engine.title()} addon often works (experimental)."}
+        return {"level": "none"}
 
     def _engine(self, app: SteamApp) -> str:
         key = (str(app.install_path), app.buildid)

@@ -65,6 +65,15 @@ function LibraryPreview() {
         </div>
       ))}
       <p className="dim">9000 is an uninstalled game that PCGamingWiki says uses Unreal.</p>
+      <h3>Library grid (fake tiles)</h3>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+        {appids.map((appid) => (
+          <div key={appid} className="dk-capsule" style={{ position: "relative", width: 90, height: 135, background: "#2a3a4c", borderRadius: 4, overflow: "hidden" }}>
+            <img src={`/assets/${appid}/library_600x900.jpg`} alt="" style={{ width: "100%", height: "100%", objectFit: "cover", color: "transparent" }} />
+            <div style={{ position: "absolute", bottom: 4, left: 6, fontSize: 11, color: "#9ab" }}>{appid}</div>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
