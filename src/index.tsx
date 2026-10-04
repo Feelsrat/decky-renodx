@@ -74,7 +74,9 @@ function PluginSection() {
           label="Match brightness to the screen"
           description={
             screen?.peak_nits
-              ? `${screen.name || screen.connector || "This screen"}: ${Math.round(screen.peak_nits)} nits peak (${screen.source}). New installs set RenoDX's peak brightness and Special K's HDR brightness to this; your own changes in game are kept.`
+              ? `${screen.name || screen.connector || "This screen"}: ${Math.round(screen.peak_nits)} nits peak (${screen.source})`
+                + (screen.sdr_nits ? `, SDR content ${Math.round(screen.sdr_nits)} nits (Steam's HDR settings)` : "")
+                + ". New installs set RenoDX's peak, game and UI brightness and Special K's HDR brightness to match; your own changes in game are kept."
               : "This screen doesn't report its HDR brightness, so RenoDX and Special K keep their defaults."
           }
           checked={screen?.auto_brightness ?? true}

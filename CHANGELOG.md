@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.6.0
+
+### New: best settings set up automatically
+- **Resource upgrades from the RenoDX wiki.** Notes such as "`B8G8R8A8_TYPELESS` `Output Size`" or "`Upgrade Copy Destinations` `On`" are now written into the game's RenoDX settings. About 160 wiki entries carry them.
+  - Settings marked optional or conditional ("if black screen occurs …") are left alone.
+  - Where a note offers a wider alternative ("`Output Ratio` for other percentages"), that one is used, because it covers both cases.
+  - Nothing is written when the generic RenoDX addon already has its own defaults for the game.
+- **RHI's per-game RenoDX values** (for example `Set_Path=1` for Stellar Blade) are applied too.
+- **Game and UI brightness follow Steam's "SDR content brightness"** (Settings → Display → HDR), so the game's UI matches the Steam overlay. Peak brightness still comes from the screen.
+- **Unreal Engine.ini.** For the 25 or so Unreal games whose wiki entry says "Engine.ini", the wiki's HDR lines are added to the game's `Engine.ini` in its Proton prefix.
+  - As the wiki advises, the file is made read-only, so in-game graphics settings won't save while HDR is installed.
+  - Remove HDR puts the original file back.
+  - If the game has never been launched, the panel asks for a Repair after the first launch.
+- **"Did HDR work? → Yes" remembers your RenoDX settings** for that game. A later reinstall, even after Remove HDR, starts from them. Brightness is still matched to the current screen.
+
+### Fixes
+- Repair applies the wiki's notes again. It used to reinstall from a stored summary that didn't include them.
+
 ## 0.5.1
 
 ### Fixes

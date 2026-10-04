@@ -33,6 +33,8 @@ WIKI = """
 | Name | Status | Notes |
 | --- | --- | --- |
 | Sand Land | :white_check_mark: | Use output size upgrade. |
+| Upgrade Game | :white_check_mark: | `R10G10B10A2_UNORM` `Output Size` `R11G11B10_FLOAT` `Output Ratio` (optional) |
+| Ini Game | :white_check_mark: | Engine.ini |
 """
 
 
@@ -401,6 +403,87 @@ class ScreenBrightnessTests(ServiceCase):
         ini = installers.specialk_ini("", {}, 1000.0)
         self.assertIn("scRGBLuminance_[0]=12.500", ini)
         self.assertIn("scRGBLuminance_[0]=9.000", installers.specialk_ini("", {"SpecialK.HDR": {"scRGBLuminance_[0]": "9.000"}}, 1000.0))
+
+
+class AutoSettingsTests(ServiceCase):
+    def ini(self, shipping):
+        return (shipping.parent / "ReShade.ini").read_text()
+
+    def test_wiki_note_parsing(self):
+        self.assertEqual(renodx.upgrade_settings(["`B8G8R8A8_TYPELESS` `Output Size` for 100% render resolution or `Output Ratio` for other percentages."]),
+                         {"Upgrade_B8G8R8A8_TYPELESS": "2"})
+        self.assertEqual(renodx.upgrade_settings(["`R10G10B10A2_UNORM` `Output Size` if black screen occurs while using Frame Generation."]), {})
+        self.assertEqual(renodx.upgrade_settings(["`Upgrade Copy Destinations` `Off` `R8G8R8A8_TYPELESS` `Any Size`"]),
+                         {"Upgrade_CopyDestinations": "0", "Upgrade_R8G8B8A8_TYPELESS": "3"})
+        self.assertEqual(renodx.needs_engine_ini(["Engine.ini, Only add `r.HDR.EnableHDROutput=1` to Engine.ini."]), "output")
+        self.assertEqual(renodx.needs_engine_ini(["Upgrade Path: On. Engine.ini HDR can't be used due to issues."]), "")
+
+    def test_wiki_upgrades_are_written_unless_the_addon_has_its_own(self):
+        _root, shipping = self.unreal_game("4000", "Upgrade Game")
+        self.service.install("4000", "renodx")
+        ini = self.ini(shipping)
+        self.assertIn("[renodx]\nUpgrade_R10G10B10A2_UNORM=1", ini)
+        self.assertNotIn("R11G11B10_FLOAT", ini)  # optional
+        with mock.patch.object(installers, "addon_knows_game", return_value=True):
+            self.service.install("4000", "renodx")
+        self.assertNotIn("Upgrade_R10G10B10A2_UNORM", self.ini(shipping))
+
+    def test_steam_sdr_brightness_sets_game_and_ui_nits(self):
+        _root, shipping = self.unreal_game()
+        self.service.screen = lambda: {"peak_nits": 1000.0}
+        self.service._sdr_nits = lambda: 250.0
+        result = self.service.install("1000", "renodx")
+        self.assertIn("ToneMapGameNits=250", self.ini(shipping))
+        self.assertIn("toneMapUINits=250", self.ini(shipping))
+        self.assertIn("250 nits", result["message"])
+
+    def test_engine_ini_is_added_read_only_and_removed(self):
+        _root, shipping = self.unreal_game("5000", "Ini Game")
+        prefix = self.fake.compatdata("5000")
+        config = prefix / "pfx" / "drive_c" / "users" / "steamuser" / "AppData" / "Local" / "Ini Game" / "Saved" / "Config" / "Windows"
+        config.mkdir(parents=True)
+        (config / "Engine.ini").write_text("[Core.System]\nPaths=../Content\n")
+        self.assertEqual(self.service.install("5000", "renodx")["status"], "success")
+        engine = (config / "Engine.ini").read_text()
+        self.assertIn("r.HDR.EnableHDROutput=1", engine)
+        self.assertIn("Paths=../Content", engine)
+        self.assertIn("[/Script/Engine.RendererSettings]\nr.LUT.UpdateEveryFrame=1", engine)
+        self.assertEqual((config / "Engine.ini").stat().st_mode & 0o777, 0o444)
+        self.service.uninstall("5000")
+        self.assertEqual((config / "Engine.ini").read_text(), "[Core.System]\nPaths=../Content\n")
+
+    def test_engine_ini_waits_for_the_first_launch(self):
+        self.unreal_game("5000", "Ini Game")
+        result = self.service.install("5000", "renodx")
+        self.assertIn("Launch the game once", result["message"])
+        self.assertFalse(self.service.install_status("5000")["needs_repair"])
+        local = self.fake.compatdata("5000") / "pfx" / "drive_c" / "users" / "steamuser" / "AppData" / "Local"
+        local.mkdir(parents=True)
+        self.assertTrue(self.service.install_status("5000")["needs_repair"])
+        self.service.repair("5000")
+        self.assertTrue((local / "Ini Game" / "Saved" / "Config" / "Windows" / "Engine.ini").is_file())
+
+    def test_rhi_values_are_applied(self):
+        _root, shipping = self.unreal_game()
+        self.service.rhi = rhi.RhiManifest(self.fake.paths.cache / "rhi2.json", lambda _url: json.dumps(
+            {"wikiNameOverrides": {}, "renodxIniOverrides": {"Shippy": {"Set_Path": "1", "Upgrade_R8G8B8A8_TYPELESS": "3", "Bad key": "x"}}}))
+        self.service.install("1000", "renodx")
+        ini = self.ini(shipping)
+        self.assertIn("Upgrade_R8G8B8A8_TYPELESS=3", ini)
+        self.assertIn("[renodx-preset1]\nSet_Path=1", ini)
+
+    def test_settings_that_worked_come_back_after_removal(self):
+        _root, shipping = self.unreal_game()
+        self.service.screen = lambda: {"peak_nits": 1000.0}
+        self.service.install("1000", "renodx")
+        (shipping.parent / "ReShade.ini").write_text(self.ini(shipping) + "\n[renodx-preset1]\nColorGradeSaturation=70\n")
+        self.service.set_result("1000", "worked")
+        self.service.uninstall("1000")
+        self.service.screen = lambda: {"peak_nits": 800.0}  # docked to another screen since
+        self.service.install("1000", "renodx")
+        ini = self.ini(shipping)
+        self.assertIn("ColorGradeSaturation=70", ini)
+        self.assertIn("ToneMapPeakNits=800", ini)  # brightness follows the screen, not the snapshot
 
 
 class RenoDXTests(unittest.TestCase):
@@ -855,7 +938,7 @@ class MiscTests(unittest.TestCase):
     def test_display_status_parsing(self):
         from backend import display
         out = "GAMESCOPE_DISPLAY_SUPPORTS_HDR(CARDINAL) = 1\nGAMESCOPE_DISPLAY_HDR_ENABLED(CARDINAL) = 0\n"
-        self.assertEqual(display.parse_xprop(out), {"supported": True, "enabled": False})
+        self.assertEqual(display.parse_xprop(out), {"supported": True, "enabled": False, "sdr_nits": None})
         self.assertEqual(display.parse_xprop("GAMESCOPE_DISPLAY_HDR_ENABLED:  not found."), {"supported": None, "enabled": None})
 
     def test_special_k_injection_modes(self):

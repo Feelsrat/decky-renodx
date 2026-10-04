@@ -303,6 +303,9 @@ class HdrService:
             reshade_outdated = bool(installed_reshade) and installed_reshade != ".".join(map(str, RESHADE_VERSION))
             # 0.2.0-0.4.5 hooked Unity games through opengl32 (see detect.scan_game); ReShade never saw a frame.
             wrong_hook = record.get("dll") == "opengl32" and (Path(record.get("target_dir") or "") / "UnityPlayer.dll").is_file()
+            # The game had never run, so its Engine.ini couldn't be written; it can once the prefix exists.
+            engine_ini_ready = bool((record.get("extra") or {}).get("engine_ini_pending")) and app is not None and (
+                app.compatdata / "pfx" / "drive_c" / "users" / "steamuser" / "AppData" / "Local").is_dir()
             # 0.5.0 took the Deck OLED's EDID peak (~604 nits) instead of gamescope's profile (1000).
             wrong_peak = (record.get("plugin_version") == "0.5.0" and record["method"] in {"renodx", "special_k"}
                           and self.settings.get("auto_brightness", True) is not False
@@ -312,6 +315,8 @@ class HdrService:
                 message += f" {len(missing)} installed file(s) are missing; the game was probably updated or verified."
             elif game_updated:
                 message += " The game was updated since; repair if HDR stopped working."
+            elif engine_ini_ready:
+                message += " The game has run once now; repair to add the Engine.ini HDR settings it needs."
             elif wrong_peak:
                 message += " It was set up with the wrong peak brightness for this screen; repair to fix it."
             elif wrong_hook:
@@ -332,7 +337,7 @@ class HdrService:
                 "missing": missing[:5],
                 "game_updated": game_updated,
                 "launch_outdated": launch_outdated,
-                "needs_repair": bool(missing or launch_outdated or reshade_outdated or wrong_hook or wrong_peak),
+                "needs_repair": bool(missing or launch_outdated or reshade_outdated or wrong_hook or wrong_peak or engine_ini_ready),
                 "launch": record.get("launch"),
                 "extra": record.get("extra", {}),
                 "legacy": False,
@@ -457,9 +462,16 @@ class HdrService:
             ctx["previous_reshade_ini"] = previous_ini.read_text(encoding="utf-8", errors="replace") if previous_ini.is_file() else ""
         except OSError:
             ctx["previous_reshade_ini"] = ""
-        # Peaks this plugin wrote before (0.5.0 didn't record it: that was the raw EDID value).
-        old_peak = ((old_record or {}).get("extra") or {}).get("peak_nits")
-        ctx["previous_auto_peaks"] = [float(v) for v in (old_peak, (ctx.get("screen") or {}).get("edid_peak_nits")) if v]
+        # What this plugin wrote automatically last time isn't the user's choice. 0.5.0 didn't
+        # record it; it wrote the screen's raw EDID peak.
+        previous_auto = ((old_record or {}).get("extra") or {}).get("auto_ini")
+        if previous_auto is None and (old_record or {}).get("plugin_version") == "0.5.0":
+            edid = (ctx.get("screen") or {}).get("edid_peak_nits")
+            previous_auto = installers.renodx_screen_settings(edid) if edid else {}
+        ctx["renodx_keep"] = installers.merge_sections(
+            self.settings.game(app.appid).get("renodx_settings") or {},  # saved when HDR "worked"
+            installers.carried_settings(ctx["previous_reshade_ini"], previous_auto),
+        )
         stash = transaction.Stash(old_record, logger, on_change=journal) if old_record else None
         journal()
         if stash:
@@ -605,7 +617,11 @@ class HdrService:
                 kept = Path(self._keep_addon_source(appid, source) or source)
                 scan = self._scan(app)
                 ctx = self._context(app, scan)
-                mod = extra.get("mod") or {"name": kept.name, "match_type": "manual"}
+                mod = dict(extra.get("mod") or {"name": kept.name, "match_type": "manual"})
+                current = ctx.get("renodx_match") or {}
+                if current.get("name") == mod.get("name"):
+                    # Records from before 0.6 didn't keep the wiki notes; take today's.
+                    mod.update({key: current[key] for key in ("notes", "engine_bucket", "match_type") if key in current})
                 return self._install_plan(app, scan, ctx, ["renodx"], explicit=True, renodx_file=kept, renodx_mod=mod)
         if method == "special_k_delayed":
             return _err("Special K Delayed is no longer supported. Remove HDR, then pick another method.")
@@ -648,14 +664,49 @@ class HdrService:
             if not mod:
                 raise InstallError("No RenoDX mod matched this game.")
             addon = renodx_file or self._download_addon(mod, target)
+            auto, notes, engine_ini = self._renodx_auto(target, ctx, mod, addon)
             return installers.install_renodx(tx, target, self.runtime, self.compat, addon, mod,
-                                             peak_nits=self._peak_nits(ctx), previous_ini=ctx.get("previous_reshade_ini", ""),
-                                             previous_auto=ctx.get("previous_auto_peaks", []))
+                                             auto=auto, keep=ctx.get("renodx_keep"), notes=notes, engine_ini=engine_ini)
         if method == "special_k":
             return installers.install_specialk(tx, target, self.runtime, self.compat, peak_nits=self._peak_nits(ctx))
         if method == "reshade":
-            return installers.install_reshade(tx, target, self.runtime, self.compat, previous_ini=ctx.get("previous_reshade_ini", ""))
+            return installers.install_reshade(tx, target, self.runtime, self.compat, keep=ctx.get("renodx_keep"))
         raise InstallError(f"Unhandled method {method}")
+
+    def _renodx_auto(self, target: Target, ctx: dict[str, Any], mod: dict[str, Any], addon: Path) -> tuple[dict[str, dict[str, str]], list[str], str]:
+        """Settings worked out for this game and screen: brightness, the wiki's resource upgrades,
+        RHI's per-game values, and whether the Unreal Engine.ini lines are needed."""
+        notes: list[str] = []
+        peak, sdr = self._peak_nits(ctx), self._sdr_nits()
+        screen = installers.renodx_screen_settings(peak, sdr)
+        if peak:
+            notes.append(f"Peak brightness set to {peak:g} nits" + (f", game and UI brightness to {sdr:g} nits" if sdr else "") + " for this screen.")
+        wiki_notes = list(mod.get("notes") or [])
+        upgrades: dict[str, str] = {}
+        engine_ini = ""
+        if mod.get("match_type") == "generic_listed":
+            # The generic addons carry their own tuned defaults for some games; don't override those.
+            if not installers.addon_knows_game(addon, [target.exe_path.name, target.title]):
+                upgrades = renodx.upgrade_settings(wiki_notes)
+            if renodx.engine_bucket(str(mod.get("engine_bucket") or "")) == "unreal":
+                engine_ini = renodx.needs_engine_ini(wiki_notes)
+        rhi_ini = self.rhi.game(target.title).get("ini", {})
+        globals_ = {k: v for k, v in {**upgrades, **rhi_ini}.items()}
+        preset = {k: v for k, v in rhi_ini.items() if not k.startswith("Upgrade_")}
+        if upgrades or rhi_ini:
+            notes.append(f"Applied {len(upgrades) + len(rhi_ini)} RenoDX setting(s) recommended for this game.")
+        auto = installers.merge_sections(screen, {"renodx": globals_}, {"renodx-preset1": preset})
+        return auto, notes, engine_ini
+
+    def _sdr_nits(self) -> float | None:
+        """Steam's "SDR content brightness" (HDR settings), when auto brightness is on and Steam set it."""
+        if self.settings.get("auto_brightness", True) is False:
+            return None
+        try:
+            nits = display.hdr_status(self.paths.user, str(self.paths.home)).get("sdr_nits")
+        except Exception:
+            return None
+        return float(nits) if nits else None
 
     def _peak_nits(self, ctx: dict[str, Any]) -> float | None:
         """The screen's HDR peak, unless the user turned automatic brightness off."""
@@ -665,7 +716,12 @@ class HdrService:
         return float(peak) if peak and 100 <= float(peak) <= 10000 else None
 
     def screen_status(self) -> dict[str, Any]:
-        return _ok(**self.screen(), auto_brightness=self.settings.get("auto_brightness", True) is not False)
+        enabled = self.settings.get("auto_brightness", True) is not False
+        try:
+            sdr = display.hdr_status(self.paths.user, str(self.paths.home)).get("sdr_nits")
+        except Exception:
+            sdr = None
+        return _ok(**self.screen(), sdr_nits=sdr, auto_brightness=enabled)
 
     def set_auto_brightness(self, enabled: bool) -> dict[str, Any]:
         self.settings.set("auto_brightness", bool(enabled))
@@ -772,6 +828,17 @@ class HdrService:
         self.settings.set_game(appid, "result", {"method": method, "result": result} if result else None)
         if method.startswith("special_k") and result:
             self.settings.set_game(appid, "specialk_verified", result == "worked")
+        if method in {"renodx", "reshade"} and result == "worked":
+            # Keep the RenoDX settings that worked, so a later reinstall starts from them.
+            ini = Path(record.get("target_dir") or "") / "ReShade.ini"
+            try:
+                # Only what the user set: automatic values (brightness for the current screen) are redone each install.
+                saved = installers.carried_settings(ini.read_text(encoding="utf-8", errors="replace"),
+                                                    (record.get("extra") or {}).get("auto_ini")) if ini.is_file() else {}
+            except OSError:
+                saved = {}
+            if saved:
+                self.settings.set_game(appid, "renodx_settings", saved)
         return _ok(message="Thanks! Noted." if result == "worked" else "Noted." if result else "Cleared.")
 
     def set_specialk_verified(self, appid: str, verified: bool) -> dict[str, Any]:

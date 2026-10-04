@@ -7,7 +7,7 @@ A [Decky Loader](https://decky.xyz) plugin that adds HDR to Proton games on the 
 3. **Special K**: HDR retrofit for DX10-12 games, with per-game settings from `compatibility.json`.
 4. **ReShade AutoHDR**: AutoHDR, Lilium and Pumbo shaders as a fallback.
 
-It also sets the matching Steam launch options for you, and marks games in the library grid and on each game's page: ★ a RenoDX mod exists, ◆ the game has native HDR, ◇ it's an Unreal/Unity game where the generic RenoDX addon may work, ● HDR is set up. The badges can be turned off under Plugin. Steam games and non-Steam games you've added to Steam are both supported.
+It also pre-configures RenoDX for the game and your screen (peak brightness from the screen, game/UI brightness from Steam's SDR brightness setting, the wiki's resource upgrades and Unreal `Engine.ini` lines), sets the matching Steam launch options for you, and marks games in the library grid and on each game's page: ★ a RenoDX mod exists, ◆ the game has native HDR, ◇ it's an Unreal/Unity game where the generic RenoDX addon may work, ● HDR is set up. The badges can be turned off under Plugin. Steam games and non-Steam games you've added to Steam are both supported.
 
 ## What it changes, and how it undoes it
 

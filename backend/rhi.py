@@ -59,6 +59,10 @@ class RhiManifest:
             text = _for_deck(_dict(note).get("notes", ""), _dict(note).get("notesUrl", ""))
             if text:
                 entry(name)["warnings"].append(text)
+        for name, values in _dict(manifest.get("renodxIniOverrides")).items():
+            clean = {str(k): str(v) for k, v in _dict(values).items() if re.fullmatch(r"[A-Za-z0-9_]+", str(k)) and re.fullmatch(r"[0-9.]+", str(v))}
+            if clean:
+                entry(name)["ini"] = clean
         for name, external in _dict(manifest.get("forceExternalOnly")).items():
             url = str(_dict(external).get("url") or "")
             if url.startswith("https://"):

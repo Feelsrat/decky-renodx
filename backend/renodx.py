@@ -352,3 +352,55 @@ class RenoDXCatalog:
         generic = next((m for m in mods if m.get("match_type") == "generic_engine" and m.get("engine_bucket") == bucket), None)
         generic = generic or generic_fallback(bucket)
         return {**generic, "score": 62, "experimental": True} if generic else None
+
+
+# ---------------------------------------------------------------- settings from wiki notes
+
+UPGRADE_MODES = {"off": 0, "output size": 1, "output ratio": 2, "any size": 3}
+_FORMAT = re.compile(r"^[A-Z][A-Z0-9]*_[A-Z0-9_]+$")
+FORMAT_TYPOS = {"R8G8R8A8_TYPELESS": "R8G8B8A8_TYPELESS"}  # as written in a wiki note
+
+
+def upgrade_settings(notes: list[str]) -> dict[str, str]:
+    """RenoDX resource-upgrade settings named in wiki notes, as ReShade.ini keys.
+
+    Notes look like "`B8G8R8A8_TYPELESS` `Output Size`" or "`Upgrade Copy Destinations` `On`".
+    Pairs marked optional or conditional ("if black screen occurs ...") are left alone. When a
+    note offers a wider alternative ("`Output Size` for 100% render resolution or `Output Ratio`
+    for other percentages"), the wider one is used: it covers both cases.
+    """
+    result: dict[str, str] = {}
+    for note in notes or []:
+        tokens = [(m.group(1).strip(), m.end()) for m in re.finditer(r"`([^`]+)`", note)]
+        last_key = ""
+        i = 0
+        while i < len(tokens):
+            text, end = tokens[i]
+            nxt = tokens[i + 1][0] if i + 1 < len(tokens) else ""
+            tail = note[tokens[i + 1][1]:].split("`", 1)[0].lower() if i + 1 < len(tokens) else ""
+            if (_FORMAT.match(text) or text.lower() == "upgrade copy destinations") and (nxt.lower() in UPGRADE_MODES or nxt.lower() in {"on", "off"}):
+                key = "Upgrade_CopyDestinations" if text.lower() == "upgrade copy destinations" else f"Upgrade_{FORMAT_TYPOS.get(text, text)}"
+                value = {"on": 1, "off": 0}.get(nxt.lower(), UPGRADE_MODES.get(nxt.lower()))
+                if "optional" in tail or re.search(r"\bif\b", tail):
+                    last_key = ""
+                else:
+                    result[key] = str(value)
+                    last_key = key
+                i += 2
+                continue
+            if text.lower() in UPGRADE_MODES and last_key and last_key != "Upgrade_CopyDestinations":
+                # A bare mode after a pair is an alternative for the same format: keep the wider one.
+                result[last_key] = str(max(int(result[last_key]), UPGRADE_MODES[text.lower()]))
+            i += 1
+    return result
+
+
+def needs_engine_ini(notes: list[str]) -> str:
+    """'full' when a note asks for the wiki's Engine.ini block, 'output' for "only add
+    r.HDR.EnableHDROutput=1", '' otherwise (including notes that warn against it)."""
+    for note in notes or []:
+        lower = note.lower()
+        if not lower.startswith("engine.ini"):
+            continue
+        return "output" if "only add" in lower and "enablehdroutput" in lower else "full"
+    return ""

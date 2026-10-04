@@ -15,6 +15,8 @@ export interface ScreenStatus {
   connector?: string;
   peak_nits?: number | null;
   avg_nits?: number | null;
+  /** Steam's "SDR content brightness" (HDR settings), when Steam has set it. */
+  sdr_nits?: number | null;
   source?: string;
   auto_brightness?: boolean;
   message?: string;

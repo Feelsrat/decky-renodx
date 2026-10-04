@@ -77,28 +77,63 @@ def ini_sections(text: str, prefix: str) -> dict[str, dict[str, str]]:
     return sections
 
 
-def renodx_screen_settings(peak_nits: float | None) -> dict[str, dict[str, str]]:
-    """Starting RenoDX values for this screen. Mods spell the key differently and ReShade's
+def renodx_screen_settings(peak_nits: float | None, sdr_nits: float | None = None) -> dict[str, dict[str, str]]:
+    """Starting RenoDX values for this screen. Mods spell keys differently and ReShade's
     config lookup is case-sensitive, so both spellings are written; unused keys are ignored."""
-    if not peak_nits:
-        return {}
-    value = f"{float(peak_nits):g}"
-    return {"renodx-preset1": {"ToneMapPeakNits": value, "toneMapPeakNits": value}}
+    values: dict[str, str] = {}
+    if peak_nits:
+        values.update(ToneMapPeakNits=f"{float(peak_nits):g}", toneMapPeakNits=f"{float(peak_nits):g}")
+    if sdr_nits:
+        nits = f"{float(sdr_nits):g}"
+        values.update(ToneMapGameNits=nits, toneMapGameNits=nits, ToneMapUINits=nits, toneMapUINits=nits)
+    return {"renodx-preset1": values} if values else {}
 
 
-PEAK_KEYS = {"ToneMapPeakNits", "toneMapPeakNits"}
+def addon_knows_game(addon: Path, names: list[str]) -> bool:
+    """Whether a (generic) RenoDX addon names this game itself: its built-in per-game defaults
+    are keyed by exe file or product name, stored as plain strings in the DLL."""
+    wanted = [name.encode() for name in names if name and len(name) >= 6]
+    if not wanted:
+        return False
+    try:
+        with open(addon, "rb") as handle:
+            data = handle.read()
+    except OSError:
+        return False
+    return any(name in data for name in wanted)
 
 
-def _same_number(a: str, b: Any) -> bool:
+def merge_sections(*layers: dict[str, dict[str, str]]) -> dict[str, dict[str, str]]:
+    merged: dict[str, dict[str, str]] = {}
+    for layer in layers:
+        for section, values in (layer or {}).items():
+            merged.setdefault(section, {}).update({str(k): str(v) for k, v in values.items()})
+    return {section: values for section, values in merged.items() if values}
+
+
+def _same_value(a: Any, b: Any) -> bool:
     try:
         return abs(float(a) - float(b)) < 0.05
     except (TypeError, ValueError):
-        return False
+        return str(a).strip() == str(b).strip()
+
+
+def carried_settings(previous_ini: str, previous_auto: dict[str, dict[str, str]] | None) -> dict[str, dict[str, str]]:
+    """RenoDX settings from the old ReShade.ini that the user chose: values equal to what
+    this plugin wrote automatically last time are dropped, so new automatic values apply."""
+    auto = previous_auto or {}
+    kept: dict[str, dict[str, str]] = {}
+    for section, values in ini_sections(previous_ini, "renodx").items():
+        mine = auto.get(section, {})
+        values = {k: v for k, v in values.items() if not (k in mine and _same_value(v, mine[k]))}
+        if values:
+            kept[section] = values
+    return kept
 
 
 def _reshade_host(tx: Transaction, target: Target, runtime: Runtime, hook: str, *, effects: bool,
-                  sections: dict[str, dict[str, str]] | None = None, previous_ini: str = "",
-                  previous_auto: list[float] | None = None) -> dict[str, Any]:
+                  sections: dict[str, dict[str, str]] | None = None) -> dict[str, Any]:
+    """ReShade as ``hook``.dll plus ReShade.ini; ``sections`` are written case-sensitively."""
     reshade = runtime.reshade()
     dll_source = reshade["dll"][target.bits]
     if not dll_source.is_file():
@@ -123,23 +158,62 @@ def _reshade_host(tx: Transaction, target: Target, runtime: Runtime, hook: str, 
     ini = upsert_ini(ini, "OVERLAY", {"TutorialProgress": "4"})
     for section, values in (sections or {}).items():
         ini = upsert_ini(ini, section, values, case_sensitive=True)
-    # Settings the user changed in the RenoDX tab win over our defaults and survive a reinstall.
-    for section, values in ini_sections(previous_ini, "renodx").items():
-        # A peak this plugin wrote earlier isn't a user choice: let the new value replace it.
-        values = {key: value for key, value in values.items()
-                  if not (key in PEAK_KEYS and any(_same_number(value, auto) for auto in previous_auto or []))}
-        if values:
-            ini = upsert_ini(ini, section, values, case_sensitive=True)
     tx.write_text(target.dir / "ReShade.ini", ini)
     return reshade
 
 
-def install_reshade(tx: Transaction, target: Target, runtime: Runtime, compat: CompatDB, *, previous_ini: str = "") -> dict[str, Any]:
+# The RenoDX wiki's Engine.ini block for the generic Unreal mod ("Engine.ini" in a game's notes).
+ENGINE_INI_HDR = {
+    "SystemSettings": {
+        "r.AllowHDR": "1", "r.HDR.EnableHDROutput": "1", "r.HDR.Display.OutputDevice": "3",
+        "r.HDR.Display.ColorGamut": "2", "r.HDR.UI.CompositeMode": "1",
+    },
+    "/Script/Engine.RendererSettings": {"r.LUT.UpdateEveryFrame": "1"},
+}
+ENGINE_INI_OUTPUT_ONLY = {"SystemSettings": {"r.HDR.EnableHDROutput": "1"}}
+
+
+def engine_ini_path(target: Target) -> Path | None:
+    """<prefix>/AppData/Local/<Project>/Saved/Config/<Windows|WindowsNoEditor|WinGDK>/Engine.ini,
+    where <Project> is the folder holding Binaries/ (the *-Shipping.exe's grandparent's parent)."""
+    parts = target.exe_path.parts
+    lowered = [part.lower() for part in parts]
+    if "binaries" not in lowered:
+        return None
+    project = parts[lowered.index("binaries") - 1]
+    local = target.compatdata / "pfx" / "drive_c" / "users" / "steamuser" / "AppData" / "Local"
+    if not local.is_dir():
+        return None  # never launched: the prefix doesn't exist yet
+    config = local / project / "Saved" / "Config"
+    platforms = ["Windows", "WindowsNoEditor", "WinGDK"]
+    for name in platforms:
+        if (config / name / "Engine.ini").is_file():
+            return config / name / "Engine.ini"
+    for name in platforms:
+        if (config / name).is_dir():
+            return config / name / "Engine.ini"
+    return config / "Windows" / "Engine.ini"
+
+
+def apply_engine_ini(tx: Transaction, target: Target, mode: str) -> str:
+    """Add the wiki's HDR lines to the game's Engine.ini (backed up; undone on removal) and make it
+    read-only, as the wiki says, so the game can't drop them. Returns a note for the user."""
+    path = engine_ini_path(target)
+    if path is None:
+        return "Launch the game once, then Repair, to add the Engine.ini HDR settings this game needs."
+    text = path.read_text(encoding="utf-8", errors="replace") if path.is_file() else ""
+    for section, values in (ENGINE_INI_OUTPUT_ONLY if mode == "output" else ENGINE_INI_HDR).items():
+        text = upsert_ini(text, section, values)
+    tx.write_text(path, text, mode=0o444)
+    return "Added the Engine.ini HDR settings this game needs."
+
+
+def install_reshade(tx: Transaction, target: Target, runtime: Runtime, compat: CompatDB, *, keep: dict[str, dict[str, str]] | None = None) -> dict[str, Any]:
     if target.api == "vulkan":
         raise InstallError("ReShade proxy DLLs cannot hook Vulkan games.")
     hook = target.hook or "dxgi"
     pack = runtime.autohdr_pack()
-    reshade = _reshade_host(tx, target, runtime, hook, effects=True, previous_ini=previous_ini)
+    reshade = _reshade_host(tx, target, runtime, hook, effects=True, sections=keep)
     modern = hook in AUTOHDR_HOOKS
     ignore = None if modern else shutil.ignore_patterns("lilium*", "AdvancedAutoHDR.fx", "ConvertColorSpace.fx")
     tx.copy_tree(pack["shaders"], target.dir / "ReShade_shaders", ignore=ignore)
@@ -160,29 +234,37 @@ def install_reshade(tx: Transaction, target: Target, runtime: Runtime, compat: C
 # ---------------------------------------------------------------- RenoDX
 
 def install_renodx(tx: Transaction, target: Target, runtime: Runtime, compat: CompatDB, addon_file: Path, mod: dict[str, Any],
-                   *, peak_nits: float | None = None, previous_ini: str = "", previous_auto: list[float] | None = None) -> dict[str, Any]:
+                   *, auto: dict[str, dict[str, str]] | None = None, keep: dict[str, dict[str, str]] | None = None,
+                   notes: list[str] | None = None, engine_ini: str = "") -> dict[str, Any]:
+    """``auto``: values chosen for this game and screen; ``keep``: the user's own settings (win);
+    ``engine_ini``: 'full'/'output' to add the wiki's Unreal Engine.ini lines."""
     if target.api == "vulkan":
         raise InstallError("This game uses Vulkan; RenoDX through a ReShade proxy DLL cannot hook it.")
     addon_bits = "32" if addon_file.name.lower().endswith(".addon32") else "64"
     if target.arch in {"32", "64"} and addon_bits != target.arch:
         raise InstallError(f"{addon_file.name} is a {addon_bits}-bit addon but the game is {target.arch}-bit.")
     hook = target.hook or "dxgi"
-    reshade = _reshade_host(tx, target, runtime, hook, effects=False, sections=renodx_screen_settings(peak_nits),
-                            previous_ini=previous_ini, previous_auto=previous_auto)
+    reshade = _reshade_host(tx, target, runtime, hook, effects=False, sections=merge_sections(auto or {}, keep or {}))
     tx.write_text(target.dir / "ReShadePreset.ini", "Techniques=\nTechniqueSorting=\n")
     addon_target = tx.copy_file(addon_file, target.dir / addon_file.name)
+    notes = list(notes or [])
+    pending_engine_ini = ""
+    if engine_ini:
+        notes.append(apply_engine_ini(tx, target, engine_ini))
+        pending_engine_ini = engine_ini if engine_ini_path(target) is None else ""
     return {
         "method": "renodx",
         "dll": hook,
         "launch": launch.spec(hook, args=compat.game_args(target.appid, "renodx")),
-        "extra": {"addon": str(addon_target), "mod": _mod_summary(mod), "reshade_version": reshade["version"], "peak_nits": peak_nits},
+        "extra": {"addon": str(addon_target), "mod": _mod_summary(mod), "reshade_version": reshade["version"], "auto_ini": auto or {},
+                  "engine_ini_pending": pending_engine_ini},
         "message": f"RenoDX installed ({mod.get('name') or addon_file.name}) with ReShade {reshade['version']} as {hook}.dll."
-                   + (f" Peak brightness set to {float(peak_nits):g} nits for this screen." if peak_nits else ""),
+                   + (" " + " ".join(notes) if notes else ""),
     }
 
 
 def _mod_summary(mod: dict[str, Any]) -> dict[str, Any]:
-    keys = ("name", "status", "match_type", "addon_url", "manual_url", "source_type", "bitness", "imported_from")
+    keys = ("name", "status", "match_type", "addon_url", "manual_url", "source_type", "bitness", "imported_from", "notes", "engine_bucket")
     return {key: mod[key] for key in keys if key in mod}
 
 

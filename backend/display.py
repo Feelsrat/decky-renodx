@@ -10,20 +10,30 @@ import glob
 import os
 import re
 import shutil
+import struct
 import subprocess
 from typing import Any
 
 from . import net
 
 ATOMS = {"supported": "GAMESCOPE_DISPLAY_SUPPORTS_HDR", "enabled": "GAMESCOPE_DISPLAY_HDR_ENABLED"}
+# Steam's "SDR content brightness" slider (HDR settings), stored by Steam as a float's bits.
+SDR_ATOM = "GAMESCOPE_SDR_ON_HDR_CONTENT_BRIGHTNESS"
+GAMESCOPE_DEFAULT_SDR_NITS = 203.0
 
 
-def parse_xprop(output: str) -> dict[str, bool | None]:
-    result: dict[str, bool | None] = {key: None for key in ATOMS}
+def parse_xprop(output: str) -> dict[str, Any]:
+    result: dict[str, Any] = {key: None for key in ATOMS}
     for key, atom in ATOMS.items():
         match = re.search(rf"^{atom}\(CARDINAL\) = (\d+)", output, re.M)
         if match:
             result[key] = match.group(1) != "0"
+    match = re.search(rf"^{SDR_ATOM}\(CARDINAL\) = (\d+)", output, re.M)
+    if match:
+        nits = struct.unpack("<f", struct.pack("<I", int(match.group(1)) & 0xFFFFFFFF))[0]
+        result["sdr_nits"] = round(nits, 1) if 50 <= nits <= 1000 else None
+    elif result["supported"] is not None:
+        result["sdr_nits"] = None  # Steam hasn't set it: gamescope uses GAMESCOPE_DEFAULT_SDR_NITS
     return result
 
 
@@ -49,7 +59,7 @@ def hdr_status(user: str, home: str = "") -> dict[str, Any]:
             else:
                 env.pop("XAUTHORITY", None)
             try:
-                result = subprocess.run([xprop, "-root", *ATOMS.values()], capture_output=True, text=True, timeout=3, env=env)
+                result = subprocess.run([xprop, "-root", *ATOMS.values(), SDR_ATOM], capture_output=True, text=True, timeout=3, env=env)
             except (OSError, subprocess.TimeoutExpired):
                 continue
             status = parse_xprop(result.stdout)
