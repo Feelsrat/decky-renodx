@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.0
 
 ### New
 - **Badges on game pages.** Each game's library page shows a small badge with its HDR status. It works for games you haven't installed too. Selecting the badge opens the plugin on that game.
