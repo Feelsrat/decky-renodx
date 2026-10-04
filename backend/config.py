@@ -27,14 +27,15 @@ PUMBO_AUTOHDR_ZIP_URL = "https://github.com/Filoppi/PumboAutoHDR/archive/refs/he
 AUTOHDR_ADDON_ZIP_URL = "https://github.com/MajorPainTheCactus/AutoHDR-ReShade/archive/refs/heads/main.zip"
 SEVENZIP_VERSION = "2501"
 
-# Environment variables every HDR launch gets. Deliberately absent:
-# - PROTON_LOG: writes a multi-MB log on every launch.
-# - ENABLE_HDR_WSI: only for the desktop VK_hdr_layer; under gamescope it can wash colours out.
-# - ENABLE_GAMESCOPE_WSI: Game Mode already enables it; forcing it can crash 32-bit games on
-#   some gamescope builds (ValveSoftware/gamescope#1718).
+# Environment variables every HDR launch gets: the set the 0.0.x/0.1.0 plugin used and that
+# is known to work on a Deck OLED (RenoDX in Wobbly Life, Against the Storm). 0.2.0-0.4.2 dropped
+# the two WSI switches on untested theory and HDR stopped turning on; don't remove them again
+# without testing on a device. PROTON_LOG stays out: it writes a multi-MB log on every launch.
 HDR_ENV = {
     "PROTON_ENABLE_HDR": "1",
     "DXVK_HDR": "1",
+    "ENABLE_HDR_WSI": "1",
+    "ENABLE_GAMESCOPE_WSI": "1",
 }
 
 STATE_DIR_NAME = ".decky-renodx"  # per-directory backups/stash next to game files

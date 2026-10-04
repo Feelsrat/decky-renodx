@@ -3,8 +3,8 @@ import { ButtonItem, ConfirmModal, DialogButton, DropdownItem, Focusable, Naviga
 import { toaster } from "@decky/api";
 import { api, type ChangeResult, type GameState, type ManualDownload, type MethodOption, type Recommendation } from "../backend";
 import { EMPTY, gameRef, useGames } from "../state";
-import { updateLaunchOptions } from "../steam";
-import type { LaunchSpec } from "../utils/launchOptions";
+import { readLaunchOptions, updateLaunchOptions } from "../steam";
+import { hasHdr, type LaunchSpec } from "../utils/launchOptions";
 import { COLORS, Card, Notice, Small, Spin, Steps } from "./parts";
 import { ImportModal, TextModal } from "./Modals";
 import { StatusCard, methodName } from "./StatusCard";
@@ -524,11 +524,21 @@ function Advanced({ state, busy, simple, run }: { state: GameState; busy: boolea
 
 async function viewLogs(state: GameState) {
   try {
-    const result = await api.logs(state.appid);
+    const [result, launchOptions] = await Promise.all([api.logs(state.appid), readLaunchOptions(gameRef(state)).catch(() => null)]);
+    const check = [
+      ...(result.checks || []),
+      "",
+      `Steam launch options: ${launchOptions === null ? "(couldn't read them)" : launchOptions || "(none)"}`,
+      state.install.launch && launchOptions !== null && !hasHdr(launchOptions, state.install.launch)
+        ? "✗ They don't contain this install's HDR options: use \"Add launch options\" on the status card."
+        : "",
+    ].filter((line, index, all) => line || all[index - 1]).join("\n");
     showModal(
       <TextModal
         title={`Logs: ${state.title}`}
         tabs={[
+          { title: "Check", content: check },
+          { title: "ReShade", content: result.reshade_log || (result.reshade_log_path ? `No ReShade.log at ${result.reshade_log_path} yet: ReShade hasn't run in this game.` : "This method doesn't use ReShade.") },
           { title: "Plugin", content: result.plugin_log || "Nothing logged for this game yet." },
           { title: "Proton", content: result.proton_log || `No Proton log at ${result.proton_log_path}. Add PROTON_LOG=1 to the launch options and launch once to create one.` },
         ]}

@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { hasHdr, mergeHdr, preexisting, stripHdr, tokenize, type LaunchSpec } from "../src/utils/launchOptions.ts";
 
-const ENV = { PROTON_ENABLE_HDR: "1", DXVK_HDR: "1" };
-const HDR_PREFIX = "PROTON_ENABLE_HDR=1 DXVK_HDR=1";
+const ENV = { PROTON_ENABLE_HDR: "1", DXVK_HDR: "1", ENABLE_HDR_WSI: "1", ENABLE_GAMESCOPE_WSI: "1" };
+const HDR_PREFIX = "PROTON_ENABLE_HDR=1 DXVK_HDR=1 ENABLE_HDR_WSI=1 ENABLE_GAMESCOPE_WSI=1";
 const reshade: LaunchSpec = { env: ENV, dll_overrides: { dxgi: "n,b" }, args: [], wrapper: [] };
 const withArgs: LaunchSpec = { env: ENV, dll_overrides: { d3d9: "n,b" }, args: ["-dx11"], wrapper: [] };
 const delayed: LaunchSpec = {
@@ -90,10 +90,16 @@ test("legacy 0.0.x options are cleaned up", () => {
   assert.equal(stripHdr(legacyDelayed), "");
 });
 
-test("0.1.0 installs (four env vars) are replaced cleanly", () => {
-  const old: LaunchSpec = { env: { ...ENV, ENABLE_HDR_WSI: "1", ENABLE_GAMESCOPE_WSI: "1" }, dll_overrides: { dxgi: "n,b" }, args: [], wrapper: [] };
-  const v010 = mergeHdr("gamemoderun %command%", old);
-  assert.equal(mergeHdr(v010, reshade, [old]), `${HDR_PREFIX} WINEDLLOVERRIDES="dxgi=n,b" gamemoderun %command%`);
+test("0.2.x installs (two env vars) are replaced cleanly", () => {
+  const old: LaunchSpec = { env: { PROTON_ENABLE_HDR: "1", DXVK_HDR: "1" }, dll_overrides: { dxgi: "n,b" }, args: [], wrapper: [] };
+  const v020 = mergeHdr("gamemoderun %command%", old);
+  assert.equal(mergeHdr(v020, reshade, [old]), `${HDR_PREFIX} WINEDLLOVERRIDES="dxgi=n,b" gamemoderun %command%`);
+});
+
+test("the user's own value for one of our variables wins", () => {
+  const merged = mergeHdr("ENABLE_GAMESCOPE_WSI=0 %command%", reshade);
+  assert.equal(merged, 'PROTON_ENABLE_HDR=1 DXVK_HDR=1 ENABLE_HDR_WSI=1 WINEDLLOVERRIDES="dxgi=n,b" ENABLE_GAMESCOPE_WSI=0 %command%');
+  assert.ok(hasHdr(merged, reshade));
 });
 
 test("the user's own ENABLE_GAMESCOPE_WSI=0 workaround survives", () => {

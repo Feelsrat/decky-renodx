@@ -129,8 +129,9 @@ export function stripHdr(options: string, specs: (LaunchSpec | null | undefined)
     ourDlls.add("d3dcompiler_47");
     PROXY_DLLS.forEach((dll) => ourDlls.add(dll));
   }
-  const ourEnv = new Set(known.flatMap((spec) => Object.keys(spec.env || {}).filter((key) => !kept(spec, "env").has(key))));
-  if (legacy) LEGACY_ENV_KEYS.forEach((key) => ourEnv.add(key));
+  // Ours only with the value we set: a user's own ENABLE_GAMESCOPE_WSI=0 is theirs.
+  const ourEnv = new Set(known.flatMap((spec) => Object.entries(spec.env || {}).filter(([key]) => !kept(spec, "env").has(key)).map(([key, value]) => `${key}=${value}`)));
+  if (legacy) LEGACY_ENV_KEYS.forEach((key) => ourEnv.add(`${key}=1`));
 
   const prefix: string[] = [];
   for (let i = 0; i < parts.prefix.length; i++) {
@@ -142,7 +143,7 @@ export function stripHdr(options: string, specs: (LaunchSpec | null | undefined)
     const parsed = assignment(token);
     if (parsed) {
       const [key, value] = parsed;
-      if (ourEnv.has(key)) continue;
+      if (ourEnv.has(`${key}=${value}`)) continue;
       if (key === "STEAM_COMPAT_DATA_PATH" && legacy) continue;
       if (key === "WINEDLLOVERRIDES") {
         const remaining = parseOverrides(value).filter(([dll, mode]) => !(ourDlls.has(dll) && (dll === "d3dcompiler_47" || mode === "n,b")));
@@ -168,11 +169,14 @@ export function mergeHdr(options: string, spec: LaunchSpec, previous: (LaunchSpe
   const parts = split(stripHdr(options, [...previous, spec]));
   const userPrefix: string[] = [];
   const userOverrides: [string, string][] = [];
+  const userEnv = new Set<string>();
   for (const token of parts.prefix) {
     const parsed = assignment(token);
     if (parsed && parsed[0] === "WINEDLLOVERRIDES") {
       userOverrides.push(...parseOverrides(parsed[1]));
-    } else if (!(parsed && parsed[0] in spec.env)) {
+    } else {
+      // The user's own value for one of our variables wins (e.g. ENABLE_GAMESCOPE_WSI=0 as a workaround).
+      if (parsed && parsed[0] in spec.env) userEnv.add(parsed[0]);
       userPrefix.push(token);
     }
   }
@@ -180,7 +184,7 @@ export function mergeHdr(options: string, spec: LaunchSpec, previous: (LaunchSpe
   for (const [dll, mode] of Object.entries(spec.dll_overrides || {})) overrides.set(dll.toLowerCase(), mode);
 
   const prefix = [
-    ...Object.entries(spec.env || {}).map(([key, value]) => `${key}=${value}`),
+    ...Object.entries(spec.env || {}).filter(([key]) => !userEnv.has(key)).map(([key, value]) => `${key}=${value}`),
     ...(overrides.size ? [formatOverrides([...overrides.entries()])] : []),
     ...userPrefix,
     ...(spec.wrapper || []).map(quote),
@@ -221,7 +225,8 @@ export function hasHdr(options: string, spec: LaunchSpec): boolean {
     if (parsed[0] === "WINEDLLOVERRIDES") overrides = new Map(parseOverrides(parsed[1]));
     else env.set(parsed[0], parsed[1]);
   }
-  const envOk = Object.entries(spec.env || {}).every(([key, value]) => env.get(key) === value);
+  // Any value counts: the user may have chosen their own (see mergeHdr).
+  const envOk = Object.keys(spec.env || {}).every((key) => env.has(key));
   const dllOk = Object.entries(spec.dll_overrides || {}).every(([dll, mode]) => overrides.get(dll.toLowerCase()) === mode);
   const wrapperOk = !(spec.wrapper || []).length || parts.prefix.join(" ").includes((spec.wrapper || []).map(quote).join(" "));
   const argsOk = (spec.args || []).every((arg) => parts.args.includes(arg));

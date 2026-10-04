@@ -566,12 +566,23 @@ class RepairTests(ServiceCase):
         self.assertTrue(addon.exists())
         self.assertFalse(self.service.install_status("1000")["needs_repair"])
 
+    def test_logs_explain_whether_reshade_and_renodx_ran(self):
+        _root, shipping = self.unreal_game()
+        self.service.display_status = lambda: {"status": "success", "enabled": True}
+        self.service.install("1000", "renodx")
+        checks = self.service.logs("1000")["checks"]
+        self.assertTrue(any("ReShade has never run" in line for line in checks), checks)
+        (shipping.parent / "ReShade.log").write_text("12:00:00:000 [1] | INFO  | Loading add-on from \"renodx-shippy.addon64\" ...\n")
+        result = self.service.logs("1000")
+        self.assertIn("renodx-shippy", result["reshade_log"])
+        self.assertTrue(any(line.startswith("✓ RenoDX add-on mentioned") for line in result["checks"]), result["checks"])
+
     def test_game_update_and_old_launch_options_are_flagged(self):
         root, _shipping = self.unreal_game()
         self.service.install("1000", "reshade")
         record = self.service.store.get("1000")
         record["buildid"] = "1"
-        record["launch"]["env"]["ENABLE_HDR_WSI"] = "1"
+        record["launch"]["env"].pop("ENABLE_HDR_WSI")  # as written by 0.2.0-0.4.2
         self.service.store.put("1000", record)
         manifest = self.fake.steam / "steamapps" / "appmanifest_1000.acf"
         manifest.write_text(manifest.read_text().replace("}", '\t"buildid"\t\t"2"\n}'))
@@ -653,7 +664,7 @@ class RepairEdgeTests(ServiceCase):
         self.service.install("1000", "renodx")
         record = self.service.store.get("1000")
         record["extra"].pop("source_addon")
-        record["launch"]["env"]["ENABLE_HDR_WSI"] = "1"
+        record["launch"]["env"].pop("ENABLE_HDR_WSI")  # as written by 0.2.0-0.4.2
         self.service.store.put("1000", record)
         self.downloads.clear()
         result = self.service.repair("1000")
@@ -695,7 +706,7 @@ class LegacyTests(ServiceCase):
 
 class MiscTests(unittest.TestCase):
     def test_launch_spec_is_structured_only(self):
-        self.assertEqual(launch.spec("dxgi", args=["-dx11"]), {"env": {"PROTON_ENABLE_HDR": "1", "DXVK_HDR": "1"}, "dll_overrides": {"dxgi": "n,b"}, "args": ["-dx11"], "wrapper": []})
+        self.assertEqual(launch.spec("dxgi", args=["-dx11"]), {"env": {"PROTON_ENABLE_HDR": "1", "DXVK_HDR": "1", "ENABLE_HDR_WSI": "1", "ENABLE_GAMESCOPE_WSI": "1"}, "dll_overrides": {"dxgi": "n,b"}, "args": ["-dx11"], "wrapper": []})
 
     def test_delayed_special_k_entries_are_blocked_for_local_install(self):
         fake = FakeSteam()
@@ -705,9 +716,9 @@ class MiscTests(unittest.TestCase):
         db = compat.CompatDB(fake.plugin_dir / "compatibility.json", fake.root / "none.json")
         self.assertFalse(db.specialk_local_gate("5")["available"])
 
-    def test_hdr_env_is_gamescope_safe(self):
+    def test_hdr_env_matches_the_known_working_set(self):
         env = launch.spec("dxgi")["env"]
-        self.assertEqual(env, {"PROTON_ENABLE_HDR": "1", "DXVK_HDR": "1"})
+        self.assertEqual(env, {"PROTON_ENABLE_HDR": "1", "DXVK_HDR": "1", "ENABLE_HDR_WSI": "1", "ENABLE_GAMESCOPE_WSI": "1"})
 
     def test_display_status_parsing(self):
         from backend import display

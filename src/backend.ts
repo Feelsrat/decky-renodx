@@ -168,7 +168,10 @@ export const api = {
   setExecutable: callable<[appid: string, path: string], Simple>("set_game_executable"),
   setSpecialKVerified: callable<[appid: string, verified: boolean], Simple>("set_special_k_verified"),
   resetPrefix: callable<[appid: string], ChangeResult>("reset_game_proton_prefix"),
-  logs: callable<[appid: string], { status: string; plugin_log: string; proton_log: string; proton_log_path: string; message?: string }>("get_per_game_log"),
+  logs: callable<[appid: string], {
+    status: string; plugin_log: string; proton_log: string; proton_log_path: string;
+    reshade_log?: string; reshade_log_path?: string; checks?: string[]; message?: string;
+  }>("get_per_game_log"),
   resetCaches: callable<[], Simple>("reset_plugin_caches"),
   openUrl: callable<[url: string], Simple>("open_url"),
   runtimeStatus: callable<[], { status: string; installed: boolean; components: Record<string, string | boolean> }>("get_runtime_status"),

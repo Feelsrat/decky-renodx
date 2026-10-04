@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import threading
 import time
@@ -783,7 +784,51 @@ class HdrService:
         plugin_log = path.read_text(encoding="utf-8", errors="replace")[-120_000:] if path and path.exists() else ""
         proton = self.paths.home / f"steam-{appid}.log"
         proton_log = proton.read_text(encoding="utf-8", errors="replace")[-150_000:] if proton.exists() else ""
-        return _ok(plugin_log=plugin_log, proton_log=proton_log, path=str(path or ""), proton_log_path=str(proton))
+        reshade_path, reshade_log = self._reshade_log(appid)
+        return _ok(plugin_log=plugin_log, proton_log=proton_log, path=str(path or ""), proton_log_path=str(proton),
+                   reshade_log=reshade_log, reshade_log_path=reshade_path, checks=self._diagnose(appid, reshade_log))
+
+    def _reshade_log(self, appid: str) -> tuple[str, str]:
+        record = self.store.get(appid) or {}
+        target = Path(record.get("target_dir") or "")
+        if not record.get("target_dir") or record.get("method") not in {"renodx", "reshade"}:
+            return "", ""
+        path = target / "ReShade.log"
+        text = path.read_text(encoding="utf-8", errors="replace")[-60_000:] if path.is_file() else ""
+        return str(path), text
+
+    def _diagnose(self, appid: str, reshade_log: str) -> list[str]:
+        """Plain-language checks for "I installed HDR but nothing changed"."""
+        record = self.store.get(appid)
+        if not record:
+            return ["Nothing is installed for this game."]
+        checks = [f"Installed: {METHOD_LABELS.get(record['method'], record['method'])} in {record.get('target_dir') or 'launch options only'}."]
+        missing = [p for p in record.get("created", []) if not os.path.lexists(p)]
+        checks.append(f"✗ {len(missing)} installed file(s) are missing (game updated or verified?); use Repair." if missing else "✓ All installed files are present.")
+        try:
+            status = self.display_status()
+        except Exception:  # xprop missing or no display: just skip this check
+            status = {}
+        if status.get("enabled") is False:
+            checks.append("✗ HDR is turned off in SteamOS (Settings → Display). Games can't output HDR until it's on.")
+        elif status.get("enabled"):
+            checks.append("✓ HDR is on in SteamOS.")
+        if record["method"] in {"renodx", "reshade"}:
+            if not reshade_log:
+                checks.append("✗ ReShade.log doesn't exist yet: ReShade has never run in this game. Launch it from Steam once. "
+                              "If it still doesn't appear, Steam didn't apply the launch options (check they contain WINEDLLOVERRIDES with "
+                              f"{record.get('dll') or 'dxgi'}=n,b) or the game runs a different .exe (Advanced → Game executable).")
+            else:
+                lines = reshade_log.splitlines()
+                addon_lines = [line.strip() for line in lines if "add-on" in line.lower() or "addon" in line.lower()]
+                errors = [line.strip() for line in lines if re.search(r"\| ERROR \||failed", line, re.I)]
+                checks.append("✓ ReShade ran in this game (ReShade.log exists).")
+                if record["method"] == "renodx":
+                    loaded = [line for line in addon_lines if "renodx" in line.lower()]
+                    checks.append(f"{'✓' if loaded else '✗'} RenoDX add-on {'mentioned' if loaded else 'not mentioned'} in ReShade.log"
+                                  + (f": {loaded[-1][-160:]}" if loaded else ". The add-on may not have loaded; see the ReShade tab."))
+                checks += [f"ReShade error: {line[-200:]}" for line in errors[-5:]]
+        return checks
 
     def runtime_status(self) -> dict[str, Any]:
         return _ok(**self.runtime.status())

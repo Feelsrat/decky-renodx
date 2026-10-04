@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.3
+
+### Fixes
+- **HDR didn't turn on (0.2.0–0.4.2).** 0.2.0 dropped `ENABLE_HDR_WSI=1` and `ENABLE_GAMESCOPE_WSI=1` from the launch options, on reasoning never tested on a Deck. Games then launched without HDR even with RenoDX installed (reported in Wobbly Life and Against the Storm). Both are back, matching the launch options that worked in 0.0.x. Games set up with 0.2.0–0.4.2 show **Repair**, which updates their launch options.
+- If you set one of these variables yourself (for example `ENABLE_GAMESCOPE_WSI=0` to work around a crash), your value is kept instead of being overwritten.
+
+### New
+- **Advanced → View logs → Check** explains why HDR might not be working: whether the files are in place, whether HDR is on in SteamOS, the game's current Steam launch options, whether ReShade has ever run in the game, and whether the RenoDX add-on loaded. A new **ReShade** tab shows the game's `ReShade.log`.
+
 ## 0.4.2
 
 ### Changed
