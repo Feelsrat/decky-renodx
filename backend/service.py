@@ -197,7 +197,9 @@ class HdrService:
     def _context(self, app: SteamApp, scan: detect.GameScan) -> dict[str, Any]:
         # Non-Steam shortcut ids mean nothing to PCGamingWiki.
         wiki = {} if app.is_shortcut else self.pcgw.game_data(app.appid)
-        if scan.api == "unknown" and wiki.get("graphics_api", "unknown") != "unknown":
+        weak = scan.api == "unknown" or scan.api_source.startswith("dll_imports") or scan.api_source.endswith("_engine")
+        if weak and scan.api_source != "compatibility_db" and wiki.get("graphics_api", "unknown") not in {"unknown", scan.api}:
+            # A runtime DLL's imports (or an engine guess) are weaker evidence than PCGamingWiki's API list.
             scan.api, scan.api_confidence, scan.api_source = wiki["graphics_api"], "metadata", "pcgamingwiki"
             scan.hook = detect.hook_for_api(scan.api)
         engine = scan.engine if scan.engine != "unknown" else (renodx.engine_bucket(wiki.get("engine", "")) or "unknown")
@@ -298,11 +300,15 @@ class HdrService:
             launch_outdated = bool(spec.get("env")) and spec.get("env") != launch.spec("")["env"]
             installed_reshade = str((record.get("extra") or {}).get("reshade_version") or "")
             reshade_outdated = bool(installed_reshade) and installed_reshade != ".".join(map(str, RESHADE_VERSION))
+            # 0.2.0-0.4.5 hooked Unity games through opengl32 (see detect.scan_game); ReShade never saw a frame.
+            wrong_hook = record.get("dll") == "opengl32" and (Path(record.get("target_dir") or "") / "UnityPlayer.dll").is_file()
             message = f"{METHOD_LABELS.get(record['method'], record['method'])} is installed."
             if missing:
                 message += f" {len(missing)} installed file(s) are missing; the game was probably updated or verified."
             elif game_updated:
                 message += " The game was updated since; repair if HDR stopped working."
+            elif wrong_hook:
+                message += " It hooks OpenGL, but this Unity game renders with Direct3D; repair to fix it."
             elif launch_outdated:
                 message += " It uses older launch options; repair to update them."
             elif reshade_outdated:
@@ -319,7 +325,7 @@ class HdrService:
                 "missing": missing[:5],
                 "game_updated": game_updated,
                 "launch_outdated": launch_outdated,
-                "needs_repair": bool(missing or launch_outdated or reshade_outdated),
+                "needs_repair": bool(missing or launch_outdated or reshade_outdated or wrong_hook),
                 "launch": record.get("launch"),
                 "extra": record.get("extra", {}),
                 "legacy": False,

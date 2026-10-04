@@ -313,6 +313,12 @@ def scan_game(
     scan.architecture = info.arch if info else "unknown"
     scan.engine = detect_engine(chosen.parent, install_path)
     scan.api, scan.api_confidence, scan.api_source = detect_api(chosen, exclude)
+    if scan.api == "opengl" and scan.engine == "unity":
+        # UnityPlayer.dll always links opengl32, but on Windows Unity renders with D3D11/12,
+        # which it loads at runtime (so it never shows up in the imports). A ReShade
+        # opengl32.dll proxy then loads but never sees a frame: no banner, no RenoDX.
+        scan.api, scan.api_confidence, scan.api_source = "dx11_dx12", "heuristic", "unity_engine"
+        scan.notes.append("Unity game: using Direct3D 11/12 (Unity's Windows default) rather than the OpenGL it also links.")
     if scan.api == "unknown" and scan.engine in {"unreal", "unity"} and scan.architecture == "64":
         scan.api, scan.api_confidence, scan.api_source = "dx11_dx12", "heuristic", f"{scan.engine}_engine"
         scan.notes.append(f"{scan.engine.title()} engine detected; treating the API as DX11/DX12.")

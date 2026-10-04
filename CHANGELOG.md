@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.6
+
+### Fixes
+- **Unity games got ReShade as `opengl32.dll`, so it never showed up.** `UnityPlayer.dll` always links OpenGL, but Unity renders with Direct3D 11/12 on Windows, loading it at runtime. The plugin saw only the OpenGL import and hooked the wrong API: ReShade loaded, but never saw a frame. There was no banner, Home did nothing, and RenoDX never ran (Against the Storm, Wobbly Life). Unity games now get `dxgi.dll`, as in 0.0.x. Affected installs show **Repair**.
+- When the graphics API is only a guess from a game DLL's imports, PCGamingWiki's API list wins if it has one.
+
 ## 0.4.5
 
 ### Fixes

@@ -282,6 +282,42 @@ class GridLookupTests(ServiceCase):
         self.assertIsNone(self.service.renodx.listed(["Shippy Racing"]))
 
 
+class UnityApiTests(ServiceCase):
+    def storm(self):
+        root = self.fake.add_game("1336490", "Against the Storm", "Against the Storm")
+        make_pe(root / "Against the Storm.exe", size=650 * 1024)
+        make_pe(root / "UnityPlayer.dll", imports=("opengl32.dll", "kernel32.dll"), size=900 * 1024)
+        return root
+
+    def test_unity_opengl_import_is_not_taken_as_the_api(self):
+        self.storm()
+        ctx = self.service.game_state("1336490")["context"]
+        self.assertEqual((ctx["api"], ctx["hook"]), ("dx11_dx12", "dxgi"))
+
+    def test_pcgamingwiki_beats_a_dll_import_guess(self):
+        root = self.fake.add_game("77", "GL Guess", "GLGuess")
+        make_pe(root / "GLGuess.exe", size=650 * 1024)
+        make_pe(root / "engine.dll", imports=("opengl32.dll",), size=900 * 1024)
+        self.assertEqual(self.service.game_state("77")["context"]["api"], "opengl")
+        self.service.pcgw.game_data = lambda appid: {"native_hdr": "unknown", "graphics_api": "d3d11"}
+        ctx = self.service.game_state("77")["context"]
+        self.assertEqual((ctx["api"], ctx["hook"]), ("d3d11", "dxgi"))
+
+    def test_unity_install_hooked_through_opengl_needs_repair(self):
+        root = self.storm()
+        self.assertEqual(self.service.install("1336490", "reshade")["status"], "success")
+        record = self.service.store.get("1336490")
+        self.assertEqual(record["dll"], "dxgi")
+        record["dll"] = "opengl32"
+        self.service.store.put("1336490", record)
+        status = self.service.install_status("1336490")
+        self.assertTrue(status["needs_repair"])
+        self.assertIn("OpenGL", status["message"])
+        self.assertEqual(self.service.repair("1336490")["status"], "success")
+        self.assertEqual(self.service.store.get("1336490")["dll"], "dxgi")
+        self.assertTrue((root / "dxgi.dll").exists())
+
+
 class RenoDXTests(unittest.TestCase):
     def setUp(self):
         self.mods = renodx.parse_mods(WIKI)
