@@ -35,8 +35,28 @@ const CHECK_STEPS: Record<string, string[]> = {
 };
 
 /** Opens .github/ISSUE_TEMPLATE/hdr-not-working.yml with its fields filled in (they're matched by id). */
-function reportUrl(state: GameState, version: string) {
+/** The Check tab's text: what's installed, SteamOS HDR, launch options, whether ReShade/RenoDX loaded. */
+async function diagnostics(state: GameState) {
+  const [result, launchOptions] = await Promise.all([api.logs(state.appid), readLaunchOptions(gameRef(state)).catch(() => null)]);
+  const check = [
+    ...(result.checks || []),
+    "",
+    `Steam launch options: ${launchOptions === null ? "(couldn't read them)" : launchOptions || "(none)"}`,
+    state.install.launch && launchOptions !== null && !hasHdr(launchOptions, state.install.launch)
+      ? "✗ They don't contain this install's HDR options: use \"Add launch options\" on the status card."
+      : "",
+  ].filter((line, index, all) => line || all[index - 1]).join("\n");
+  return { result, check };
+}
+
+async function reportUrl(state: GameState, version: string) {
   const ctx = state.context;
+  let check = "";
+  try {
+    check = (await diagnostics(state)).check;
+  } catch {
+    // report without it
+  }
   const params = new URLSearchParams({
     template: "hdr-not-working.yml",
     title: `HDR not working: ${state.title}`,
@@ -44,6 +64,7 @@ function reportUrl(state: GameState, version: string) {
     method: methodName(state.install.method) || "Not sure",
     detected: `${ctx.api}, ${ctx.architecture}-bit, engine ${ctx.engine}, hook ${ctx.hook || "-"}`,
     version: version || "unknown",
+    diagnostics: check.slice(0, 4000),
   });
   return `${REPO}/issues/new?${params.toString()}`;
 }
@@ -220,7 +241,7 @@ export default function HdrPanel() {
             <Feedback
               state={state}
               onResult={(result) => simple("Feedback", () => api.setResult(state.appid, result))}
-              onReport={() => openLink(reportUrl(state, version))}
+              onReport={() => reportUrl(state, version).then(openLink)}
               onTryOther={() => setSection("methods")}
             />
           )}
@@ -524,15 +545,7 @@ function Advanced({ state, busy, simple, run }: { state: GameState; busy: boolea
 
 async function viewLogs(state: GameState) {
   try {
-    const [result, launchOptions] = await Promise.all([api.logs(state.appid), readLaunchOptions(gameRef(state)).catch(() => null)]);
-    const check = [
-      ...(result.checks || []),
-      "",
-      `Steam launch options: ${launchOptions === null ? "(couldn't read them)" : launchOptions || "(none)"}`,
-      state.install.launch && launchOptions !== null && !hasHdr(launchOptions, state.install.launch)
-        ? "✗ They don't contain this install's HDR options: use \"Add launch options\" on the status card."
-        : "",
-    ].filter((line, index, all) => line || all[index - 1]).join("\n");
+    const { result, check } = await diagnostics(state);
     showModal(
       <TextModal
         title={`Logs: ${state.title}`}

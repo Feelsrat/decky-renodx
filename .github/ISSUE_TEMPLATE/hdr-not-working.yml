@@ -30,6 +30,12 @@ body:
     attributes:
       label: Plugin version
   - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics
+      description: Filled in by the plugin (Advanced → View logs → Check).
+      render: text
+  - type: textarea
     id: what
     attributes:
       label: What happened?

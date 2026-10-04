@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.4
+
+### Fixes
+- After changing a game's launch options, the plugin reads them back from Steam. If Steam didn't save them, it says so and shows the options to set by hand. Before, a silent failure meant ReShade never loaded: no banner at launch, and Home did nothing.
+
+### New
+- **Report on GitHub** now includes the Check tab's diagnostics in the report.
+
 ## 0.4.3
 
 ### Fixes

@@ -73,6 +73,16 @@ export async function updateLaunchOptions(game: GameRef, spec: LaunchSpec | null
     keep = preexisting(stripHdr(current, previous), spec);
   }
   const value = spec ? mergeHdr(current, spec, previous) : stripHdr(current, previous);
-  if (value !== current) writeLaunchOptions(game, value);
+  if (value === current) return { ok: true, value, keep };
+  writeLaunchOptions(game, value);
+  // Steam doesn't report failures; read the options back to be sure they stuck.
+  let saved: string | null = null;
+  for (let attempt = 0; attempt < 4 && saved !== value; attempt++) {
+    await new Promise((resolve) => window.setTimeout(resolve, 500));
+    saved = await readLaunchOptions(game);
+  }
+  if (saved !== null && saved !== value) {
+    return { ok: false, value, keep, message: `Steam didn't save the launch options. Set them by hand in the game's Properties: ${value}` };
+  }
   return { ok: true, value, keep };
 }
