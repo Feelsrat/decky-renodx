@@ -247,6 +247,41 @@ class RenoDXIndexTests(ServiceCase):
         ])
 
 
+class GridLookupTests(ServiceCase):
+    def test_grid_looks_up_unknown_games_in_bulk_then_shows_them(self):
+        import threading
+        requests = []
+        bulk = {"cargoquery": [
+            {"title": {"Page": "Bright", "AppIDs": "5000,5001", "Engines": "", "HDR": "true"}},
+            {"title": {"Page": "Engine Game", "AppIDs": "6000", "Engines": "Engine:Unity", "HDR": "false"}},
+        ]}
+        done = threading.Event()
+
+        def fetch(url, **_kwargs):
+            requests.append(url)
+            done.set()
+            return bulk
+        self.service.pcgw = pcgw.PCGamingWiki(self.fake.paths.cache / "pcgw.json", fetch)
+        items = [{"appid": a, "title": f"Game {a}"} for a in ("5000", "6000", "7000")] + [{"appid": str(0x90000000), "title": "Shortcut"}]
+        first = self.service.badges(items)
+        self.assertEqual(sorted(first["pending"]), ["5000", "6000", "7000"])  # shortcuts are never sent to PCGamingWiki
+        self.assertTrue(done.wait(2))
+        for _ in range(50):
+            if not self.service._prefetching:
+                break
+            threading.Event().wait(0.02)
+        second = self.service.badges(items)
+        self.assertEqual(second["pending"], [])
+        self.assertEqual({a: b["level"] for a, b in second["badges"].items()},
+                         {"5000": "native", "6000": "engine", "7000": "none", str(0x90000000): "none"})
+        self.assertEqual(len(requests), 1)  # one request for all three
+        self.assertIn("HOLDS", requests[0])
+
+    def test_grid_name_lookup_ignores_edition_suffixes(self):
+        self.assertEqual(self.service.renodx.listed(["Shippy: Game of the Year Edition"])["name"], "Shippy")
+        self.assertIsNone(self.service.renodx.listed(["Shippy Racing"]))
+
+
 class RenoDXTests(unittest.TestCase):
     def setUp(self):
         self.mods = renodx.parse_mods(WIKI)

@@ -13,6 +13,10 @@ const MARK = "data-decky-renodx";
 const ART = /\/assets\/(\d+)\/(?!library_hero|logo)[^/?]+\.(?:jpg|png|webp)|\/customimages\/(\d+)p\.(?:jpg|png|webp)/i;
 const known = new Map<string, Pick<Badge, "level" | "label">>();
 const pending = new Set<string>();
+// Games the backend is still looking up on PCGamingWiki: asked again shortly, a few times at most.
+const lookups = new Map<string, number>();
+const RECHECK_MS = 4000;
+const MAX_RECHECKS = 6;
 
 let observer: MutationObserver | null = null;
 let timer = 0;
@@ -83,6 +87,14 @@ async function scan() {
     const result = await api.libraryBadges(missing.map((appid) => ({ appid, title: titleOf(appid) })));
     if (result.status === "success") {
       for (const appid of missing) known.set(appid, result.badges[appid] || { level: "none" });
+      const recheck = (result.pending || []).filter((appid) => (lookups.get(appid) || 0) < MAX_RECHECKS);
+      if (recheck.length) {
+        recheck.forEach((appid) => lookups.set(appid, (lookups.get(appid) || 0) + 1));
+        window.setTimeout(() => {
+          recheck.forEach((appid) => known.delete(appid));
+          schedule();
+        }, RECHECK_MS);
+      }
     }
   } catch {
     // backend busy or reloading: try these again on the next change

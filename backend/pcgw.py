@@ -14,6 +14,7 @@ API_URL = "https://www.pcgamingwiki.com/w/api.php"
 CACHE_TTL = 7 * 86400
 ERROR_TTL = 3600
 REQUEST_TIMEOUT = 8
+BATCH = 50  # games per bulk request; keeps the URL well under server limits
 
 
 class PCGamingWiki:
@@ -40,18 +41,61 @@ class PCGamingWiki:
             return None
         return entry
 
-    def _put(self, key: str, value: dict[str, Any]) -> None:
-        cache = self._load()
-        cache[key] = {**value, "at": time.time()}
+    def _put(self, key: str, value: dict[str, Any], save: bool = True) -> None:
+        self._load()[key] = {**value, "at": time.time()}
+        if save:
+            self._save()
+
+    def _save(self) -> None:
         try:
-            fsutil.write_json(self.cache_file, cache)
+            fsutil.write_json(self.cache_file, self._load())
         except OSError as error:
             log.plugin().warning("Could not write PCGamingWiki cache: %s", error)
 
-    def cached(self, appid: str) -> dict[str, Any]:
-        """What's already known about a game, without a network request."""
+    def cached(self, appid: str) -> dict[str, Any] | None:
+        """What's already known about a game without a network request: the full lookup,
+        else the bulk one (``prefetch``), else None."""
         with self._lock:
-            return {**(self._get(f"game:{appid}") or {})}
+            entry = self._get(f"game:{appid}") or self._get(f"lite:{appid}")
+            return {**entry} if entry is not None else None
+
+    def prefetch(self, appids: list[str]) -> int:
+        """Bulk-fetch HDR and engine for games without a cached answer, BATCH per request.
+        For the library grid; the game page still does the full lookup. Returns how many
+        games were looked up. Failures are cached briefly so they aren't retried at once."""
+        with self._lock:
+            wanted = [a for a in dict.fromkeys(map(str, appids)) if a.isdigit() and self._get(f"game:{a}") is None and self._get(f"lite:{a}") is None]
+        for start in range(0, len(wanted), BATCH):
+            chunk = wanted[start:start + BATCH]
+            try:
+                found = self._bulk(chunk)
+            except Exception as error:
+                log.plugin().info("PCGamingWiki bulk lookup failed: %s", error)
+                found = {appid: {"error": str(error)} for appid in chunk}
+            with self._lock:
+                for appid in chunk:
+                    self._put(f"lite:{appid}", found.get(appid) or {"page_name": "", "native_hdr": "unknown", "engine": ""}, save=False)
+                self._save()
+        return len(wanted)
+
+    def _bulk(self, appids: list[str]) -> dict[str, dict[str, Any]]:
+        where = " OR ".join(f'Infobox_game.Steam_AppID HOLDS "{appid}"' for appid in appids)
+        data = self._query({
+            "action": "cargoquery", "tables": "Infobox_game,Video", "join_on": "Infobox_game._pageName=Video._pageName",
+            "fields": "Infobox_game._pageName=Page,Infobox_game.Steam_AppID=AppIDs,Infobox_game.Engines=Engines,Video.HDR=HDR",
+            "where": where, "limit": "500",
+        })
+        if isinstance(data, dict) and data.get("error"):
+            raise ValueError(str(data["error"].get("info") if isinstance(data["error"], dict) else data["error"]))
+        wanted, found = set(appids), {}
+        for row in (data or {}).get("cargoquery") or []:
+            title = row.get("title") or {}
+            hdr = str(title.get("HDR") or "").lower() or "unknown"
+            engine = str(title.get("Engines") or "").replace("Engine:", "").split(",")[0].strip()
+            for appid in re.split(r"[,\s]+", str(title.get("AppIDs") or "")):
+                if appid in wanted:
+                    found[appid] = {"page_name": title.get("Page", ""), "native_hdr": hdr, "engine": engine}
+        return found
 
     def clear(self) -> None:
         with self._lock:

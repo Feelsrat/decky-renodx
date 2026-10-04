@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import threading
 import time
 import zipfile
 from datetime import datetime, timezone
@@ -57,6 +58,8 @@ class HdrService:
         self.compat = CompatDB(paths.plugin_dir / "compatibility.json", paths.compat_cache)
         self.renodx = RenoDXCatalog(paths.cache / "renodx_mods.json", lambda url: net.fetch_text(url, timeout=20))
         self._engines: dict[str, tuple[tuple[str, str], str]] = {}
+        self._prefetch_lock = threading.Lock()
+        self._prefetching: set[str] = set()
         self.rhi = rhi.RhiManifest(paths.cache / "rhi_manifest.json", lambda url: net.fetch_text(url, timeout=20))
         self.renodx_index = RenoDXIndex(paths.cache, lambda url: net.fetch_text(url, timeout=20))
         self.pcgw = PCGamingWiki(paths.cache / "pcgamingwiki.json", net.fetch_json)
@@ -90,12 +93,35 @@ class HdrService:
         (no PCGamingWiki requests), so a screen of tiles stays quick."""
         apps = {app.appid: app for app in self.steam.games()}
         result: dict[str, dict[str, Any]] = {}
+        unknown: list[str] = []
         for item in items[:200]:
             appid = str((item or {}).get("appid", ""))
-            if valid_appid(appid) and appid not in result:
-                badge = self._badge(appid, str(item.get("title") or ""), apps.get(appid), cached_only=True)
-                result[appid] = {"level": badge["level"], "label": badge.get("label", "")}
-        return _ok(badges=result)
+            if not valid_appid(appid) or appid in result:
+                continue
+            app = apps.get(appid)
+            badge = self._badge(appid, str(item.get("title") or ""), app, cached_only=True)
+            result[appid] = {"level": badge["level"], "label": badge.get("label", "")}
+            shortcut = bool(app and app.is_shortcut) or int(appid) >= 0x80000000
+            if badge["level"] in {"none", "engine"} and not shortcut and self.pcgw.cached(appid) is None:
+                unknown.append(appid)
+        # PCGamingWiki (native HDR, engine) is looked up in bulk in the background; the
+        # grid asks again for ``pending`` games once that has had time to finish.
+        return _ok(badges=result, pending=self._prefetch_pcgw(unknown))
+
+    def _prefetch_pcgw(self, appids: list[str]) -> list[str]:
+        with self._prefetch_lock:
+            new = [appid for appid in appids if appid not in self._prefetching]
+            self._prefetching.update(new)
+            pending = [appid for appid in appids if appid in self._prefetching]
+        if new:
+            def work() -> None:
+                try:
+                    self.pcgw.prefetch(new)
+                finally:
+                    with self._prefetch_lock:
+                        self._prefetching.difference_update(new)
+            threading.Thread(target=work, name="pcgw-prefetch", daemon=True).start()
+        return pending
 
     def _badge(self, appid: str, title: str, app: SteamApp | None, *, cached_only: bool) -> dict[str, Any]:
         record = self.store.get(appid)
@@ -122,7 +148,7 @@ class HdrService:
         if app and app.is_shortcut:
             wiki = {}
         else:
-            wiki = self.pcgw.cached(appid) if cached_only else self.pcgw.game_data(appid)
+            wiki = (self.pcgw.cached(appid) or {}) if cached_only else self.pcgw.game_data(appid)
         if str(wiki.get("native_hdr", "")).lower() in {"true", "limited", "good", "yes"}:
             return {"level": "native", "label": "Native HDR", "detail": "PCGamingWiki says the game has its own HDR."}
         engine = self._engine(app) if app else "unknown"

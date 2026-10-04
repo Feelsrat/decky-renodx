@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.2
+
+### Changed
+- **Library tiles fill in by themselves.** Games the plugin knows nothing about yet are looked up on PCGamingWiki in the background, about 50 games per request and cached for a week. ◆ (native HDR) and ◇ (Unreal/Unity, including games you haven't installed) appear on tiles a few seconds later, without opening each game first.
+- Tile icons ignore edition suffixes when matching RenoDX mods ("… Game of the Year Edition", "… Remastered"), like the game page already did.
+
 ## 0.4.1
 
 ### New

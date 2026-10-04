@@ -119,6 +119,8 @@ def make_plugin(args: argparse.Namespace):
         source._fetch_text = lambda _url: json.dumps(INDEX)
     service.compat.refresh_due = lambda now=None: False  # keep the fake compatibility.json; stay offline
     service.pcgw.game_data = lambda appid: dict(PCGW.get(str(appid), {"native_hdr": "unknown", "graphics_api": "unknown"}))
+    service.pcgw.cached = lambda appid: dict(PCGW.get(str(appid), {"native_hdr": "unknown"}))
+    service.pcgw.prefetch = lambda appids: 0
     hdr = {"on": (True, True), "off": (True, False), "unknown": (None, None)}[args.hdr]
     service.display_status = lambda: {"status": "success", "supported": hdr[0], "enabled": hdr[1], "game_mode": hdr[0] is not None}
     plugin.updater.check = lambda force=False: {"ok": True, "current": plugin.version, "latest": plugin.version, "elevated": True, "hasUpdate": False, "canInstall": False, "message": "You have the latest version."}

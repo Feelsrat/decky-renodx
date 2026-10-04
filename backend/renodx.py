@@ -57,6 +57,14 @@ def normalize_title(title: str) -> str:
     return "".join(title_words(title))
 
 
+def core_title(title: str) -> str:
+    """The title without trailing edition words ("... GOTY Edition", "... Remastered")."""
+    words = title_words(title)
+    while len(words) > 1 and words[-1] in EDITION_WORDS:
+        words.pop()
+    return "".join(words)
+
+
 def _edition_suffix(words: list[str]) -> bool:
     return all(word in EDITION_WORDS for word in words)
 
@@ -307,12 +315,16 @@ class RenoDXCatalog:
         return self._mods or []
 
     def listed(self, titles: list[str]) -> dict[str, Any] | None:
-        """Exact-name lookup of a game-specific or engine-listed mod; fast enough for a whole library."""
+        """Name lookup of a game-specific or engine-listed mod, ignoring edition suffixes; fast enough for a whole library."""
         mods = self.mods()
         if self._by_name is None or self._by_name[0] is not mods:
-            index = {m["normalized"]: m for m in mods if m.get("match_type") in {"specific", "generic_listed"} and m.get("normalized")}
+            listed = [m for m in mods if m.get("match_type") in {"specific", "generic_listed"} and m.get("normalized")]
+            index = {core_title(m["name"]): m for m in listed}
+            index.update({m["normalized"]: m for m in listed})  # exact names win
             self._by_name = (mods, index)
-        return next((self._by_name[1][key] for key in map(normalize_title, titles) if key in self._by_name[1]), None)
+        index = self._by_name[1]
+        keys = [normalize_title(t) for t in titles] + [core_title(t) for t in titles]
+        return next((index[key] for key in keys if key and key in index), None)
 
     def clear(self) -> None:
         self._mods, self._fetched_at, self._retry_after = None, 0.0, 0.0
