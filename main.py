@@ -104,6 +104,12 @@ class Plugin:
     async def list_installed_games(self) -> dict:
         return await self._call(self.service.list_games)
 
+    async def get_screen_status(self) -> dict:
+        return await self._call(self.service.screen_status)
+
+    async def set_auto_brightness(self, enabled: bool) -> dict:
+        return await self._call(self.service.set_auto_brightness, bool(enabled))
+
     async def get_library_badge(self, appid: str, title: str = "") -> dict:
         return await self._call(self.service.badge, str(appid), str(title or ""))
 

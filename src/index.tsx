@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { ButtonItem, ConfirmModal, Field, PanelSection, PanelSectionRow, ToggleField, showModal, staticClasses } from "@decky/ui";
 import { definePlugin, toaster } from "@decky/api";
 import { IoMdColorPalette } from "react-icons/io";
-import { api, type UpdateStatus } from "./backend";
+import { api, type ScreenStatus, type UpdateStatus } from "./backend";
 import HdrPanel from "./components/HdrPanel";
 import { BADGES_SETTING, badgesEnabled } from "./components/LibraryBadge";
 import { patchLibrary, unpatchLibrary } from "./library";
@@ -12,6 +12,7 @@ function PluginSection() {
   const [status, setStatus] = useState<UpdateStatus>();
   const [busy, setBusy] = useState(false);
   const [badges, setBadges] = useState(badgesEnabled());
+  const [screen, setScreen] = useState<ScreenStatus | null>(null);
   const [runtime, setRuntime] = useState<{ installed: boolean; components: Record<string, string | boolean> } | null>(null);
 
   const refreshRuntime = () =>
@@ -19,6 +20,7 @@ function PluginSection() {
 
   useEffect(() => {
     api.updateStatus().then(setStatus).catch(() => undefined);
+    api.screenStatus().then((result) => setScreen(result.status === "success" ? result : null)).catch(() => undefined);
     refreshRuntime();
   }, []);
 
@@ -66,6 +68,19 @@ function PluginSection() {
         <ButtonItem layout="below" disabled={busy || status?.requiresRestart} onClick={checkOrInstall}>
           {busy ? "Working…" : canInstall ? `Install update ${status?.latest}` : "Check for updates"}
         </ButtonItem>
+      </PanelSectionRow>
+      <PanelSectionRow>
+        <ToggleField
+          label="Match brightness to the screen"
+          description={
+            screen?.peak_nits
+              ? `${screen.name || screen.connector || "This screen"}: ${Math.round(screen.peak_nits)} nits peak (${screen.source}). New installs set RenoDX's peak brightness and Special K's HDR brightness to this; your own changes in game are kept.`
+              : "This screen doesn't report its HDR brightness, so RenoDX and Special K keep their defaults."
+          }
+          checked={screen?.auto_brightness ?? true}
+          disabled={!screen?.peak_nits}
+          onChange={(value) => api.setAutoBrightness(value).then((result) => result.status === "success" && setScreen(result)).catch(() => undefined)}
+        />
       </PanelSectionRow>
       <PanelSectionRow>
         <ToggleField

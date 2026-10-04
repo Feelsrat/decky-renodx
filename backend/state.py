@@ -57,12 +57,20 @@ class InstallStore:
 
 
 class Settings:
-    """Small per-game preferences (executable override, Special K verified)."""
+    """Small preferences: per game (executable override, Special K verified) and plugin-wide."""
 
     def __init__(self, path: Path):
         self.path = Path(path)
         data = fsutil.read_json(self.path, {})
         self.data: dict[str, Any] = data if isinstance(data, dict) else {}
+
+    def get(self, key: str, default: Any = None) -> Any:
+        """A plugin-wide preference."""
+        return self.data.get("plugin", {}).get(key, default)
+
+    def set(self, key: str, value: Any) -> None:
+        self.data.setdefault("plugin", {})[key] = value
+        fsutil.write_json(self.path, self.data)
 
     def game(self, appid: str) -> dict[str, Any]:
         value = self.data.get("games", {}).get(str(appid), {})

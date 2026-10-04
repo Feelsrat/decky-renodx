@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.5.0
+
+### New
+- **Brightness matched to your screen.** On install, the plugin reads the active screen's HDR peak brightness from its EDID. Docked, that's the external screen. A Steam Deck OLED that reports none counts as 1000 nits. The value goes in:
+  - **RenoDX**: as the mod's peak brightness (`ToneMapPeakNits`) in `ReShade.ini`.
+  - **Special K**: as its HDR luminance.
+
+  The screen and its peak are shown under Plugin → "Match brightness to the screen", which turns this off.
+
+### Fixes
+- **Reinstalling or Repair no longer resets your RenoDX settings.** Changes made in the RenoDX tab (presets, sliders) are carried over, and they win over the automatic brightness.
+
 ## 0.4.6
 
 ### Fixes

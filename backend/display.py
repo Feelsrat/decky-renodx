@@ -56,3 +56,84 @@ def hdr_status(user: str, home: str = "") -> dict[str, Any]:
             if status["supported"] is not None:
                 return {**status, "game_mode": True}
     return {"supported": None, "enabled": None, "game_mode": False}
+
+
+# ---------------------------------------------------------------- screen brightness (EDID)
+
+DRM_ROOT = "/sys/class/drm"
+DECK_OLED_PEAK = 1000.0  # Valve's spec for the Steam Deck OLED panel's HDR peak
+
+
+def _luminance(code: int) -> float:
+    """CTA-861 HDR static metadata: max / max-frame-average luminance code value -> nits."""
+    return round(50.0 * 2 ** (code / 32.0), 1)
+
+
+def parse_edid(edid: bytes) -> dict[str, Any]:
+    """Monitor name and HDR static metadata (peak, full-frame average, min nits) from an EDID."""
+    info: dict[str, Any] = {"name": "", "peak_nits": None, "avg_nits": None, "min_nits": None}
+    if len(edid) < 128 or edid[:8] != b"\x00\xff\xff\xff\xff\xff\xff\x00":
+        return info
+    for offset in (54, 72, 90, 108):
+        descriptor = edid[offset:offset + 18]
+        if descriptor[:3] == b"\x00\x00\x00" and descriptor[3] == 0xFC:
+            info["name"] = descriptor[5:18].split(b"\n")[0].decode("ascii", "replace").strip()
+    for start in range(128, len(edid) - 127, 128):
+        block = edid[start:start + 128]
+        if block[0] != 0x02:  # CTA-861 extension
+            continue
+        end, pos = min(block[2], 127), 4
+        while pos < end:
+            tag, length = block[pos] >> 5, block[pos] & 0x1F
+            payload = block[pos + 1:pos + 1 + length]
+            if tag == 7 and length >= 3 and payload[0] == 6:  # extended tag 6: HDR static metadata
+                values = payload[3:]
+                if len(values) >= 1 and values[0]:
+                    info["peak_nits"] = _luminance(values[0])
+                if len(values) >= 2 and values[1]:
+                    info["avg_nits"] = _luminance(values[1])
+                if len(values) >= 3 and info["peak_nits"]:
+                    info["min_nits"] = round(info["peak_nits"] * (values[2] / 255.0) ** 2 / 100.0, 4)
+            pos += 1 + length
+    return info
+
+
+def _read(path: str) -> str:
+    try:
+        with open(path, encoding="utf-8", errors="replace") as handle:
+            return handle.read().strip()
+    except OSError:
+        return ""
+
+
+def _is_deck_oled() -> bool:
+    return _read("/sys/class/dmi/id/product_name") == "Galileo"
+
+
+def screen_info(drm_root: str = DRM_ROOT) -> dict[str, Any]:
+    """The screen games are shown on and its HDR brightness, from the kernel's EDID copy.
+
+    Docked, the connected external screen wins over the built-in one (gamescope shows
+    games on one output). Returns peak_nits None when nothing usable is reported.
+    """
+    outputs = []
+    for path in sorted(glob.glob(os.path.join(drm_root, "card*-*"))):
+        if _read(os.path.join(path, "status")) != "connected":
+            continue
+        try:
+            with open(os.path.join(path, "edid"), "rb") as handle:
+                edid = handle.read()
+        except OSError:
+            edid = b""
+        connector = os.path.basename(path).split("-", 1)[1]
+        internal = connector.startswith(("eDP", "LVDS", "DSI"))
+        outputs.append((internal, connector, parse_edid(edid)))
+    if not outputs:
+        return {"connector": "", "name": "", "peak_nits": None, "source": ""}
+    internal, connector, info = sorted(outputs, key=lambda item: item[0])[0]  # external first
+    result = {"connector": connector, "internal": internal, **info, "source": "EDID" if info["peak_nits"] else ""}
+    if internal and not info["peak_nits"] and _is_deck_oled():
+        result.update(name=info["name"] or "Steam Deck OLED", peak_nits=DECK_OLED_PEAK, source="Steam Deck OLED spec")
+    if internal and _is_deck_oled() and not info["name"]:
+        result["name"] = "Steam Deck OLED"
+    return result

@@ -9,6 +9,17 @@ export interface Game {
   renodx?: boolean;
 }
 
+export interface ScreenStatus {
+  status: string;
+  name?: string;
+  connector?: string;
+  peak_nits?: number | null;
+  avg_nits?: number | null;
+  source?: string;
+  auto_brightness?: boolean;
+  message?: string;
+}
+
 export interface Badge {
   status: string;
   level: "on" | "renodx" | "native" | "engine" | "none";
@@ -154,6 +165,8 @@ type Simple = { status: "success" | "error"; message: string };
 export const api = {
   listGames: callable<[], { status: string; games: Game[]; message?: string }>("list_installed_games"),
   gameState: callable<[appid: string], GameState | ErrorResult>("get_game_state"),
+  screenStatus: callable<[], ScreenStatus>("get_screen_status"),
+  setAutoBrightness: callable<[enabled: boolean], ScreenStatus>("set_auto_brightness"),
   libraryBadge: callable<[appid: string, title: string], Badge>("get_library_badge"),
   libraryBadges: callable<[items: { appid: string; title: string }[]], { status: string; badges: Record<string, Pick<Badge, "level" | "label">>; pending?: string[]; message?: string }>("get_library_badges"),
   install: callable<[appid: string, method: string], ChangeResult>("install_hdr_method"),

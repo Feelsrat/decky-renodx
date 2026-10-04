@@ -41,14 +41,15 @@ class Target:
         return "32" if self.arch == "32" else "64"
 
 
-def upsert_ini(text: str, section: str, values: dict[str, str]) -> str:
-    """Set keys in an INI section, keeping everything else as is."""
+def upsert_ini(text: str, section: str, values: dict[str, str], *, case_sensitive: bool = False) -> str:
+    """Set keys in an INI section, keeping everything else as is. ReShade's own config lookup is
+    case-sensitive, so its add-on sections (RenoDX) need ``case_sensitive``."""
     pattern = re.compile(rf"(?ims)^\[{re.escape(section)}\][^\n]*\n?(.*?)(?=^\[[^\]\n]+\]|\Z)")
     match = pattern.search(text)
     body = match.group(1) if match else ""
     for key, value in values.items():
         line = f"{key}={value}"
-        key_re = re.compile(rf"(?im)^{re.escape(key)}\s*=.*$")
+        key_re = re.compile(rf"(?m{'' if case_sensitive else 'i'})^{re.escape(key)}\s*=.*$")
         if key_re.search(body):
             body = key_re.sub(lambda _m, line=line: line, body)
         else:
@@ -61,7 +62,32 @@ def upsert_ini(text: str, section: str, values: dict[str, str]) -> str:
 
 # ---------------------------------------------------------------- ReShade host
 
-def _reshade_host(tx: Transaction, target: Target, runtime: Runtime, hook: str, *, effects: bool) -> dict[str, Any]:
+def ini_sections(text: str, prefix: str) -> dict[str, dict[str, str]]:
+    """Sections whose name starts with ``prefix`` (case-insensitive), as {section: {key: value}}."""
+    sections: dict[str, dict[str, str]] = {}
+    current: dict[str, str] | None = None
+    for line in (text or "").splitlines():
+        header = re.match(r"^\s*\[([^\]]+)\]\s*$", line)
+        if header:
+            name = header.group(1).strip()
+            current = sections.setdefault(name, {}) if name.lower().startswith(prefix.lower()) else None
+        elif current is not None and "=" in line and not line.lstrip().startswith((";", "#")):
+            key, value = line.split("=", 1)
+            current[key.strip()] = value.strip()
+    return sections
+
+
+def renodx_screen_settings(peak_nits: float | None) -> dict[str, dict[str, str]]:
+    """Starting RenoDX values for this screen. Mods spell the key differently and ReShade's
+    config lookup is case-sensitive, so both spellings are written; unused keys are ignored."""
+    if not peak_nits:
+        return {}
+    value = f"{float(peak_nits):g}"
+    return {"renodx-preset1": {"ToneMapPeakNits": value, "toneMapPeakNits": value}}
+
+
+def _reshade_host(tx: Transaction, target: Target, runtime: Runtime, hook: str, *, effects: bool,
+                  sections: dict[str, dict[str, str]] | None = None, previous_ini: str = "") -> dict[str, Any]:
     reshade = runtime.reshade()
     dll_source = reshade["dll"][target.bits]
     if not dll_source.is_file():
@@ -84,16 +110,22 @@ def _reshade_host(tx: Transaction, target: Target, runtime: Runtime, hook: str, 
             "SkipLoadingDisabledEffects": "1",
         })
     ini = upsert_ini(ini, "OVERLAY", {"TutorialProgress": "4"})
+    for section, values in (sections or {}).items():
+        ini = upsert_ini(ini, section, values, case_sensitive=True)
+    # Settings the user changed in the RenoDX tab win over our defaults and survive a reinstall.
+    for section, values in ini_sections(previous_ini, "renodx").items():
+        if values:
+            ini = upsert_ini(ini, section, values, case_sensitive=True)
     tx.write_text(target.dir / "ReShade.ini", ini)
     return reshade
 
 
-def install_reshade(tx: Transaction, target: Target, runtime: Runtime, compat: CompatDB) -> dict[str, Any]:
+def install_reshade(tx: Transaction, target: Target, runtime: Runtime, compat: CompatDB, *, previous_ini: str = "") -> dict[str, Any]:
     if target.api == "vulkan":
         raise InstallError("ReShade proxy DLLs cannot hook Vulkan games.")
     hook = target.hook or "dxgi"
     pack = runtime.autohdr_pack()
-    reshade = _reshade_host(tx, target, runtime, hook, effects=True)
+    reshade = _reshade_host(tx, target, runtime, hook, effects=True, previous_ini=previous_ini)
     modern = hook in AUTOHDR_HOOKS
     ignore = None if modern else shutil.ignore_patterns("lilium*", "AdvancedAutoHDR.fx", "ConvertColorSpace.fx")
     tx.copy_tree(pack["shaders"], target.dir / "ReShade_shaders", ignore=ignore)
@@ -113,14 +145,15 @@ def install_reshade(tx: Transaction, target: Target, runtime: Runtime, compat: C
 
 # ---------------------------------------------------------------- RenoDX
 
-def install_renodx(tx: Transaction, target: Target, runtime: Runtime, compat: CompatDB, addon_file: Path, mod: dict[str, Any]) -> dict[str, Any]:
+def install_renodx(tx: Transaction, target: Target, runtime: Runtime, compat: CompatDB, addon_file: Path, mod: dict[str, Any],
+                   *, peak_nits: float | None = None, previous_ini: str = "") -> dict[str, Any]:
     if target.api == "vulkan":
         raise InstallError("This game uses Vulkan; RenoDX through a ReShade proxy DLL cannot hook it.")
     addon_bits = "32" if addon_file.name.lower().endswith(".addon32") else "64"
     if target.arch in {"32", "64"} and addon_bits != target.arch:
         raise InstallError(f"{addon_file.name} is a {addon_bits}-bit addon but the game is {target.arch}-bit.")
     hook = target.hook or "dxgi"
-    reshade = _reshade_host(tx, target, runtime, hook, effects=False)
+    reshade = _reshade_host(tx, target, runtime, hook, effects=False, sections=renodx_screen_settings(peak_nits), previous_ini=previous_ini)
     tx.write_text(target.dir / "ReShadePreset.ini", "Techniques=\nTechniqueSorting=\n")
     addon_target = tx.copy_file(addon_file, target.dir / addon_file.name)
     return {
@@ -128,7 +161,8 @@ def install_renodx(tx: Transaction, target: Target, runtime: Runtime, compat: Co
         "dll": hook,
         "launch": launch.spec(hook, args=compat.game_args(target.appid, "renodx")),
         "extra": {"addon": str(addon_target), "mod": _mod_summary(mod), "reshade_version": reshade["version"]},
-        "message": f"RenoDX installed ({mod.get('name') or addon_file.name}) with ReShade {reshade['version']} as {hook}.dll.",
+        "message": f"RenoDX installed ({mod.get('name') or addon_file.name}) with ReShade {reshade['version']} as {hook}.dll."
+                   + (f" Peak brightness set to {float(peak_nits):g} nits for this screen." if peak_nits else ""),
     }
 
 
@@ -139,7 +173,7 @@ def _mod_summary(mod: dict[str, Any]) -> dict[str, Any]:
 
 # ---------------------------------------------------------------- Special K
 
-def specialk_ini(text: str, tweaks: dict[str, dict[str, str]]) -> str:
+def specialk_ini(text: str, tweaks: dict[str, dict[str, str]], peak_nits: float | None = None) -> str:
     sections: dict[str, dict[str, str]] = {
         "SpecialK.System": {"UsingWINE": "true"},
         "Render.OSD": {"HDRLuminance": "9.375"},
@@ -149,6 +183,9 @@ def specialk_ini(text: str, tweaks: dict[str, dict[str, str]]) -> str:
             "Saturation_[0]": "1.0", "MiddleGray_[0]": "1.25", "Preset": "0",
         },
     }
+    if peak_nits:
+        # Special K's scRGB luminance is in units of 80 nits.
+        sections["SpecialK.HDR"]["scRGBLuminance_[0]"] = f"{float(peak_nits) / 80:.3f}"
     for section, values in tweaks.items():
         sections.setdefault(section, {}).update(values)
     for section, values in sections.items():
@@ -156,7 +193,7 @@ def specialk_ini(text: str, tweaks: dict[str, dict[str, str]]) -> str:
     return text
 
 
-def install_specialk(tx: Transaction, target: Target, runtime: Runtime, compat: CompatDB) -> dict[str, Any]:
+def install_specialk(tx: Transaction, target: Target, runtime: Runtime, compat: CompatDB, *, peak_nits: float | None = None) -> dict[str, Any]:
     gate = compat.specialk_local_gate(target.appid)
     if not gate["available"]:
         raise InstallError(gate["reason"])
@@ -172,7 +209,7 @@ def install_specialk(tx: Transaction, target: Target, runtime: Runtime, compat: 
     tx.mkdir(directory)
     tx.track_artifacts(directory, [*SPECIALK_ARTIFACTS, f"{hook}.log"])
     tx.copy_file(runtime.specialk_dll(target.bits), directory / f"{hook}.dll")
-    ini = specialk_ini("", compat.specialk_ini_tweaks(target.appid))
+    ini = specialk_ini("", compat.specialk_ini_tweaks(target.appid), peak_nits)
     tx.write_text(directory / f"{hook}.ini", ini)
     tx.write_text(directory / "SpecialK.ini", ini)
     return {

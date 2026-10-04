@@ -240,6 +240,7 @@ class HdrService:
             "specialk_wiki": bool(wiki.get("special_k")),
             "specialk_compat": bool(self.compat.tool(app.appid, "special_k")),
             "specialk_avoid_hdr": self.compat.specialk_avoid_hdr(app.appid),
+            "screen": self.screen(),
             "notes": scan.notes,
         }
         return ctx
@@ -444,6 +445,12 @@ class HdrService:
                 "tx": current["tx"].to_record() if current["tx"] else None,
             })
 
+        # The RenoDX tab saves its settings in ReShade.ini; read them before the old install goes.
+        previous_ini = Path((old_record or {}).get("target_dir") or target.dir) / "ReShade.ini"
+        try:
+            ctx["previous_reshade_ini"] = previous_ini.read_text(encoding="utf-8", errors="replace") if previous_ini.is_file() else ""
+        except OSError:
+            ctx["previous_reshade_ini"] = ""
         stash = transaction.Stash(old_record, logger, on_change=journal) if old_record else None
         journal()
         if stash:
@@ -632,12 +639,34 @@ class HdrService:
             if not mod:
                 raise InstallError("No RenoDX mod matched this game.")
             addon = renodx_file or self._download_addon(mod, target)
-            return installers.install_renodx(tx, target, self.runtime, self.compat, addon, mod)
+            return installers.install_renodx(tx, target, self.runtime, self.compat, addon, mod,
+                                             peak_nits=self._peak_nits(ctx), previous_ini=ctx.get("previous_reshade_ini", ""))
         if method == "special_k":
-            return installers.install_specialk(tx, target, self.runtime, self.compat)
+            return installers.install_specialk(tx, target, self.runtime, self.compat, peak_nits=self._peak_nits(ctx))
         if method == "reshade":
-            return installers.install_reshade(tx, target, self.runtime, self.compat)
+            return installers.install_reshade(tx, target, self.runtime, self.compat, previous_ini=ctx.get("previous_reshade_ini", ""))
         raise InstallError(f"Unhandled method {method}")
+
+    def _peak_nits(self, ctx: dict[str, Any]) -> float | None:
+        """The screen's HDR peak, unless the user turned automatic brightness off."""
+        if self.settings.get("auto_brightness", True) is False:
+            return None
+        peak = (ctx.get("screen") or {}).get("peak_nits")
+        return float(peak) if peak and 100 <= float(peak) <= 10000 else None
+
+    def screen_status(self) -> dict[str, Any]:
+        return _ok(**self.screen(), auto_brightness=self.settings.get("auto_brightness", True) is not False)
+
+    def set_auto_brightness(self, enabled: bool) -> dict[str, Any]:
+        self.settings.set("auto_brightness", bool(enabled))
+        return self.screen_status()
+
+    def screen(self) -> dict[str, Any]:
+        try:
+            return display.screen_info()
+        except Exception as error:  # never let this block an install
+            log.plugin().info("Could not read the screen's EDID: %s", error)
+            return {"peak_nits": None}
 
     def _download_addon(self, mod: dict[str, Any], target: Target) -> Path:
         url = str(mod.get("addon_url") or "")

@@ -318,6 +318,68 @@ class UnityApiTests(ServiceCase):
         self.assertTrue((root / "dxgi.dll").exists())
 
 
+def make_edid(name: str = "", peak_code: int | None = None) -> bytes:
+    base = bytearray(128)
+    base[:8] = b"\x00\xff\xff\xff\xff\xff\xff\x00"
+    if name:
+        base[72:90] = (bytes([0, 0, 0, 0xFC, 0]) + name.encode()[:13].ljust(13, b" "))
+    if peak_code is None:
+        return bytes(base)
+    base[126] = 1
+    ext = bytearray(128)
+    ext[0] = 0x02
+    block = bytes([(7 << 5) | 6, 6, 0x05, 0x01, peak_code, 77, 30])
+    ext[4:4 + len(block)] = block
+    ext[2] = 4 + len(block)
+    return bytes(base + ext)
+
+
+class ScreenBrightnessTests(ServiceCase):
+    def test_edid_hdr_metadata(self):
+        from backend import display
+        info = display.parse_edid(make_edid("Big TV", 96))
+        self.assertEqual((info["name"], info["peak_nits"], info["avg_nits"]), ("Big TV", 400.0, 265.0))
+        self.assertIsNone(display.parse_edid(make_edid("Old TV"))["peak_nits"])
+
+    def test_external_screen_wins_when_docked(self):
+        from backend import display
+        drm = self.fake.root / "drm"
+        for connector, edid in (("card0-eDP-1", make_edid("Panel")), ("card0-DP-1", make_edid("Monitor", 128))):
+            (drm / connector).mkdir(parents=True)
+            (drm / connector / "status").write_text("connected\n")
+            (drm / connector / "edid").write_bytes(edid)
+        (drm / "card0-HDMI-A-1").mkdir()
+        (drm / "card0-HDMI-A-1" / "status").write_text("disconnected\n")
+        info = display.screen_info(str(drm))
+        self.assertEqual((info["connector"], info["name"], info["peak_nits"], info["source"]), ("DP-1", "Monitor", 800.0, "EDID"))
+
+    def test_renodx_gets_the_peak_and_keeps_user_changes(self):
+        _root, shipping = self.unreal_game()
+        self.service.screen = lambda: {"name": "Panel", "peak_nits": 1000.0}
+        self.service.install("1000", "renodx")
+        ini = (shipping.parent / "ReShade.ini").read_text()
+        self.assertIn("[renodx-preset1]", ini)
+        self.assertIn("ToneMapPeakNits=1000", ini)
+        # The user tunes it in game (ReShade saves it), then repairs after a game update.
+        (shipping.parent / "ReShade.ini").write_text(ini.replace("ToneMapPeakNits=1000", "ToneMapPeakNits=750") + "\n[renodx]\nPresetIndex=2\n")
+        self.assertEqual(self.service.repair("1000")["status"], "success")
+        ini = (shipping.parent / "ReShade.ini").read_text()
+        self.assertIn("ToneMapPeakNits=750", ini)
+        self.assertIn("PresetIndex=2", ini)
+
+    def test_auto_brightness_can_be_turned_off(self):
+        _root, shipping = self.unreal_game()
+        self.service.screen = lambda: {"name": "Panel", "peak_nits": 1000.0}
+        self.service.set_auto_brightness(False)
+        self.service.install("1000", "renodx")
+        self.assertNotIn("ToneMapPeakNits", (shipping.parent / "ReShade.ini").read_text())
+
+    def test_special_k_luminance_follows_the_peak(self):
+        ini = installers.specialk_ini("", {}, 1000.0)
+        self.assertIn("scRGBLuminance_[0]=12.500", ini)
+        self.assertIn("scRGBLuminance_[0]=9.000", installers.specialk_ini("", {"SpecialK.HDR": {"scRGBLuminance_[0]": "9.000"}}, 1000.0))
+
+
 class RenoDXTests(unittest.TestCase):
     def setUp(self):
         self.mods = renodx.parse_mods(WIKI)
