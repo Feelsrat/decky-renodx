@@ -63,6 +63,17 @@ def hdr_status(user: str, home: str = "") -> dict[str, Any]:
 DRM_ROOT = "/sys/class/drm"
 DECK_OLED_PEAK = 1000.0  # Valve's spec for the Steam Deck OLED panel's HDR peak
 
+# gamescope ignores some built-in panels' EDID luminance and uses its own profile
+# (scripts/00-gamescope/displays/*.lua in ValveSoftware/gamescope). Games see these
+# values, so RenoDX should too. The Deck OLED's EDID, for one, says ~604 nits.
+GAMESCOPE_PANELS = [
+    {"vendor": "VLV", "product": 0x3003, "name": "Steam Deck OLED (SDC)", "peak_nits": 1000.0, "avg_nits": 800.0},
+    {"vendor": "VLV", "product": 0x3004, "name": "Steam Deck OLED (BOE)", "peak_nits": 1000.0, "avg_nits": 800.0},
+    {"vendor": "ZDZ", "model": "ZDZ0501", "name": "Zotac Zone AMOLED", "peak_nits": 993.0, "avg_nits": 400.0},
+    {"vendor": "DXQ", "model": "DXQ7D0023", "name": "Zotac Zone AMOLED", "peak_nits": 993.0, "avg_nits": 400.0},
+    {"vendor": "YHB", "model": "YHB02P25", "name": "OneXPlayer F1 OLED", "peak_nits": 687.4, "avg_nits": 400.0},
+]
+
 
 def _luminance(code: int) -> float:
     """CTA-861 HDR static metadata: max / max-frame-average luminance code value -> nits."""
@@ -71,9 +82,12 @@ def _luminance(code: int) -> float:
 
 def parse_edid(edid: bytes) -> dict[str, Any]:
     """Monitor name and HDR static metadata (peak, full-frame average, min nits) from an EDID."""
-    info: dict[str, Any] = {"name": "", "peak_nits": None, "avg_nits": None, "min_nits": None}
+    info: dict[str, Any] = {"name": "", "vendor": "", "product": 0, "peak_nits": None, "avg_nits": None, "min_nits": None}
     if len(edid) < 128 or edid[:8] != b"\x00\xff\xff\xff\xff\xff\xff\x00":
         return info
+    packed = (edid[8] << 8) | edid[9]
+    info["vendor"] = "".join(chr(64 + ((packed >> shift) & 0x1F)) for shift in (10, 5, 0))
+    info["product"] = edid[10] | (edid[11] << 8)
     for offset in (54, 72, 90, 108):
         descriptor = edid[offset:offset + 18]
         if descriptor[:3] == b"\x00\x00\x00" and descriptor[3] == 0xFC:
@@ -96,6 +110,18 @@ def parse_edid(edid: bytes) -> dict[str, Any]:
                     info["min_nits"] = round(info["peak_nits"] * (values[2] / 255.0) ** 2 / 100.0, 4)
             pos += 1 + length
     return info
+
+
+def gamescope_profile(info: dict[str, Any]) -> dict[str, Any] | None:
+    for panel in GAMESCOPE_PANELS:
+        if panel["vendor"] != info.get("vendor"):
+            continue
+        if "product" in panel and panel["product"] != info.get("product"):
+            continue
+        if "model" in panel and panel["model"] != info.get("name"):
+            continue
+        return panel
+    return None
 
 
 def _read(path: str) -> str:
@@ -132,6 +158,11 @@ def screen_info(drm_root: str = DRM_ROOT) -> dict[str, Any]:
         return {"connector": "", "name": "", "peak_nits": None, "source": ""}
     internal, connector, info = sorted(outputs, key=lambda item: item[0])[0]  # external first
     result = {"connector": connector, "internal": internal, **info, "source": "EDID" if info["peak_nits"] else ""}
+    result["edid_peak_nits"] = info["peak_nits"]
+    profile = gamescope_profile(info)
+    if profile:
+        result.update(name=profile["name"], peak_nits=profile["peak_nits"], avg_nits=profile["avg_nits"], source="gamescope panel profile")
+        return result
     if internal and not info["peak_nits"] and _is_deck_oled():
         result.update(name=info["name"] or "Steam Deck OLED", peak_nits=DECK_OLED_PEAK, source="Steam Deck OLED spec")
     if internal and _is_deck_oled() and not info["name"]:

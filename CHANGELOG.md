@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.1
+
+### Fixes
+- **Steam Deck OLED peak brightness was set to 604 nits instead of 1000.** The panel's EDID reports about 604 nits, but SteamOS's compositor (gamescope) ignores that and uses its own profile for the panel: 1000 nits peak, 800 full-frame. Games see gamescope's values, so the plugin now uses them for the Deck OLED, the Zotac Zone and the OneXPlayer F1. Games set up with 0.5.0 show **Repair**. It replaces the old automatic value, and anything you set yourself is kept.
+
 ## 0.5.0
 
 ### New

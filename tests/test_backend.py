@@ -318,9 +318,11 @@ class UnityApiTests(ServiceCase):
         self.assertTrue((root / "dxgi.dll").exists())
 
 
-def make_edid(name: str = "", peak_code: int | None = None) -> bytes:
+def make_edid(name: str = "", peak_code: int | None = None, vendor: str = "ABC", product: int = 1) -> bytes:
     base = bytearray(128)
     base[:8] = b"\x00\xff\xff\xff\xff\xff\xff\x00"
+    packed = sum((ord(letter) - 64) << shift for letter, shift in zip(vendor, (10, 5, 0)))
+    base[8:12] = bytes([packed >> 8, packed & 0xFF, product & 0xFF, product >> 8])
     if name:
         base[72:90] = (bytes([0, 0, 0, 0xFC, 0]) + name.encode()[:13].ljust(13, b" "))
     if peak_code is None:
@@ -340,6 +342,16 @@ class ScreenBrightnessTests(ServiceCase):
         info = display.parse_edid(make_edid("Big TV", 96))
         self.assertEqual((info["name"], info["peak_nits"], info["avg_nits"]), ("Big TV", 400.0, 265.0))
         self.assertIsNone(display.parse_edid(make_edid("Old TV"))["peak_nits"])
+
+    def test_deck_oled_uses_gamescopes_profile_not_its_edid(self):
+        from backend import display
+        drm = self.fake.root / "drm"
+        (drm / "card0-eDP-1").mkdir(parents=True)
+        (drm / "card0-eDP-1" / "status").write_text("connected\n")
+        (drm / "card0-eDP-1" / "edid").write_bytes(make_edid("ANX7530 U", 115, vendor="VLV", product=0x3004))  # EDID: ~604 nits
+        self.assertEqual(display.parse_edid(make_edid("x", 115))["peak_nits"], 603.7)
+        info = display.screen_info(str(drm))
+        self.assertEqual((info["name"], info["peak_nits"], info["source"]), ("Steam Deck OLED (BOE)", 1000.0, "gamescope panel profile"))
 
     def test_external_screen_wins_when_docked(self):
         from backend import display
@@ -366,6 +378,17 @@ class ScreenBrightnessTests(ServiceCase):
         ini = (shipping.parent / "ReShade.ini").read_text()
         self.assertIn("ToneMapPeakNits=750", ini)
         self.assertIn("PresetIndex=2", ini)
+
+    def test_repair_replaces_an_old_automatic_peak_but_not_the_users(self):
+        _root, shipping = self.unreal_game()
+        self.service.screen = lambda: {"name": "Panel", "peak_nits": 603.7, "edid_peak_nits": 603.7}
+        self.service.install("1000", "renodx")
+        ini_path = shipping.parent / "ReShade.ini"
+        ini_path.write_text(ini_path.read_text().replace("toneMapPeakNits=603.7", "toneMapPeakNits=603.700000"))
+        self.service.screen = lambda: {"name": "Deck", "peak_nits": 1000.0, "edid_peak_nits": 603.7, "source": "gamescope panel profile"}
+        self.service.repair("1000")
+        self.assertIn("ToneMapPeakNits=1000", ini_path.read_text())
+        self.assertIn("toneMapPeakNits=1000", ini_path.read_text())
 
     def test_auto_brightness_can_be_turned_off(self):
         _root, shipping = self.unreal_game()

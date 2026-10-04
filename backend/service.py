@@ -303,11 +303,17 @@ class HdrService:
             reshade_outdated = bool(installed_reshade) and installed_reshade != ".".join(map(str, RESHADE_VERSION))
             # 0.2.0-0.4.5 hooked Unity games through opengl32 (see detect.scan_game); ReShade never saw a frame.
             wrong_hook = record.get("dll") == "opengl32" and (Path(record.get("target_dir") or "") / "UnityPlayer.dll").is_file()
+            # 0.5.0 took the Deck OLED's EDID peak (~604 nits) instead of gamescope's profile (1000).
+            wrong_peak = (record.get("plugin_version") == "0.5.0" and record["method"] in {"renodx", "special_k"}
+                          and self.settings.get("auto_brightness", True) is not False
+                          and self.screen().get("source") == "gamescope panel profile")
             message = f"{METHOD_LABELS.get(record['method'], record['method'])} is installed."
             if missing:
                 message += f" {len(missing)} installed file(s) are missing; the game was probably updated or verified."
             elif game_updated:
                 message += " The game was updated since; repair if HDR stopped working."
+            elif wrong_peak:
+                message += " It was set up with the wrong peak brightness for this screen; repair to fix it."
             elif wrong_hook:
                 message += " It hooks OpenGL, but this Unity game renders with Direct3D; repair to fix it."
             elif launch_outdated:
@@ -326,7 +332,7 @@ class HdrService:
                 "missing": missing[:5],
                 "game_updated": game_updated,
                 "launch_outdated": launch_outdated,
-                "needs_repair": bool(missing or launch_outdated or reshade_outdated or wrong_hook),
+                "needs_repair": bool(missing or launch_outdated or reshade_outdated or wrong_hook or wrong_peak),
                 "launch": record.get("launch"),
                 "extra": record.get("extra", {}),
                 "legacy": False,
@@ -451,6 +457,9 @@ class HdrService:
             ctx["previous_reshade_ini"] = previous_ini.read_text(encoding="utf-8", errors="replace") if previous_ini.is_file() else ""
         except OSError:
             ctx["previous_reshade_ini"] = ""
+        # Peaks this plugin wrote before (0.5.0 didn't record it: that was the raw EDID value).
+        old_peak = ((old_record or {}).get("extra") or {}).get("peak_nits")
+        ctx["previous_auto_peaks"] = [float(v) for v in (old_peak, (ctx.get("screen") or {}).get("edid_peak_nits")) if v]
         stash = transaction.Stash(old_record, logger, on_change=journal) if old_record else None
         journal()
         if stash:
@@ -640,7 +649,8 @@ class HdrService:
                 raise InstallError("No RenoDX mod matched this game.")
             addon = renodx_file or self._download_addon(mod, target)
             return installers.install_renodx(tx, target, self.runtime, self.compat, addon, mod,
-                                             peak_nits=self._peak_nits(ctx), previous_ini=ctx.get("previous_reshade_ini", ""))
+                                             peak_nits=self._peak_nits(ctx), previous_ini=ctx.get("previous_reshade_ini", ""),
+                                             previous_auto=ctx.get("previous_auto_peaks", []))
         if method == "special_k":
             return installers.install_specialk(tx, target, self.runtime, self.compat, peak_nits=self._peak_nits(ctx))
         if method == "reshade":

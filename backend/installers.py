@@ -86,8 +86,19 @@ def renodx_screen_settings(peak_nits: float | None) -> dict[str, dict[str, str]]
     return {"renodx-preset1": {"ToneMapPeakNits": value, "toneMapPeakNits": value}}
 
 
+PEAK_KEYS = {"ToneMapPeakNits", "toneMapPeakNits"}
+
+
+def _same_number(a: str, b: Any) -> bool:
+    try:
+        return abs(float(a) - float(b)) < 0.05
+    except (TypeError, ValueError):
+        return False
+
+
 def _reshade_host(tx: Transaction, target: Target, runtime: Runtime, hook: str, *, effects: bool,
-                  sections: dict[str, dict[str, str]] | None = None, previous_ini: str = "") -> dict[str, Any]:
+                  sections: dict[str, dict[str, str]] | None = None, previous_ini: str = "",
+                  previous_auto: list[float] | None = None) -> dict[str, Any]:
     reshade = runtime.reshade()
     dll_source = reshade["dll"][target.bits]
     if not dll_source.is_file():
@@ -114,6 +125,9 @@ def _reshade_host(tx: Transaction, target: Target, runtime: Runtime, hook: str, 
         ini = upsert_ini(ini, section, values, case_sensitive=True)
     # Settings the user changed in the RenoDX tab win over our defaults and survive a reinstall.
     for section, values in ini_sections(previous_ini, "renodx").items():
+        # A peak this plugin wrote earlier isn't a user choice: let the new value replace it.
+        values = {key: value for key, value in values.items()
+                  if not (key in PEAK_KEYS and any(_same_number(value, auto) for auto in previous_auto or []))}
         if values:
             ini = upsert_ini(ini, section, values, case_sensitive=True)
     tx.write_text(target.dir / "ReShade.ini", ini)
@@ -146,21 +160,22 @@ def install_reshade(tx: Transaction, target: Target, runtime: Runtime, compat: C
 # ---------------------------------------------------------------- RenoDX
 
 def install_renodx(tx: Transaction, target: Target, runtime: Runtime, compat: CompatDB, addon_file: Path, mod: dict[str, Any],
-                   *, peak_nits: float | None = None, previous_ini: str = "") -> dict[str, Any]:
+                   *, peak_nits: float | None = None, previous_ini: str = "", previous_auto: list[float] | None = None) -> dict[str, Any]:
     if target.api == "vulkan":
         raise InstallError("This game uses Vulkan; RenoDX through a ReShade proxy DLL cannot hook it.")
     addon_bits = "32" if addon_file.name.lower().endswith(".addon32") else "64"
     if target.arch in {"32", "64"} and addon_bits != target.arch:
         raise InstallError(f"{addon_file.name} is a {addon_bits}-bit addon but the game is {target.arch}-bit.")
     hook = target.hook or "dxgi"
-    reshade = _reshade_host(tx, target, runtime, hook, effects=False, sections=renodx_screen_settings(peak_nits), previous_ini=previous_ini)
+    reshade = _reshade_host(tx, target, runtime, hook, effects=False, sections=renodx_screen_settings(peak_nits),
+                            previous_ini=previous_ini, previous_auto=previous_auto)
     tx.write_text(target.dir / "ReShadePreset.ini", "Techniques=\nTechniqueSorting=\n")
     addon_target = tx.copy_file(addon_file, target.dir / addon_file.name)
     return {
         "method": "renodx",
         "dll": hook,
         "launch": launch.spec(hook, args=compat.game_args(target.appid, "renodx")),
-        "extra": {"addon": str(addon_target), "mod": _mod_summary(mod), "reshade_version": reshade["version"]},
+        "extra": {"addon": str(addon_target), "mod": _mod_summary(mod), "reshade_version": reshade["version"], "peak_nits": peak_nits},
         "message": f"RenoDX installed ({mod.get('name') or addon_file.name}) with ReShade {reshade['version']} as {hook}.dll."
                    + (f" Peak brightness set to {float(peak_nits):g} nits for this screen." if peak_nits else ""),
     }
@@ -216,7 +231,7 @@ def install_specialk(tx: Transaction, target: Target, runtime: Runtime, compat: 
         "method": "special_k",
         "dll": hook,
         "launch": launch.spec(hook, args=compat.game_args(target.appid, "special_k")),
-        "extra": {"specialk_dir": str(directory)},
+        "extra": {"specialk_dir": str(directory), "peak_nits": peak_nits},
         "message": f"Special K installed as {hook}.dll. Open its menu in game (Ctrl+Shift+Backspace) to confirm HDR.",
     }
 
