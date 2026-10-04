@@ -13,7 +13,7 @@ from typing import Any
 
 from . import detect, display, fsutil, installers, launch, log, net, recommend, renodx, rhi, state, transaction
 from .compat import CompatDB
-from .config import Paths
+from .config import RESHADE_VERSION, Paths
 from .installers import InstallError, Target
 from .pcgw import PCGamingWiki
 from .renodx import RenoDXCatalog
@@ -296,6 +296,8 @@ class HdrService:
             game_updated = bool(app and app.buildid and record.get("buildid") and app.buildid != record["buildid"])
             spec = record.get("launch") or {}
             launch_outdated = bool(spec.get("env")) and spec.get("env") != launch.spec("")["env"]
+            installed_reshade = str((record.get("extra") or {}).get("reshade_version") or "")
+            reshade_outdated = bool(installed_reshade) and installed_reshade != ".".join(map(str, RESHADE_VERSION))
             message = f"{METHOD_LABELS.get(record['method'], record['method'])} is installed."
             if missing:
                 message += f" {len(missing)} installed file(s) are missing; the game was probably updated or verified."
@@ -303,6 +305,8 @@ class HdrService:
                 message += " The game was updated since; repair if HDR stopped working."
             elif launch_outdated:
                 message += " It uses older launch options; repair to update them."
+            elif reshade_outdated:
+                message += f" It uses ReShade {installed_reshade}; repair to switch to {'.'.join(map(str, RESHADE_VERSION))}."
             return {
                 "installed": True,
                 "method": record["method"],
@@ -315,7 +319,7 @@ class HdrService:
                 "missing": missing[:5],
                 "game_updated": game_updated,
                 "launch_outdated": launch_outdated,
-                "needs_repair": bool(missing or launch_outdated),
+                "needs_repair": bool(missing or launch_outdated or reshade_outdated),
                 "launch": record.get("launch"),
                 "extra": record.get("extra", {}),
                 "legacy": False,
@@ -754,11 +758,6 @@ class HdrService:
         self.rhi.clear()
         self.renodx_index.clear()
         self.pcgw.clear()
-        meta = self.paths.runtime / "reshade" / "current.json"
-        data = fsutil.read_json(meta, {}) or {}
-        if data:
-            data["checked_at"] = 0
-            fsutil.write_json(meta, data)
         return _ok(message="Caches cleared. Detection and mod lists will be fetched again.")
 
     def recent_downloads(self) -> dict[str, Any]:
@@ -814,6 +813,11 @@ class HdrService:
         elif status.get("enabled"):
             checks.append("✓ HDR is on in SteamOS.")
         if record["method"] in {"renodx", "reshade"}:
+            proxy = Path(record.get("target_dir") or "") / f"{record.get('dll') or 'dxgi'}.dll"
+            size = proxy.stat().st_size if proxy.is_file() else 0
+            version = (record.get("extra") or {}).get("reshade_version") or "?"
+            checks.append(f"{'✓' if size > 1_000_000 else '✗'} ReShade {version} as {proxy.name}: "
+                          + (f"{size // 1024} KB" if size else "missing"))
             if not reshade_log:
                 checks.append("✗ ReShade.log doesn't exist yet: ReShade has never run in this game. Launch it from Steam once. "
                               "If it still doesn't appear, Steam didn't apply the launch options (check they contain WINEDLLOVERRIDES with "

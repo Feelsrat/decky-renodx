@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import platform
-import re
 import shutil
 import subprocess
 import tarfile
@@ -16,20 +15,13 @@ from typing import Any, Callable
 from . import fsutil, log, net
 from .config import (
     AUTOHDR_ADDON_ZIP_URL, LILIUM_RELEASES_URL, PUMBO_AUTOHDR_ZIP_URL,
-    RESHADE_FALLBACK_SETUP_URL, RESHADE_FXH_URL, RESHADE_HOME_URL, RESHADE_MIN_VERSION, SEVENZIP_VERSION, SPECIALK_RELEASES_URL,
+    RESHADE_FXH_URL, RESHADE_SETUP_URL, RESHADE_VERSION, SEVENZIP_VERSION, SPECIALK_RELEASES_URL,
     Paths,
 )
-
-RESHADE_CHECK_INTERVAL = 7 * 86400
 
 
 class ComponentError(RuntimeError):
     pass
-
-
-def reshade_version(name: str) -> tuple[int, int, int]:
-    match = re.search(r"ReShade_Setup_([0-9]+)\.([0-9]+)\.([0-9]+)", name, re.I)
-    return tuple(int(part) for part in match.groups()) if match else (0, 0, 0)  # type: ignore[return-value]
 
 
 class Runtime:
@@ -83,50 +75,35 @@ class Runtime:
 
     # ------------------------------------------------------------ ReShade
     def reshade(self) -> dict[str, Any]:
-        """ReShade (full add-on build) DLLs. Re-checks for a newer version weekly."""
+        """ReShade (full add-on build) DLLs, at the pinned RESHADE_VERSION."""
         with self._lock:
             meta_file = self.root / "reshade" / "current.json"
             meta = fsutil.read_json(meta_file, {}) or {}
             current_dir = Path(meta.get("dir", "")) if meta.get("dir") else None
-            usable = bool(current_dir and (current_dir / "ReShade64.dll").is_file() and tuple(meta.get("version", [0, 0, 0])) >= RESHADE_MIN_VERSION)
-            if usable and time.time() - float(meta.get("checked_at", 0)) < RESHADE_CHECK_INTERVAL:
+            if current_dir and (current_dir / "ReShade64.dll").is_file() and tuple(meta.get("version", [])) == RESHADE_VERSION:
                 return self._reshade_info(meta)
-            try:
-                url = self._latest_reshade_url()
-            except Exception as error:
-                if usable:
-                    log.plugin().warning("ReShade version check failed, keeping %s: %s", meta.get("version"), error)
-                    return self._reshade_info(meta)
-                url = RESHADE_FALLBACK_SETUP_URL
-            version = reshade_version(url)
-            if usable and tuple(meta.get("version", [])) >= version:
-                meta["checked_at"] = time.time()
-                fsutil.write_json(meta_file, meta)
-                return self._reshade_info(meta)
-            if version < RESHADE_MIN_VERSION:
-                url, version = RESHADE_FALLBACK_SETUP_URL, RESHADE_MIN_VERSION
-            target_dir = self.root / "reshade" / ".".join(map(str, version))
+            target_dir = self.root / "reshade" / ".".join(map(str, RESHADE_VERSION))
             with tempfile.TemporaryDirectory(prefix="decky-renodx-reshade-") as temp:
-                setup = self._download(url, Path(temp) / Path(url).name, min_size=1_000_000)
-                staging = Path(temp) / "x"
-                self.extract(setup, staging, flat=True)
+                setup = self._download(RESHADE_SETUP_URL, Path(temp) / Path(RESHADE_SETUP_URL).name, min_size=1_000_000)
+                unpacked, staging = Path(temp) / "x", Path(temp) / "dlls"
+                # Keep the installer's folder layout and take the top-level DLLs, so a same-named
+                # file in a subfolder (another architecture, say) can never replace them.
+                self.extract(setup, unpacked)
+                fsutil.makedirs(staging)
+                for name in ("ReShade64.dll", "ReShade32.dll"):
+                    found = sorted(unpacked.rglob(name), key=lambda path: len(path.relative_to(unpacked).parts))
+                    if found:
+                        shutil.copyfile(found[0], staging / name)
                 if not (staging / "ReShade64.dll").is_file():
                     raise ComponentError("ReShade64.dll was not found in the ReShade installer")
                 _replace_dir(staging, target_dir)
-            meta = {"version": list(version), "dir": str(target_dir), "url": url, "checked_at": time.time()}
+            meta = {"version": list(RESHADE_VERSION), "dir": str(target_dir), "url": RESHADE_SETUP_URL}
             fsutil.write_json(meta_file, meta)
             return self._reshade_info(meta)
 
     def _reshade_info(self, meta: dict[str, Any]) -> dict[str, Any]:
         directory = Path(meta["dir"])
         return {"version": ".".join(map(str, meta["version"])), "dir": directory, "dll": {"64": directory / "ReShade64.dll", "32": directory / "ReShade32.dll"}}
-
-    def _latest_reshade_url(self) -> str:
-        page = self._fetch_text(RESHADE_HOME_URL, timeout=15)
-        match = re.search(r"downloads/(ReShade_Setup_[0-9.]+_Addon\.exe)", page)
-        if not match:
-            raise ComponentError("Could not find the ReShade add-on download on reshade.me")
-        return f"https://reshade.me/downloads/{match.group(1)}"
 
     # ------------------------------------------------------------ AutoHDR shader pack
     def autohdr_pack(self) -> dict[str, Any]:

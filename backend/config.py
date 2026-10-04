@@ -17,9 +17,11 @@ GITHUB_RELEASES_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases"
 COMPAT_DB_URL = f"https://raw.githubusercontent.com/{GITHUB_REPO}/main/compatibility.json"
 
 RENODX_MODS_URL = "https://raw.githubusercontent.com/wiki/clshortfuse/renodx/Mods.md"
-RESHADE_HOME_URL = "https://reshade.me/"
-RESHADE_FALLBACK_SETUP_URL = "https://reshade.me/downloads/ReShade_Setup_6.7.3_Addon.exe"
-RESHADE_MIN_VERSION = (6, 7, 3)
+# ReShade is pinned rather than "latest from reshade.me": 6.7.3 is what worked on a Deck before,
+# and a fresh install picking up 6.8.0 (Aug 2026) coincided with ReShade no longer loading.
+# Bump only after testing a game on a device.
+RESHADE_VERSION = (6, 7, 3)
+RESHADE_SETUP_URL = "https://reshade.me/downloads/ReShade_Setup_6.7.3_Addon.exe"
 RESHADE_FXH_URL = "https://raw.githubusercontent.com/crosire/reshade-shaders/slim/Shaders/ReShade.fxh"
 SPECIALK_RELEASES_URL = "https://api.github.com/repos/SpecialKO/SpecialK/releases/latest"
 LILIUM_RELEASES_URL = "https://api.github.com/repos/EndlesslyFlowering/ReShade_HDR_shaders/releases/latest"

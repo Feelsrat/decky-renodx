@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.5
+
+### Fixes
+- **ReShade didn't load (no banner, Home did nothing).** The plugin used to install the newest ReShade from reshade.me. Since ReShade 6.8.0 (Aug 2026), fresh installs got 6.8.0, while the setups that worked used 6.7.3. ReShade is now pinned to 6.7.3. Games installed with another version show **Repair**, which switches them. Newer versions will be adopted after testing on a Deck.
+- The ReShade installer is unpacked keeping its folders, so a same-named DLL in a subfolder can never be picked by mistake.
+
+### New
+- The Check tab (Advanced → View logs) shows the installed ReShade version and the size of its DLL.
+
 ## 0.4.4
 
 ### Fixes

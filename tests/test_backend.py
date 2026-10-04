@@ -566,6 +566,17 @@ class RepairTests(ServiceCase):
         self.assertTrue(addon.exists())
         self.assertFalse(self.service.install_status("1000")["needs_repair"])
 
+    def test_installs_with_another_reshade_version_need_repair(self):
+        self.unreal_game()
+        self.service.install("1000", "renodx")
+        self.assertFalse(self.service.install_status("1000")["needs_repair"])
+        record = self.service.store.get("1000")
+        record["extra"]["reshade_version"] = "6.8.0"
+        self.service.store.put("1000", record)
+        status = self.service.install_status("1000")
+        self.assertTrue(status["needs_repair"])
+        self.assertIn("ReShade 6.8.0", status["message"])
+
     def test_logs_explain_whether_reshade_and_renodx_ran(self):
         _root, shipping = self.unreal_game()
         self.service.display_status = lambda: {"status": "success", "enabled": True}
@@ -795,6 +806,30 @@ class MiscTests(unittest.TestCase):
         slow.join()
         self.assertEqual(same.get("page_name"), "")
         self.assertEqual(sum('"1"' in c or "%221%22" in c for c in calls), 1)
+
+    def test_reshade_is_pinned_and_takes_the_top_level_dlls(self):
+        from backend import runtime as runtime_module
+        from backend.config import RESHADE_SETUP_URL
+        fake = FakeSteam()
+        self.addCleanup(fake.cleanup)
+        urls = []
+
+        def download(url, target, **_kwargs):
+            urls.append(url)
+            with zipfile.ZipFile(target, "w") as archive:
+                archive.writestr("arm64/ReShade64.dll", b"wrong" * 300)
+                archive.writestr("ReShade64.dll", b"right" * 300)
+                archive.writestr("ReShade32.dll", b"x86" * 300)
+            return Path(target)
+
+        rt = runtime_module.Runtime(fake.paths, download=download)
+        setup_zip = RESHADE_SETUP_URL.rsplit("/", 1)[1]
+        with mock.patch.object(runtime_module, "RESHADE_SETUP_URL", RESHADE_SETUP_URL.replace(setup_zip, "setup.zip")):
+            info = rt.reshade()
+            self.assertEqual(info["version"], "6.7.3")
+            self.assertEqual(info["dll"]["64"].read_bytes(), b"right" * 300)
+            rt.reshade()
+        self.assertEqual(len(urls), 1)  # cached afterwards
 
     def test_runtime_folders_are_swapped_in_whole(self):
         from backend.runtime import _replace_dir
